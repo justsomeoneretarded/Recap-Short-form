@@ -1,9 +1,12 @@
 import json
+import base64
+import io
 import math
 import subprocess
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from shorts_pipeline import planner, sources
 
@@ -121,8 +124,8 @@ def test_reverse_chronology_within_a_beat_is_rejected():
 
 def test_missing_models_has_actionable_error(monkeypatch):
     monkeypatch.setattr(planner, "_request_json", lambda *a, **k: {"models": [{"name": "other:latest"}]})
-    with pytest.raises(RuntimeError, match="ollama pull qwen3-vl:2b"):
-        planner._require_models("http://127.0.0.1:11434", ["qwen3-vl:2b"])
+    with pytest.raises(RuntimeError, match="ollama pull qwen3-vl:2b-instruct-q4_K_M"):
+        planner._require_models("http://127.0.0.1:11434", ["qwen3-vl:2b-instruct-q4_K_M"])
 
 
 def test_scene_limit_fails_before_any_model_calls(tmp_path, monkeypatch):
@@ -137,7 +140,7 @@ def test_plan_cache_binds_source_and_models_and_preserves_review_status(tmp_path
     source = tmp_path / "movie.mp4"
     source.write_bytes(b"source")
     frame = tmp_path / "frame.jpg"
-    frame.write_bytes(b"image")
+    Image.new("RGB", (900, 600), "blue").save(frame)
     scenes = [{"id": "S0001", "start": 0, "end": 20, "frame_path": str(frame), "sample_time": 10}]
     request = {"title": "A door", "brief": "Escalate a threat", "target_seconds": 15, "script_model": "gemma4:12b"}
     text = "He quietly closes the heavy door as footsteps approach outside. He checks the lock and waits. Another shadow crosses the window while the handle begins to turn."
@@ -145,7 +148,7 @@ def test_plan_cache_binds_source_and_models_and_preserves_review_status(tmp_path
     def api(url, payload=None, **kwargs):
         calls.append((url, payload))
         if url.endswith("/api/tags"):
-            return {"models": [{"name": "qwen3-vl:2b"}, {"name": "gemma4:12b"}]}
+            return {"models": [{"name": "qwen3-vl:2b-instruct-q4_K_M"}, {"name": "gemma4:12b"}]}
         if payload.get("images"):
             return {"response": "A man beside a door; no other action is established."}
         if "prompt" not in payload:
@@ -162,3 +165,60 @@ def test_plan_cache_binds_source_and_models_and_preserves_review_status(tmp_path
     second = planner.make_plan(request, source, scenes, tmp_path / "work")
     assert second == first
     assert len(calls) == call_count
+
+
+@pytest.mark.parametrize("first_text", ["", "A partial description"])
+def test_vision_empty_length_response_retries_without_using_thinking(tmp_path, monkeypatch, first_text):
+    frame = tmp_path / "frame.jpg"
+    Image.new("RGB", (900, 600), "blue").save(frame)
+    scene = {"id": "S1", "frame_path": str(frame), "sample_time": 2}
+    cache = tmp_path / "planning"
+    responses = iter([
+        {"response": first_text, "thinking": "Not a visual description.", "done_reason": "length",
+         "prompt_eval_count": 500, "eval_count": 256},
+        {"response": "A man stands beside a closed door.", "done_reason": "stop",
+         "prompt_eval_count": 500, "eval_count": 12},
+    ])
+    budgets = []
+    def generate(url, payload, **kwargs):
+        budgets.append(payload["options"]["num_predict"])
+        with Image.open(io.BytesIO(base64.b64decode(payload["images"][0]))) as sent:
+            assert sent.size == (384, 256)
+        return next(responses)
+    monkeypatch.setattr(planner, "_request_json", generate)
+    description = planner._describe(scene, planner.DEFAULT_VISION_MODEL, "http://localhost:11434", cache)
+    assert description == "A man stands beside a closed door."
+    assert budgets == [256, 512]
+    saved = list(cache.glob("description-*.json"))
+    assert len(saved) == 1
+    assert json.loads(saved[0].read_text())["description"] == description
+    assert json.loads(saved[0].read_text())["image_preprocessing"]["input_size"] == [384, 256]
+    with Image.open(frame) as retained:
+        assert retained.size == (900, 600)
+    diagnostics = sorted((cache / "diagnostics").glob("*.json"))
+    assert len(diagnostics) == 2
+    assert json.loads(diagnostics[0].read_text())["done_reason"] == "length"
+    assert json.loads(diagnostics[0].read_text())["_request_image"]["input_size"] == [384, 256]
+
+
+@pytest.mark.parametrize("response", ["", None, "A partial description that exhausts its budget"])
+def test_vision_two_failed_responses_leave_no_description_cache(tmp_path, monkeypatch, response):
+    frame = tmp_path / "frame.jpg"
+    Image.new("RGB", (320, 180), "blue").save(frame)
+    scene = {"id": "S1", "frame_path": str(frame)}
+    cache = tmp_path / "planning"
+    calls = []
+    def generate(url, payload, **kwargs):
+        calls.append(payload)
+        return {"response": response, "thinking": "Do not use this.", "done_reason": "length",
+                "prompt_eval_count": 500, "eval_count": payload["options"]["num_predict"]}
+    monkeypatch.setattr(planner, "_request_json", generate)
+    with pytest.raises(RuntimeError) as error:
+        planner._describe(scene, planner.DEFAULT_VISION_MODEL, "http://localhost:11434", cache)
+    message = str(error.value)
+    for expected in ["after two attempts", "done_reason='length'", "prompt_eval_count=500",
+                     "eval_count=512", "response_keys=", planner.DEFAULT_VISION_MODEL]:
+        assert expected in message
+    assert len(calls) == 2
+    assert not list(cache.glob("description-*.json"))
+    assert len(list((cache / "diagnostics").glob("*.json"))) == 2

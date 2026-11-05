@@ -1,16 +1,22 @@
 # Graph Report - Recap-Short-form  (2026-11-05)
 
 ## Corpus Check
-- 35 files · ~0 words
+- 34 files · ~41,769 words
 - Verdict: corpus is large enough that graph structure adds value.
+- Unclassified: 1 file(s) not represented in the graph (top: (none) 1)
 
 ## Summary
-- 324 nodes · 690 edges · 12 communities (9 shown, 3 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 8 edges (avg confidence: 0.85)
+- 328 nodes · 699 edges · 14 communities (10 shown, 4 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 10 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
+## Graph Freshness
+- Built from commit: `04e31c87`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
+
 ## Community Hubs (Navigation)
-- base64 / hashlib
+- test_sources_planner.py
 - default / description
 - difflib / re
 - array / copy
@@ -19,52 +25,54 @@
 - Evidence-linked story beats and timed edit decisions / Source-grounded
 - Concrete action or contradiction before a dossier / Automatic speech a
 - ci.yml / jobs
+- sources.py
 - recap-shorts
+- test_workflows.py
 
 ## God Nodes (most connected - your core abstractions)
 1. `render_plan()` - 28 edges
 2. `generate()` - 21 edges
 3. `Eight reference Shorts: evidence and production guide` - 21 edges
-4. `resolve_source()` - 18 edges
-5. `make_plan()` - 18 edges
+4. `make_plan()` - 18 edges
+5. `resolve_source()` - 18 edges
 6. `synthesize_plan()` - 17 edges
 7. `index_source()` - 15 edges
 8. `Upstream technology comparison for Recap Shorts` - 14 edges
 9. `write_captions()` - 12 edges
-10. `_run()` - 11 edges
+10. `inputs` - 11 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `test_chunking_preserves_long_script()` --calls--> `_chunks()`  [EXTRACTED]
-  tests/test_voice_captions.py → shorts_pipeline/voice.py
-- `test_dialogue_with_reviewed_timings_preserves_source_span()` --calls--> `synthesize_plan()`  [EXTRACTED]
-  tests/test_voice_captions.py → shorts_pipeline/voice.py
-- `test_imported_audio_preserves_every_word_without_models()` --calls--> `synthesize_plan()`  [EXTRACTED]
-  tests/test_voice_captions.py → shorts_pipeline/voice.py
 - `test_ffmpeg_detector_debounces_adjacent_frame_triggers()` --calls--> `_ffmpeg_boundaries()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/sources.py
-- `test_reverse_chronology_within_a_beat_is_rejected()` --calls--> `_normalize_model_plan()`  [EXTRACTED]
+- `test_segments_cover_full_source_without_gaps()` --calls--> `_segments()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/sources.py
+- `test_remote_sources_require_https_without_embedded_credentials()` --calls--> `resolve_source()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/sources.py
+- `test_failed_download_is_not_cached()` --calls--> `resolve_source()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/sources.py
+- `test_unknown_scene_id_is_never_substituted()` --calls--> `_normalize_model_plan()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/planner.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (12 total, 3 thin omitted)
+## Communities (14 total, 4 thin omitted)
 
-### Community 0 - "base64 / hashlib"
-Cohesion: 0.08
-Nodes (35): _describe(), _key(), make_plan(), _normalize_model_plan(), _request_json(), _require_models(), validate_storyboard(), _adaptive_boundaries() (+27 more)
+### Community 0 - "test_sources_planner.py"
+Cohesion: 0.10
+Nodes (26): _describe(), _key(), make_plan(), _normalize_model_plan(), _request_json(), _require_models(), validate_storyboard(), _segments() (+18 more)
 
 ### Community 1 - "default / description"
 Cohesion: 0.04
 Nodes (45): default, description, options, type, description, required, type, aspect (+37 more)
 
 ### Community 2 - "difflib / re"
-Cohesion: 0.10
-Nodes (24): _ass_time(), _groups(), _srt_time(), _wrap(), write_captions(), _align_script(), _chunks(), _duration() (+16 more)
+Cohesion: 0.12
+Nodes (19): _align_script(), _chunks(), _duration(), _integer_words(), _lexical(), _normal(), _run(), synthesize_plan() (+11 more)
 
 ### Community 3 - "array / copy"
 Cohesion: 0.14
-Nodes (22): allocate_shots(), _ass_escape(), _attach_narration(), _concat(), _covers(), crop_filter(), _ffmpeg(), _master_audio() (+14 more)
+Nodes (21): allocate_shots(), _ass_escape(), _attach_narration(), _concat(), _covers(), crop_filter(), _ffmpeg(), _master_audio() (+13 more)
 
 ### Community 4 - "generate-shorts.yml / concurrency"
 Cohesion: 0.06
@@ -72,7 +80,7 @@ Nodes (35): concurrency, cancel-in-progress, group, HF_HOME, OLLAMA_MAX_LOADED_M
 
 ### Community 5 - "argparse / pathlib"
 Cohesion: 0.12
-Nodes (13): generate(), stage(), main(), assign_timeline(), request_config(), excerpt(), probe(), run() (+5 more)
+Nodes (18): _ass_time(), _groups(), _srt_time(), _wrap(), write_captions(), generate(), stage(), main() (+10 more)
 
 ### Community 6 - "Evidence-linked story beats and timed edit decisions / Source-grounded"
 Cohesion: 0.10
@@ -86,27 +94,29 @@ Nodes (9): Eight reference Shorts: evidence and production guide, V1 — Everyon
 Cohesion: 0.15
 Nodes (12): jobs, test, name, on, permissions, contents, run, uses (+4 more)
 
+### Community 9 - "sources.py"
+Cohesion: 0.15
+Nodes (12): _adaptive_boundaries(), _ffmpeg_boundaries(), file_digest(), _https_url(), index_source(), resolve_source(), _run(), _video_info() (+4 more)
+
 ## Knowledge Gaps
-- **76 isolated node(s):** `default`, `description`, `options`, `type`, `description` (+71 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 122 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **3 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **76 isolated node(s):** `name`, `description`, `required`, `type`, `description` (+71 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 123 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `generate()` connect `argparse / pathlib` to `base64 / hashlib`, `difflib / re`, `array / copy`?**
+- **Why does `generate()` connect `argparse / pathlib` to `test_sources_planner.py`, `sources.py`, `difflib / re`, `array / copy`?**
   _High betweenness centrality (0.003) - this node is a cross-community bridge._
-- **What connects `default`, `description`, `options` to the rest of the system?**
+- **What connects `name`, `description`, `required` to the rest of the system?**
   _76 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `base64 / hashlib` be split into smaller, more focused modules?**
-  _Cohesion score 0.07539682539682539 - nodes in this community are weakly interconnected._
-- **Why does `render_plan()` connect `array / copy` to `base64 / hashlib`?**
+- **Should `test_sources_planner.py` be split into smaller, more focused modules?**
+  _Cohesion score 0.09581646423751687 - nodes in this community are weakly interconnected._
+- **Why does `render_plan()` connect `array / copy` to `sources.py`, `argparse / pathlib`?**
   _High betweenness centrality (0.002) - this node is a cross-community bridge._
 - **Should `default / description` be split into smaller, more focused modules?**
   _Cohesion score 0.044444444444444446 - nodes in this community are weakly interconnected._
-- **Why does `synthesize_plan()` connect `difflib / re` to `base64 / hashlib`, `array / copy`?**
+- **Why does `synthesize_plan()` connect `difflib / re` to `sources.py`, `array / copy`, `argparse / pathlib`?**
   _High betweenness centrality (0.002) - this node is a cross-community bridge._
 - **Should `difflib / re` be split into smaller, more focused modules?**
-  _Cohesion score 0.0975609756097561 - nodes in this community are weakly interconnected._
-
-Semantic extraction used the host agent. Token usage was not exposed by the agent tool and is not accounted in the zero-valued CLI cost counters.
+  _Cohesion score 0.12436974789915967 - nodes in this community are weakly interconnected._

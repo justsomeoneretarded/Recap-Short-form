@@ -11,3 +11,4 @@ build/
 dist/
 graphify-out/.graphify_*
 graphify-out/manifest.json
+graphify-out/20??-??-??/

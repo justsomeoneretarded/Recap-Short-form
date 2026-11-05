@@ -41,8 +41,8 @@ on:
       writer_model:
         description: Local writer (Qwen fits smaller CPU runners; Gemma matches Top10)
         type: choice
-        options: ['qwen3:4b', 'gemma4:12b']
-        default: 'qwen3:4b'
+        options: ['qwen3:4b-instruct-2507-q4_K_M', 'gemma4:12b']
+        default: 'qwen3:4b-instruct-2507-q4_K_M'
       source_window:
         description: Optional source excerpt start,end in seconds (for example 51,73)
         type: string
@@ -67,7 +67,7 @@ jobs:
       OLLAMA_MAX_LOADED_MODELS: '1'
       SHORTS_CPU_THREADS: '4'
       SHORTS_WHISPER_MODEL: base.en
-      SCRIPT_MODEL: ${{ inputs.writer_model || 'qwen3:4b' }}
+      SCRIPT_MODEL: ${{ inputs.writer_model || 'qwen3:4b-instruct-2507-q4_K_M' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

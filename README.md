@@ -76,8 +76,8 @@ The example demonstrates the schema; those words are not a claim about your foot
 
 ## Models and timing
 
-- Writer: configurable Ollama model, default `qwen3:4b` to fit CPU runners; `gemma4:12b` from Top10-Movies is available as a larger option. Registry sizes were checked; comparative writing quality has not been benchmarked.
-- Frame descriptions: `qwen3-vl:2b`, one midpoint image per indexed span. Scene boundaries prefer PySceneDetect AdaptiveDetector, with a labeled FFmpeg fallback.
+- Writer: configurable Ollama model, default `qwen3:4b-instruct-2507-q4_K_M` to fit CPU runners; `gemma4:12b` from Top10-Movies is available as a larger option. Registry sizes were checked; comparative writing quality has not been benchmarked.
+- Frame descriptions: explicit `qwen3-vl:2b-instruct-q4_K_M`, one midpoint image per indexed span. The floating `2b` alias selected a thinking model in a runner test, so the instruction variant is selected deliberately. Scene boundaries prefer PySceneDetect AdaptiveDetector, with a labeled FFmpeg fallback.
 - Voice: pinned Chatterbox original/Turbo/Nano and the three existing owner-supplied references. Chatterbox's current upstream README describes it as retired research; the adapter is separate so it can be replaced. The pinned code still declares a mutable Perth dependency; inspect dependency resolution when upgrading.
 - Speech verification: faster-whisper CPU int8, default `base.en`, configurable through `SHORTS_WHISPER_MODEL`. Word timestamps are **ASR estimates**, not WhisperX forced alignment. Captions preserve script text and record timing provenance.
 - Final editing: FFmpeg hard cuts and focus crops; measured two-pass audio normalization targets −14 LUFS and −1.5 dBTP. This is our chosen output policy, not a uniform measured setting in the references.
