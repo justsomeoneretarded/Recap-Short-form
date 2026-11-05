@@ -39,7 +39,7 @@ on:
         options: [original, turbo, nano]
         default: original
       writer_model:
-        description: Local writer (Qwen fits smaller CPU runners; Gemma matches Top10)
+        description: Writer model (Qwen is smaller; Gemma is a larger option)
         type: choice
         options: ['qwen3:4b-instruct-2507-q4_K_M', 'gemma4:12b']
         default: 'qwen3:4b-instruct-2507-q4_K_M'
@@ -82,6 +82,16 @@ jobs:
         env:
           SHORTS_INPUTS: ${{ toJSON(inputs) }}
         run: PYTHONPATH=. python scripts/workflow_request.py
+      - name: Restore footage and visual-analysis cache
+        id: source-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            work/production/sources
+            work/production/index
+            work/production/planning
+          key: shorts-source-v1-${{ env.SHORTS_SOURCE_CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: shorts-source-v1-${{ env.SHORTS_SOURCE_CACHE_KEY }}-
       - name: Install CPU models and pipeline
         run: |
           python -m pip install --upgrade pip
@@ -96,6 +106,15 @@ jobs:
           python scripts/prepare_models.py
       - name: Generate short
         run: python -m shorts_pipeline generate --request work/request.json --workdir work/production --output output/shorts
+      - name: Save footage and visual-analysis cache
+        if: always() && steps.source-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            work/production/sources
+            work/production/index
+            work/production/planning
+          key: shorts-source-v1-${{ env.SHORTS_SOURCE_CACHE_KEY }}-${{ github.run_id }}
       - name: Upload video and review files
         if: always()
         uses: actions/upload-artifact@v4
@@ -104,10 +123,15 @@ jobs:
           path: output/shorts/
           if-no-files-found: warn
           retention-days: 14
-      - name: Upload model logs on failure
-        if: failure()
+      - name: Upload planning diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: shorts-diagnostics-${{ github.run_number }}
-          path: ${{ runner.temp }}/ollama.log
+          path: |
+            ${{ runner.temp }}/ollama.log
+            work/resolved-environment.txt
+            work/production/scene-descriptions.json
+            work/production/index/**/index.json
+            work/production/planning/diagnostics/*.json
           if-no-files-found: ignore
