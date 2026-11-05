@@ -1,0 +1,1 @@
+Actual Nano synthesis with each existing reference. Text: “A quiet arrival becomes a dangerous pursuit, and every choice carries a cost.” Generated for mechanical verification; voice similarity has not been auditioned. These files are not movie recaps.
