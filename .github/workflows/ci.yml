@@ -5,13 +5,19 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - name: Install FFmpeg and fonts
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - run: python -m pip install -e '.[test]'
       - run: ffmpeg -version
-      - run: python -u -m pytest -v --maxfail=1 -o faulthandler_timeout=30
+      - name: Test pipeline
+        timeout-minutes: 5
+        run: python -u -m pytest -v --maxfail=1 -o faulthandler_timeout=30

@@ -82,7 +82,7 @@ What repeats:
 
 ## Image, captions and editing observations
 
-The representative frames use full-bleed square footage, including close faces, hands and story objects alongside occasional wider geography. Captions are compact white uppercase text with a bold, slanted appearance, predominantly one or two lines, centered horizontally in the central-lower image region, approximately 60–65% of image height in the inspected samples. This is a visual estimate from reduced-size frames, **not a measured font or exact baseline specification**. Some samples show faded neighboring words beside brighter words, consistent with phrase/word emphasis or fading; the exact animation cannot be established from static sheets.
+The representative frames use full-bleed square footage, including close faces, hands and story objects alongside occasional wider geography. Captions are compact white uppercase text with a bold, slanted appearance, predominantly one or two lines, centered horizontally in the central-lower image region, approximately 60–65% of image height in the inspected samples. This is a visual estimate from reduced-size frames, **not a measured font or exact baseline specification**. Some samples show faded neighboring words beside brighter words. A later [10-fps filmstrip of V1 from nominal 1.8–4.6 seconds](reference-data/caption-motion/v1-reveal-fade.jpg) confirms progressive reveal and fade in that passage; [sampling details](reference-data/caption-motion/sampling.json) preserve its scope. The creator's exact font, character mask and easing remain unresolved, and this passage does not establish identical animation throughout all eight videos.
 
 The reference appearance does not support oversized colored text covering half the picture. An initial implementation can use a licensed bold italic font, white fill, a restrained dark shadow, compact phrase groups and an adjustable baseline; validate readability at phone size and against actual faces/objects. Match caption timing to the final synthesized or retained speech, rather than stretching transcript text across guessed durations.
 
@@ -106,7 +106,7 @@ These are **initial engineering/editorial defaults derived from evidence**, not 
 | Sound | Separate narration, retained source audio, music and effects; duck competing material when dialogue matters | Dialogue presence inferred from ASR. Exact source balance needs audition. |
 | Loudness | Start with −14 LUFS integrated and a true-peak ceiling at or below −1.5 dBTP, then audition | A deliberate clean-output policy; only V1/V2 measure −14. The louder references are not a reason to reproduce positive true-peak overs. |
 | Ending | Explicit `renewed_threat`, `reveal`, `reflection`, `thematic_payoff` or `resolved_payoff` | Cross-eight counterexamples. No mandatory generic subscribe/end card. |
-| Voice | Select an available configured preset and audition it; retain vendor/model provenance | These files do not identify Warguy, Kitlaser, the female voice, a vendor, or any authentic model. Retrieve those from the user's top10 repository configuration separately. |
+| Voice | Select an available configured preset and audition it; retain vendor/model provenance | Warguy, Kitlaser and Female presets were retrieved from the user's Top10 repository; see the [model and voice review](top10-model-review.md). Their availability does not identify the reference creator's narrator, vendor or TTS model. |
 
 ## Pipeline acceptance checks
 
