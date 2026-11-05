@@ -1,3 +1,5 @@
+Implementation update: automatic source-speech selection and progressive caption fades are now implemented and tested. The observations below document the earlier gaps and their evidence. Automatic object/face framing across a complete shot remains a separate quality priority. Full model-generated output still needs production validation.
+
 # Standalone Shorts fidelity review
 
 Reviewed 2026-11-05. Read-only code snapshot; the planner is being edited concurrently, so function names are more durable than line numbers. Scope is this Shorts pipeline and the eight supplied references. Top10 production behavior is not a requirement. Graphify was queried before code inspection. No project files or packages were changed.

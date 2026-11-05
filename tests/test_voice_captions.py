@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -24,7 +25,7 @@ def test_caption_offsets_and_script_punctuation(tmp_path):
     assert '00:00:04,100 --> 00:00:05,200' in files['srt'].read_text()
     assert 'Hello there.' in files['srt'].read_text()
     assert r'\pos(540,648)' in files['ass'].read_text()
-    assert 'HELLO THERE.' in files['ass'].read_text()
+    assert 'HELLO THERE.' in re.sub(r'\{[^}]*\}', '', files['ass'].read_text())
     assert json.loads((tmp_path/'caption-timing.json').read_text())['beats'][0]['beat_id']=='b2'
 
 

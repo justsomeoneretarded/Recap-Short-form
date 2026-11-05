@@ -4,7 +4,8 @@ import math
 DEFAULTS = {'brief': '', 'story_notes': '', 'narrator': 'warguy', 'tts_model': 'original',
             'target_seconds': 150, 'aspect': 'square', 'fps': 60,
             'script_model': 'qwen3:4b-instruct-2507-q4_K_M', 'vision_model': 'qwen3-vl:2b-instruct-q4_K_M',
-            'ollama_url': 'http://127.0.0.1:11434', 'max_scenes': 120}
+            'ollama_url': 'http://127.0.0.1:11434', 'max_scenes': 120,
+            'auto_source_speech': True, 'caption_style': 'reference_word_fade'}
 
 
 def request_config(data: dict) -> dict:
@@ -21,6 +22,10 @@ def request_config(data: dict) -> dict:
                           ('tts_model', ('original','turbo','nano')), ('aspect', ('square','vertical'))]:
         if result[name] not in choices:
             raise ValueError(f'{name} must be one of {", ".join(choices)}.')
+    if not isinstance(result['auto_source_speech'],bool):
+        raise ValueError('auto_source_speech must be true or false.')
+    if result['caption_style'] not in ('reference_word_fade','static'):
+        raise ValueError('caption_style must be reference_word_fade or static.')
     duration = float(result['target_seconds'])
     if not math.isfinite(duration) or not 15 <= duration <= 180:
         raise ValueError('target_seconds must be between 15 and 180.')

@@ -49,9 +49,45 @@ def _groups(words: list[dict]) -> list[list[dict]]:
     return groups
 
 
+def _escape_ass(text: str) -> str:
+    return text.upper().replace("\\","\\\\").replace("{","\\{").replace("}","\\}").replace("\n",r"\N")
+
+
+def _word_fade_text(words: list[dict], text: str, cue_start: float, cue_end: float, beat_start: float) -> tuple[str, bool]:
+    """Keep the full phrase laid out while revealing its words on their timings.
+
+    This approximates the sampled reference's moving reveal with word alpha,
+    rather than claiming to reproduce its unknown character-mask animation.
+    Very short cues stay fully visible so the animation cannot hide their text.
+    """
+    duration=round((cue_end-cue_start)*1000)
+    starts=[max(0,round((beat_start+float(word["start"])-cue_start)*1000)) for word in words]
+    if duration<300 or duration-starts[-1]<80:
+        return _escape_ass(text),False
+    first_line_words=len(text.split("\n",1)[0].split()) if "\n" in text else None
+    parts=[]
+    for index,(word,entrance) in enumerate(zip(words,starts)):
+        available=duration-entrance
+        fade=min(120,available//3)
+        visible=min(60,available//3)
+        # Earlier words leave first, but every word gets time at full opacity.
+        exit_start=max(entrance+fade+visible,duration-fade-(len(words)-1-index)*30)
+        exit_end=min(duration,exit_start+fade)
+        if index:
+            parts.append(r"\N" if index==first_line_words else " ")
+        parts.append(
+            f"{{\\alpha&HFF&\\t({entrance},{entrance+fade},\\alpha&H00&)"
+            f"\\t({exit_start},{exit_end},\\alpha&HFF&)}}{_escape_ass(word['word'])}"
+        )
+    return "".join(parts),True
+
+
 def write_captions(plan: dict, outdir: Path, width: int, height: int) -> dict:
     if width<=0 or height<=0:
         raise ValueError("Caption canvas dimensions must be positive.")
+    style=plan.get("caption_style","reference_word_fade")
+    if style not in {"reference_word_fade","static"}:
+        raise ValueError("caption_style must be 'reference_word_fade' or 'static'.")
     outdir=Path(outdir)
     outdir.mkdir(parents=True,exist_ok=True)
     cues=[]
@@ -67,10 +103,10 @@ def write_captions(plan: dict, outdir: Path, width: int, height: int) -> dict:
         for group in _groups(words):
             cue_start=start+group[0]["start"]
             cue_end=min(start+duration,start+group[-1]["end"])
-            cues.append((cue_start,cue_end,_wrap([w["word"] for w in group])))
+            cues.append((cue_start,cue_end,_wrap([w["word"] for w in group]),group,start,start+duration))
         previous_end=start+duration
     srt=outdir/"captions.srt"
-    srt.write_text("\n\n".join(f"{i}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}" for i,(start,end,text) in enumerate(cues,1))+"\n",encoding="utf-8")
+    srt.write_text("\n\n".join(f"{i}\n{_srt_time(cue[0])} --> {_srt_time(cue[1])}\n{cue[2]}" for i,cue in enumerate(cues,1))+"\n",encoding="utf-8")
     size=max(12,round(min(width,height)*.0296))
     header=f"""[Script Info]
 ScriptType: v4.00+
@@ -87,11 +123,30 @@ Style: Recap,DejaVu Sans,{size},&H00FFFFFF,&H00FFFFFF,&H60000000,&H80000000,-1,-
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines=[]
-    for start,end,text in cues:
-        clean=text.upper().replace("\\","\\\\").replace("{","\\{").replace("}","\\}").replace("\n",r"\N")
+    short_static_cues=0
+    for index,(start,end,text,words,beat_start,beat_end) in enumerate(cues):
+        if style=="reference_word_fade":
+            next_start=cues[index+1][0] if index+1<len(cues) else beat_end
+            end=min(end+.1,beat_end,next_start)
+            clean,animated=_word_fade_text(words,text,start,end,beat_start)
+            short_static_cues+=not animated
+        else:
+            clean=_escape_ass(text)
         position=f"{{\\an5\\pos({width//2},{round(height*.60)})}}"
         lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Recap,,0,0,0,,{position}{clean}")
     ass=outdir/"captions.ass"
     ass.write_text(header+"\n".join(lines)+"\n",encoding="utf-8")
-    (outdir/"caption-timing.json").write_text(json.dumps({"note":"Whisper timing is an ASR estimate, not phonetic forced alignment. Supplied timings are validated structurally, not acoustically.","beats":provenance},indent=2))
+    (outdir/"caption-timing.json").write_text(json.dumps({
+        "note":"Whisper timing is an ASR estimate, not phonetic forced alignment. Supplied timings are validated structurally, not acoustically.",
+        "caption_style":style,
+        "animation":{
+            "implementation":"Custom word-alpha approximation of sampled reference reveal/fade; the original creator's mask algorithm is unknown." if style=="reference_word_fade" else "Static full-phrase captions.",
+            "word_timing":"Provided or aligned word starts drive the reveal; full phrase layout remains fixed.",
+            "max_fade_ms":120 if style=="reference_word_fade" else 0,
+            "max_ass_hold_ms":100 if style=="reference_word_fade" else 0,
+            "short_cues_rendered_static":short_static_cues,
+            "srt":"Original phrase text and word-boundary intervals, without animation or extra hold."
+        },
+        "beats":provenance
+    },indent=2))
     return {"srt":srt,"ass":ass}

@@ -90,6 +90,7 @@ jobs:
             work/production/sources
             work/production/index
             work/production/planning
+            work/production/source-speech
           key: shorts-source-v1-${{ env.SHORTS_SOURCE_CACHE_KEY }}-${{ github.run_id }}
           restore-keys: shorts-source-v1-${{ env.SHORTS_SOURCE_CACHE_KEY }}-
       - name: Install CPU models and pipeline
@@ -114,6 +115,7 @@ jobs:
             work/production/sources
             work/production/index
             work/production/planning
+            work/production/source-speech
           key: shorts-source-v1-${{ env.SHORTS_SOURCE_CACHE_KEY }}-${{ github.run_id }}
       - name: Upload video and review files
         if: always()
@@ -134,4 +136,5 @@ jobs:
             work/production/scene-descriptions.json
             work/production/index/**/index.json
             work/production/planning/diagnostics/*.json
+            work/production/source-speech/*.json
           if-no-files-found: ignore

@@ -43,14 +43,22 @@ def generate(request: dict, workdir: Path, outdir: Path) -> dict:
             plan = validate_storyboard(plan,source_info['duration'])
             plan['planning_mode'] = 'supplied-storyboard'
         else:
+            candidates=[]
+            if request['auto_source_speech'] and source_info['has_audio']:
+                from .source_speech import analyze_source_speech
+                stage('source speech')
+                speech=analyze_source_speech(source,workdir)
+                write_json(outdir/'source-speech.json',speech)
+                candidates=speech['candidates']
             stage('index')
             scenes = index_source(source,workdir)
             stage('storyboard')
-            plan = make_plan(request,source,scenes,workdir)
+            plan = make_plan(request,source,scenes,workdir,source_speech=candidates)
         plan['title'] = request['title']
         plan['source_path'] = str(source)
         plan['source_origin'] = request['source']
         plan['source_window'] = request.get('source_window')
+        plan['caption_style'] = request['caption_style']
         write_json(outdir/'request.json',request)
         write_json(outdir/'storyboard.json',plan)
         stage('narration')
