@@ -17,7 +17,7 @@ from pathlib import Path
 
 VOICES = ("warguy", "kit-laser", "female")
 MODELS = ("original", "turbo", "nano")
-VERSION = "shorts-speech-1"
+VERSION = "shorts-speech-2"
 
 
 def voice_reference(narrator: str) -> Path:
@@ -81,7 +81,32 @@ def _lexical(word: str) -> list[str]:
         value=int(number.group(1).replace(",",""))
         if value<1000000000000:
             return _integer_words(value)
-    return [_normal(piece) for piece in re.split(r"[-–—]",word) if _normal(piece)]
+    return ["dollar" if _normal(piece) == "dollars" else _normal(piece)
+            for piece in re.split(r"[-–—]",word) if _normal(piece)]
+
+
+def _contextual_units(words: list[str]) -> list[list[str]]:
+    """Expand explicit USD notation without guessing an omitted currency unit.
+
+    Whisper often writes spoken 'fourteen million dollars' as '$14 million'.
+    Attribute the implicit unit to the final token of that numeric phrase; its
+    recognized interval is later subdivided into ASR-estimated word intervals.
+    Both script and ASR use this normalization, so written notation is preserved.
+    """
+    expanded = [_lexical(word) for word in words]
+    magnitudes = {"hundred", "thousand", "million", "billion", "trillion"}
+    for index, word in enumerate(words):
+        if not re.fullmatch(r"\$[0-9][0-9,]*[.!?;:]?", word):
+            continue
+        last = index
+        while last + 1 < len(words) and len(expanded[last + 1]) == 1 and expanded[last + 1][0] in magnitudes:
+            last += 1
+        following = expanded[last + 1] if last + 1 < len(words) else []
+        if following and (following[0] == "dollar" or
+                          (following[0] in magnitudes and following[-1] == "dollar")):
+            continue  # An explicitly recognized dollar/dollars needs no insertion.
+        expanded[last].append("dollar")
+    return expanded
 
 
 def validate_words(text: str, words: list[dict], duration: float) -> list[dict]:
@@ -110,10 +135,9 @@ def _align_script(text: str, recognized: list[dict], duration: float) -> list[di
     spoken = [w for w in recognized if _normal(w["word"])]
     if not script or not spoken:
         raise ValueError("Speech verification found no words.")
-    script_units=[(unit,index) for index,word in enumerate(script) for unit in _lexical(word)]
+    script_units=[(unit,index) for index,units in enumerate(_contextual_units(script)) for unit in units]
     spoken_units=[]
-    for word in spoken:
-        units=_lexical(word["word"])
+    for word, units in zip(spoken, _contextual_units([word["word"] for word in spoken])):
         span=float(word["end"])-float(word["start"])
         for index,unit in enumerate(units):
             spoken_units.append({"unit":unit,"start":word["start"]+span*index/len(units),"end":word["start"]+span*(index+1)/len(units)})
@@ -277,16 +301,40 @@ def synthesize_plan(plan: dict, narrator: str, workdir: Path, model: str = "orig
                 engine=_Synthesizer(reference,model)
             error=None
             for attempt in range(2):
+                spoken=None
+                duration=None
+                stage="generation"
                 try:
                     engine.generate(text,audio,beat.get("delivery","normal"),int(fingerprint[:8],16)+attempt*101)
+                    stage="duration"
                     duration=_duration(audio)
-                    words=_align_script(text,verifier.transcribe(audio),duration)
+                    stage="transcription"
+                    spoken=verifier.transcribe(audio)
+                    stage="alignment"
+                    words=_align_script(text,spoken,duration)
                     metadata.write_text(json.dumps({"words":words,"duration":duration,"model":model,"narrator":narrator,"timing_provenance":"asr-estimated-script-matched"},indent=2))
                     error=None
                     break
                 except (RuntimeError, ValueError) as exc:
                     error=exc
-                    audio.unlink(missing_ok=True)
+                    # The two deterministic attempt slots bound retained evidence
+                    # for this beat/text. A retry never erases the failed waveform.
+                    diagnostics=cache/"diagnostics"
+                    diagnostics.mkdir(exist_ok=True)
+                    stem=diagnostics/f"beat-{index:04d}-{fingerprint}-attempt-{attempt+1}"
+                    rejected=stem.with_suffix(".wav")
+                    if audio.exists():
+                        audio.replace(rejected)
+                    else:
+                        rejected.unlink(missing_ok=True)  # Never link an older attempt's waveform.
+                    stem.with_suffix(".json").write_text(json.dumps({
+                        "version":VERSION,"beat_id":beat.get("id",index),"attempt":attempt+1,
+                        "text":text,"model":model,"narrator":narrator,"stage":stage,
+                        "duration":duration,"recognized":spoken,"error":str(exc),
+                        "error_type":type(exc).__name__,
+                        "audio_path":str(rejected.resolve()) if rejected.exists() else None,
+                        "timing_provenance":"asr-estimated-script-matching-attempt",
+                    },indent=2),encoding="utf-8")
             if error:
                 raise RuntimeError(f"Narration beat {beat.get('id',index)} failed complete-speech verification: {error}") from error
         beat.update(audio_path=str(audio.resolve()),duration=duration,words=words,timing_provenance="asr-estimated-script-matched")

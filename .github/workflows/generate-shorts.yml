@@ -141,3 +141,11 @@ jobs:
             work/production/planning/diagnostics/*.json
             work/production/source-speech/*.json
           if-no-files-found: ignore
+      - name: Upload rejected speech diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shorts-speech-diagnostics-${{ github.run_number }}
+          path: work/production/speech/diagnostics/
+          if-no-files-found: ignore
+          retention-days: 14
