@@ -84,15 +84,15 @@ def _number(value, name: str) -> float:
 
 
 def allocate_shots(shots: list[dict], duration: float, source_duration: float, fps: int) -> list[dict]:
-    """Select source ranges and allocate frames without repeating any range.
+    """Keep every selected visual anchor within an exact output-frame budget.
 
-    Excess supplied material is trimmed at the end. A shortfall may be covered
-    only by slowing the selected footage to at least 85% of its original speed.
-    The final frame count rounds upward so the video never ends before speech.
+    Excess footage is trimmed around each observed midpoint by default. Reviewed
+    shots may request start/end trims. A shortfall retains every source range
+    and permits only a modest slowdown, never looping selected footage.
     """
     duration = _number(duration, "Beat duration")
-    if duration <= 0 or not shots:
-        raise ValueError("Each beat needs a positive duration and at least one source shot")
+    if duration <= 0 or not shots or fps <= 0:
+        raise ValueError("Each beat needs a positive duration, frame rate and at least one source shot")
     clean = []
     for shot in shots:
         start, end = _number(shot.get("start"), "Shot start"), _number(shot.get("end"), "Shot end")
@@ -101,28 +101,62 @@ def allocate_shots(shots: list[dict], duration: float, source_duration: float, f
             raise ValueError(f"Source range {start:g}–{end:g}s is outside the {source_duration:g}s source")
         if not 0 <= focus <= 1:
             raise ValueError("focus_x must be between 0 and 1")
-        clean.append({"start": start, "end": end, "focus_x": focus})
+        trim_mode = shot.get("trim_mode", "center")
+        if trim_mode not in ("start", "center", "end"):
+            raise ValueError("trim_mode must be start, center or end")
+        clean.append({**shot, "start": start, "end": end, "focus_x": focus, "trim_mode": trim_mode})
     target_frames = math.ceil(duration * fps - 1e-7)
     target = target_frames / fps
-    available = sum(s["end"] - s["start"] for s in clean)
+    spans = [s["end"] - s["start"] for s in clean]
+    available = sum(spans)
     speed = min(1., available / target)
     if speed < .85 - 1e-6:
         raise ValueError(f"Only {available:.2f}s of selected footage for {duration:.2f}s narration; add source shots (minimum speed 0.85)")
-    remaining_frames = target_frames
-    allocated = []
-    for index, shot in enumerate(clean):
-        if not remaining_frames:
-            break
-        capacity = (shot["end"] - shot["start"]) / speed
-        frames = min(remaining_frames, max(1, round(capacity * fps)))
-        if index == len(clean) - 1:
-            frames = remaining_frames
-        source_span = min(shot["end"] - shot["start"], frames / fps * speed)
-        allocated.append({**shot, "end": shot["start"] + source_span,
-                          "frames": frames, "duration": frames / fps, "speed": speed})
-        remaining_frames -= frames
-    if remaining_frames:
+    trimming = available > target + 1e-7
+    # Full source spans in the slowdown case can end between output frames.
+    # Their ceilings represent normal frame quantization, not repeated clips.
+    capacities = [(math.floor(span * fps + 1e-7) if trimming else
+                   math.ceil(span * fps / speed - 1e-7)) for span in spans]
+    minimum = math.ceil(.25 * fps)
+    lower = [min(minimum, capacity) if trimming else 1 for capacity in capacities]
+    if any(capacity < 1 for capacity in capacities):
+        raise ValueError("A selected source shot is shorter than one output frame")
+    if sum(lower) > target_frames:
+        raise ValueError("Too many selected shots for the narration frame budget; reduce shots or lengthen narration")
+    if sum(capacities) < target_frames:
+        raise ValueError("Selected footage cannot cover the narration within source frame bounds; add source shots")
+
+    # Find the proportional scale with lower/upper bounds, then allocate
+    # integer frames by largest remainder. No selected anchor disappears.
+    low, high = 0., max(capacity / span for capacity, span in zip(capacities, spans))
+    for _ in range(80):
+        scale = (low + high) / 2
+        quotas = [min(capacity, max(floor, scale * span))
+                  for span, floor, capacity in zip(spans, lower, capacities)]
+        if sum(quotas) < target_frames:
+            low = scale
+        else:
+            high = scale
+    quotas = [min(capacity, max(floor, high * span))
+              for span, floor, capacity in zip(spans, lower, capacities)]
+    frames = [math.floor(q + 1e-9) for q in quotas]
+    remainder = target_frames - sum(frames)
+    order = sorted(range(len(clean)), key=lambda i: (-(quotas[i] - frames[i]), i))
+    for i in order:
+        if remainder and frames[i] < capacities[i]:
+            frames[i] += 1
+            remainder -= 1
+    if remainder:
         raise ValueError("Selected footage could not cover the narration")
+    allocated = []
+    for shot, span, count in zip(clean, spans, frames):
+        source_span = count / fps if trimming else span
+        spare = max(0., span - source_span)
+        offset = {"start": 0., "center": spare / 2, "end": spare}[shot["trim_mode"]]
+        start = shot["start"] + offset
+        allocated.append({**shot, "source_start": shot["start"], "source_end": shot["end"],
+                          "start": start, "end": min(shot["end"], start + source_span),
+                          "frames": count, "duration": count / fps, "speed": speed})
     return allocated
 
 
@@ -151,7 +185,7 @@ def _render_shot(source: Path, shot: dict, target: Path, width: int, height: int
     # The source bed always has an explicit, finite clock. Missing effects/music
     # in a narration shot become zero-valued samples; they cannot truncate voice.
     # Retained dialogue is separately checked for actual source-packet coverage.
-    inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    inputs += ["-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo:d={shot['duration']:.9f}"]
     vf = f"{crop_filter(width, height, shot['focus_x'])},setpts=(PTS-STARTPTS)/{speed:.9f},fps={fps},format=yuv420p"
     silence = f"[1:a]atrim=duration={shot['duration']:.9f},asetpts=PTS-STARTPTS[bed]"
     if has_audio:
@@ -180,7 +214,12 @@ def _master_audio(assembled: Path, target: Path, music: Path | None) -> dict:
     inputs = ["-i", str(assembled)]
     if music:
         # A supplied music track may loop; footage and narration never do.
-        inputs += ["-stream_loop", "-1", "-i", str(music)]
+        edit_duration = _number(_probe(assembled)["duration"], "Edit duration")
+        music_duration = _number(_probe(music)["duration"], "Music duration")
+        if music_duration <= 0:
+            raise ValueError("Music duration must be positive")
+        repeats = max(0, math.ceil(edit_duration / music_duration) - 1)
+        inputs += ["-stream_loop", str(repeats), "-t", f"{edit_duration:.9f}", "-i", str(music)]
         filters = ("[0:a]asplit=2[main][side];[1:a]volume=0.10,aresample=48000[music];"
                    "[music][side]sidechaincompress=threshold=0.02:ratio=8:attack=10:release=250[duck];"
                    "[main][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]")

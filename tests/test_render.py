@@ -28,7 +28,7 @@ def test_invalid_source_range_and_focus_are_rejected():
 
 
 def _ffmpeg(*args):
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-threads", "1", "-filter_threads", "1", *map(str,args)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-threads", "1", "-filter_threads", "1", *map(str,args)], check=True,timeout=30)
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg is required")
@@ -119,3 +119,90 @@ def test_retained_dialogue_rejects_missing_source_audio(tmp_path):
     plan = {"beats": [{"kind": "dialogue", "duration": 2, "shots": [{"start": 0, "end": 2}]}]}
     with pytest.raises(ValueError, match="missing source audio"):
         render_plan(plan, source, tmp_path/"out", width=160, height=160, fps=30)
+
+
+def test_excess_footage_keeps_every_production_anchor_and_midpoint():
+    # Production first beat: the suit appears only in the fourth anchor.
+    lengths = [2.1, 1.183, 1.133, 1.183]
+    selected = [{"start": 10*i, "end": 10*i+length, "focus_x": .2+i*.1, "shot_id": f"S{i+1}"}
+                for i, length in enumerate(lengths)]
+    allocated = allocate_shots(selected, 4, 40, 60)
+    assert len(allocated) == 4
+    assert [s["shot_id"] for s in allocated] == ["S1", "S2", "S3", "S4"]
+    assert sum(s["frames"] for s in allocated) == 240
+    for original, actual in zip(selected, allocated):
+        assert actual["frames"] >= 15
+        assert actual["speed"] == 1
+        assert actual["focus_x"] == original["focus_x"]
+        assert original["start"] <= actual["start"] < actual["end"] <= original["end"]
+        assert actual["start"]+actual["end"] == pytest.approx(original["start"]+original["end"])
+        assert actual["source_start"] == original["start"]
+        assert actual["source_end"] == original["end"]
+
+
+@pytest.mark.parametrize("mode, expected", [("start", (1, 2)), ("center", (2, 3)), ("end", (3, 4))])
+def test_reviewed_trim_modes(mode, expected):
+    shot = allocate_shots([{"start": 1, "end": 4, "trim_mode": mode}], 1, 5, 30)[0]
+    assert (shot["start"], shot["end"]) == expected
+    with pytest.raises(ValueError, match="trim_mode"):
+        allocate_shots([{"start": 0, "end": 1, "trim_mode": "other"}], .5, 5, 30)
+
+
+def test_anchor_budget_rejects_illegible_cuts_and_caps_short_ranges():
+    with pytest.raises(ValueError, match="Too many selected shots"):
+        allocate_shots([{"start": i, "end": i+1} for i in range(5)], 1, 5, 30)
+    shots = allocate_shots([{"start": 0, "end": .1}, {"start": 1, "end": 2}], .5, 3, 30)
+    assert [s["frames"] for s in shots] == [3, 12]
+    assert sum(s["frames"] for s in shots) == 15
+    full = allocate_shots([{"start": 0, "end": 1}, {"start": 2, "end": 3}], 2.2, 4, 30)
+    assert [(s["start"], s["end"]) for s in full] == [(0, 1), (2, 3)]
+    assert all(.85 <= s["speed"] <= 1 for s in full)
+    assert sum(s["frames"] for s in full) == 66
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg is required")
+def test_short_narration_render_retains_all_four_visual_anchors(tmp_path):
+    source, voice = tmp_path/"colors.mp4", tmp_path/"voice.wav"
+    colors = ["0xFF0000", "0x00FF00", "0x0000FF", "0xFFFF00"]
+    inputs = []
+    for color in colors:
+        inputs += ["-f", "lavfi", "-i", f"color=c={color}:s=160x160:r=30:d=1"]
+    _ffmpeg(*inputs, "-filter_complex_threads", "1", "-filter_complex",
+            "[0:v][1:v][2:v][3:v]concat=n=4:v=1:a=0[v]", "-map", "[v]",
+            "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p", source)
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=700:sample_rate=48000:duration=2", voice)
+    plan = {"beats": [{"kind": "narration", "audio_path": str(voice), "duration": 2,
+                       "shots": [{"start": i, "end": i+1} for i in range(4)]}]}
+    result = render_plan(plan, source, tmp_path/"out", width=160, height=160, fps=30)
+    assert result["qc"]["status"] == "passed"
+    # Sample the actual encoded video, not merely the allocated plan. Old
+    # tail-trimming rendered red and green only, silently losing blue/yellow.
+    for at, expected in zip([.25, .75, 1.25, 1.75], [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]):
+        rgb = subprocess.check_output(["ffmpeg", "-v", "error", "-threads", "1", "-ss", str(at),
+                                       "-i", str(result["video"]), "-vf", "scale=1:1", "-frames:v", "1",
+                                       "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        assert len(rgb) == 3
+        assert all(abs(actual-target) < 35 for actual, target in zip(rgb, expected))
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='FFmpeg is required')
+def test_short_looping_music_is_bounded_by_the_actual_edit(tmp_path):
+    source=tmp_path/'silent-video.mp4'
+    voice=tmp_path/'voice-tone.wav'
+    music=tmp_path/'short-music.wav'
+    _ffmpeg('-f','lavfi','-i','color=c=blue:s=160x160:r=30:d=2',
+            '-c:v','libx264','-threads','1',source)
+    _ffmpeg('-f','lavfi','-i','sine=frequency=700:sample_rate=48000:duration=1.2',voice)
+    _ffmpeg('-f','lavfi','-i','sine=frequency=220:sample_rate=48000:duration=0.25',music)
+    plan={'beats':[{'id':'N','kind':'narration','text':'Synthetic audio fixture.',
+                   'audio_path':str(voice),'duration':1.2,'timeline_start':0,
+                   'shots':[{'start':0,'end':2}]}]}
+    result=render_plan(plan,source,tmp_path/'output',160,160,30,music)
+    assert result['qc']['status']=='passed'
+    assert 1.15<=result['qc']['duration_seconds']<=1.35
+    assert result['qc']['audio_end_seconds']>=1.15
+    data=subprocess.check_output(['ffmpeg','-v','error','-ss','0.7','-i',str(result['video']),
+                                  '-t','0.3','-vn','-f','s16le','-ac','1','-ar','8000','-'],timeout=30)
+    samples=array('h',data)
+    crossings=sum(a<0<=b for a,b in zip(samples,samples[1:]))/.3
+    assert 650<crossings<750  # The supplied voice remains dominant after music repeats.

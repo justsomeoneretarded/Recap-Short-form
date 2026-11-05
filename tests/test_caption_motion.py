@@ -95,7 +95,7 @@ def test_ffmpeg_renders_more_words_later_without_recentring(tmp_path):
         "color=c=black:s=640x640:r=10:d=2",
         "-vf",r"ass=captions.ass,select=eq(n\,3)+eq(n\,13)+eq(n\,18)",
         "-vsync","0","-frames:v","3","-threads","1","-f","rawvideo","-pix_fmt","gray","pipe:1",
-    ],cwd=tmp_path,check=True,capture_output=True)
+    ],cwd=tmp_path,check=True,capture_output=True,timeout=30)
     frame_size=640*640
     assert len(result.stdout)==frame_size*3
     early=result.stdout[:frame_size]

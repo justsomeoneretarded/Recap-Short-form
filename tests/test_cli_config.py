@@ -29,7 +29,7 @@ def test_complete_cli_path_with_reviewed_audio(tmp_path):
     source=tmp_path/'source.mp4'
     audio=tmp_path/'tone.wav'
     def ff(*args):
-        subprocess.run(['ffmpeg','-y','-v','error','-threads','1','-filter_threads','1',*map(str,args)],check=True)
+        subprocess.run(['ffmpeg','-y','-v','error','-threads','1','-filter_threads','1',*map(str,args)],check=True,timeout=30)
     ff('-f','lavfi','-i','testsrc2=size=160x160:rate=30:duration=2',
        '-c:v','libx264','-threads','1',source)
     ff('-f','lavfi','-i','sine=frequency=440:sample_rate=48000:duration=1.5',audio)
@@ -66,7 +66,7 @@ def test_automatic_path_keeps_source_speech_through_planning_and_render(tmp_path
     from shorts_pipeline import sources,source_speech,planner
     source=tmp_path/'synthetic.mp4';voice=tmp_path/'narration.wav'
     def ff(*args):
-        subprocess.run(['ffmpeg','-y','-v','error','-threads','1','-filter_threads','1',*map(str,args)],check=True)
+        subprocess.run(['ffmpeg','-y','-v','error','-threads','1','-filter_threads','1',*map(str,args)],check=True,timeout=30)
     ff('-f','lavfi','-i','testsrc2=size=160x160:rate=30:duration=4',
        '-f','lavfi','-i','sine=frequency=250:sample_rate=48000:duration=4',
        '-c:v','libx264','-threads','1','-c:a','aac','-shortest',source)
