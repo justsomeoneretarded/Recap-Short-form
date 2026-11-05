@@ -220,8 +220,12 @@ def _master_audio(assembled: Path, target: Path, music: Path | None) -> dict:
             raise ValueError("Music duration must be positive")
         repeats = max(0, math.ceil(edit_duration / music_duration) - 1)
         inputs += ["-stream_loop", str(repeats), "-t", f"{edit_duration:.9f}", "-i", str(music)]
-        filters = ("[0:a]asplit=2[main][side];[1:a]volume=0.10,aresample=48000[music];"
-                   "[music][side]sidechaincompress=threshold=0.02:ratio=8:attack=10:release=250[duck];"
+        # Keep every branch alive through the edit. FFmpeg 6 can otherwise
+        # propagate the loop/sidechain EOF through asplit and cut the voice tail.
+        filters = (f"[0:a]asplit=2[main][side];[1:a]volume=0.10,aresample=48000,"
+                   f"apad=whole_dur={edit_duration:.9f},atrim=duration={edit_duration:.9f}[music];"
+                   "[music][side]sidechaincompress=threshold=0.02:ratio=8:attack=10:release=250,"
+                   f"apad=whole_dur={edit_duration:.9f},atrim=duration={edit_duration:.9f}[duck];"
                    "[main][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]")
         _run(_ffmpeg(*inputs, "-filter_complex", filters, "-map", "0:v:0", "-map", "[mix]",
                      "-c:v", "copy", "-c:a", "pcm_s16le", str(target)))
@@ -376,7 +380,8 @@ def render_plan(plan: dict, source: Path, outdir: Path, width: int = 1080, heigh
         last_voice_endpoint = max((b["render_timeline_start"]+b["duration"] for b in beats
                                    if b.get("kind", "narration") == "narration"), default=0.)
         if audio_end is None or audio_end < last_voice_endpoint-.02 or audio_end < frame_time-.065:
-            raise RuntimeError("Rendered audio ends before the planned voice/timeline endpoint")
+            raise RuntimeError(f"Rendered audio ends before the planned voice/timeline endpoint: "
+                               f"audio={audio_end!r}s, voice={last_voice_endpoint:.6f}s, edit={frame_time:.6f}s")
         if abs(actual["duration"] - frame_time) > .18:
             raise RuntimeError(f"Rendered duration {actual['duration']:.3f}s differs from planned {frame_time:.3f}s")
         if actual["duration"] > 180.001:

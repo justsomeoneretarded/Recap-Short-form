@@ -206,3 +206,12 @@ def test_short_looping_music_is_bounded_by_the_actual_edit(tmp_path):
     samples=array('h',data)
     crossings=sum(a<0<=b for a,b in zip(samples,samples[1:]))/.3
     assert 650<crossings<750  # The supplied voice remains dominant after music repeats.
+    # Endpoint metadata alone can pass after silence-padding a truncated voice.
+    # Verify the actual last portion of the supplied tone remains audible too.
+    tail=subprocess.check_output(['ffmpeg','-v','error','-ss','1.10','-i',str(result['video']),
+                                  '-t','0.08','-vn','-f','s16le','-ac','1','-ar','8000','-'],timeout=30)
+    end_samples=array('h',tail)
+    assert len(end_samples)>=600
+    assert sum(abs(sample) for sample in end_samples)/len(end_samples)>500
+    tail_frequency=sum(a<0<=b for a,b in zip(end_samples,end_samples[1:]))/(len(end_samples)/8000)
+    assert 650<tail_frequency<750

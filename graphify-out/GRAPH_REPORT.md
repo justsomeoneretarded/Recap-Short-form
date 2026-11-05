@@ -1,7 +1,7 @@
 # Graph Report - Recap-Short-form  (2026-11-05)
 
 ## Corpus Check
-- 38 files · ~52,795 words
+- 38 files · ~52,965 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 1 file(s) not represented in the graph (top: (none) 1)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `a9e4fa2f`
+- Built from commit: `35b482a2`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -44,14 +44,14 @@
 ## Surprising Connections (you probably didn't know these)
 - `test_ffmpeg_detector_debounces_adjacent_frame_triggers()` --calls--> `_ffmpeg_boundaries()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/sources.py
-- `test_segments_cover_full_source_without_gaps()` --calls--> `_segments()`  [EXTRACTED]
+- `test_failed_download_is_not_cached()` --calls--> `resolve_source()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/sources.py
 - `test_remote_sources_require_https_without_embedded_credentials()` --calls--> `resolve_source()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/sources.py
-- `test_failed_download_is_not_cached()` --calls--> `resolve_source()`  [EXTRACTED]
-  tests/test_sources_planner.py → shorts_pipeline/sources.py
-- `test_unknown_scene_id_is_never_substituted()` --calls--> `_normalize_model_plan()`  [EXTRACTED]
+- `test_reverse_chronology_within_a_beat_is_rejected()` --calls--> `_normalize_model_plan()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/planner.py
+- `test_segments_cover_full_source_without_gaps()` --calls--> `_segments()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/sources.py
 
 ## Import Cycles
 - None detected.
@@ -103,7 +103,7 @@ Cohesion: 0.21
 Nodes (16): _ass_time(), _escape_ass(), _groups(), _srt_time(), _word_fade_text(), _wrap(), write_captions(), _events() (+8 more)
 
 ## Knowledge Gaps
-- **83 isolated node(s):** `name`, `on`, `contents`, `runs-on`, `timeout-minutes` (+78 more)
+- **83 isolated node(s):** `default`, `description`, `options`, `type`, `description` (+78 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 160 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **6 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -112,7 +112,7 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `make_plan()` connect `test_sources_planner.py` to `sources.py`, `array / copy`, `argparse / pathlib`?**
   _High betweenness centrality (0.002) - this node is a cross-community bridge._
-- **What connects `name`, `on`, `contents` to the rest of the system?**
+- **What connects `default`, `description`, `options` to the rest of the system?**
   _83 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `test_sources_planner.py` be split into smaller, more focused modules?**
   _Cohesion score 0.05636114911080711 - nodes in this community are weakly interconnected._
