@@ -36,6 +36,7 @@ class Unit:
     peaks: list[float] = field(default_factory=list)
     alternates: list[str] = field(default_factory=list)
     clip_seconds: float = 0.0
+    intensity: float = 0.5   # 0 calm talk … 1 fast action (from the clip's cutting rate)
 
     @property
     def seconds(self) -> float:
@@ -65,6 +66,8 @@ def units_from(clips: list[dict], screening: dict[str, dict]) -> list[Unit]:
         if height and height < 720:
             continue  # soft re-uploads look bad once cropped
         clip_seconds = float(clip.get("duration") or (report or {}).get("duration") or 0.0)
+        shot = ((report or {}).get("cutting") or {}).get("average_shot_seconds")
+        intensity = 0.5 if not shot else min(1.0, max(0.0, (7.0 - float(shot)) / 5.0))  # 2 s shots → 1, 7 s → 0
         score = clip.get("score", {}).get("total", 0.0)
         if clip_seconds >= LONG_UPLOAD_SECONDS:
             score *= 0.85  # a long excerpt is less of an audience signal for any one scene in it
@@ -80,7 +83,7 @@ def units_from(clips: list[dict], screening: dict[str, dict]) -> list[Unit]:
                 s, e = start + k * step, start + (k + 1) * step
                 units.append(Unit(clip["id"], clip.get("title", ""), s, e, max(0.0, piece["offset"] + s),
                                   piece["offset"] + e, score, height, [p for p in peaks if s <= p <= e],
-                                  clip_seconds=clip_seconds))
+                                  clip_seconds=clip_seconds, intensity=intensity))
     return units
 
 
@@ -104,7 +107,9 @@ def _arc_score(units: list[Unit], target: float) -> float:
     audience = sum(u.score * u.seconds for u in units) / max(1.0, footage)
     peaks = min(1.0, sum(len(u.peaks) for u in units) / 4)
     coverage = min(1.0, footage / max(1.0, target))
-    return round(0.55 * audience + 0.2 * peaks + 0.25 * coverage, 4)
+    intensity = sum(u.intensity * u.seconds for u in units) / max(1.0, footage)
+    # Shorts live on visible action: a story of fast-cut scenes beats one of people talking at a table.
+    return round(0.45 * audience + 0.15 * peaks + 0.2 * coverage + 0.2 * intensity, 4)
 
 
 def candidate_arcs(units: list[Unit], target: float) -> list[list[Unit]]:

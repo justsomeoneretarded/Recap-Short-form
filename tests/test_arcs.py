@@ -58,3 +58,12 @@ def test_long_preview_does_not_swallow_focused_scene_uploads_and_low_res_is_drop
     assert any(u.clip_id == "scene" for u in units)                      # the focused scene upload survives
     arcs = a.choose_arcs(units, 60)
     assert all(arc["footage_seconds"] <= a.ARC_FOOTAGE_FACTOR * 60 + a.MAX_UNIT_SECONDS for arc in arcs)
+
+
+def test_action_scenes_rank_above_talking_scenes():
+    talk = clip("talk", 0, duration=120, score=0.85)
+    fight = clip("fight", 3000, duration=120, score=0.85)
+    screening = {"talk": {"accept": True, "cutting": {"average_shot_seconds": 6.5}},
+                 "fight": {"accept": True, "cutting": {"average_shot_seconds": 2.0}}}
+    arcs = a.choose_arcs(a.merge_duplicates(a.units_from([talk, fight], screening)), 90, max_shorts=1)
+    assert arcs[0]["scenes"][0]["clip_id"] == "fight"
