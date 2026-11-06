@@ -206,7 +206,7 @@ def _preview(voiceover: dict, target: Path) -> None:
 
 
 def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, narrator: str = 'warguy',
-              model: str = 'original', max_arcs: int = 5) -> dict:
+              model: str = 'original', max_arcs: int = 5, only: str | None = None) -> dict:
     """Scripts → voiceover.json, preview.wav and captions (square + vertical) per story."""
     from .discovery import YouTube
     from .narration import synthesize_voiceover, write_short_captions
@@ -216,7 +216,9 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
         if (discover/'screening.json').exists() else {}
     youtube = YouTube()
     rows = []
-    for result in json.loads((scripts/'scripts.json').read_text())[:max_arcs]:
+    chosen = json.loads((scripts/'scripts.json').read_text())
+    chosen = [r for r in chosen if r['arc'] == only] if only else chosen[:max_arcs]
+    for result in chosen:
         arc = arcs[result['arc']]
         footage = {}
         for scene in arc['scenes']:
@@ -371,6 +373,7 @@ def main(argv=None) -> int:
     speak.add_argument('--narrator',default='warguy',choices=['warguy','kit-laser','female'])
     speak.add_argument('--tts-model',default='original',choices=['original','turbo','nano'])
     speak.add_argument('--max-arcs',type=int,default=5)
+    speak.add_argument('--arc',default=None,help='Voice only this story id (e.g. arc2)')
     cut = sub.add_parser('render', help='Edit and render the voiced Shorts (square + vertical, 60 fps).')
     cut.add_argument('--discover',type=Path,default=Path('output/discover'))
     cut.add_argument('--voice',type=Path,default=Path('output/voice'))
@@ -401,7 +404,7 @@ def main(argv=None) -> int:
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='voice':
             summary=run_voice(args.discover,args.scripts,args.output,args.workdir,narrator=args.narrator,
-                              model=args.tts_model,max_arcs=args.max_arcs)
+                              model=args.tts_model,max_arcs=args.max_arcs,only=args.arc)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='render':
             summary=run_render(args.discover,args.voice,args.output,args.workdir,

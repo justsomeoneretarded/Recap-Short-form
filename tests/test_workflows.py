@@ -4,17 +4,34 @@ import yaml
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def test_short_workflow_is_separate_and_user_text_is_structured():
-    path=ROOT/'.github/workflows/generate-shorts.yml'
-    workflow=yaml.load(path.read_text(),Loader=yaml.BaseLoader)
+def _load(name):
+    return yaml.load((ROOT/'.github/workflows'/name).read_text(),Loader=yaml.BaseLoader)
+
+
+def test_generate_shorts_has_only_the_four_inputs():
+    workflow=_load('generate-shorts.yml')
     assert workflow['name']=='Generate Shorts'
     inputs=workflow['on']['workflow_dispatch']['inputs']
-    assert len(inputs)<=10
+    assert set(inputs)=={'movie','narrator','length','speech_model'}
     assert inputs['narrator']['options']==['warguy','kit-laser','female']
-    steps=workflow['jobs']['generate']['steps']
-    validation=next(i for i,s in enumerate(steps) if s.get('name')=='Validate inputs before model downloads')
-    models=next(i for i,s in enumerate(steps) if s.get('name')=='Start Ollama and prepare models')
-    assert validation<models
-    assert steps[validation]['env']['SHORTS_INPUTS']=='${{ toJSON(inputs) }}'
-    assert all('${{ inputs.' not in s.get('run','') for s in steps)
-    assert 'pull_request' not in workflow['on']
+    assert inputs['speech_model']['options']==['original','turbo','nano']
+    assert 'pull_request' not in workflow['on'] and 'push' not in workflow['on']
+
+
+def test_user_text_never_reaches_shell_code_directly():
+    workflow=_load('generate-shorts.yml')
+    validate=workflow['jobs']['validate']['steps'][1]
+    assert validate['env']['SHORTS_INPUTS']=='${{ toJSON(inputs) }}'
+    for job in workflow['jobs'].values():
+        for step in job.get('steps',[]):
+            assert '${{ inputs.' not in step.get('run','')
+            assert '${{ needs.validate.outputs' not in step.get('run','')
+
+
+def test_pipeline_order_and_per_story_matrix():
+    jobs=_load('generate-shorts.yml')['jobs']
+    assert jobs['discover']['needs']=='validate'
+    assert jobs['make']['strategy']['matrix']['arc']=='${{ fromJSON(needs.write.outputs.arcs) }}'
+    runs=' '.join(s.get('run','') for s in jobs['make']['steps'])
+    assert runs.index('shorts_pipeline voice')<runs.index('shorts_pipeline render')<runs.index('shorts_pipeline package')
+    assert 'secrets.YOUTUBE_COOKIES' in str(jobs['make']) and 'setup-node' in str(jobs['discover'])

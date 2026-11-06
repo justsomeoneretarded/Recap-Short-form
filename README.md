@@ -6,28 +6,44 @@ The initial style profile comes from eight owner-supplied references: action bef
 
 Read the [reference analysis](docs/reference-analysis.md), [ten-repository comparison](docs/technology-comparison.md), and [validation record](docs/validation.md). The [complete automatic workflow passed](https://github.com/justsomeoneretarded/Recap-Short-form/actions/runs/42165849180), producing a [14-second Warguy engineering preview](docs/validation-samples/automatic-warguy-pilot.mp4) at1080square/60fps. This test reused verified source analysis and generated a fresh script, voice and edit. The reference already has captions/narration, which overlap the generated content; the sample is not channel-ready.
 
-## Generate a Short on GitHub
+## Generate Shorts on GitHub (one button)
 
-Open **Actions → Generate Shorts → Run workflow**. Enter:
+Open **Actions → Generate Shorts → Run workflow** and fill in four things:
 
 | Field | What to provide |
 |---|---|
-| Title | Your Short's title |
-| Source URL | A direct HTTPS URL to source footage, including a GitHub Release attachment URL |
-| Brief | The scene/story angle and editing instructions |
-| Story notes | Verified names, context and events the script may use |
-| Narrator | Warguy, Kit Laser, or Female |
-| Maximum seconds | 15–180; default 150 |
-| Aspect | Square or vertical |
-| Speech model | Original, Turbo or Nano |
-| Writer | Gemma4 12B by default; Qwen3 4B is a smaller legacy option |
-| Source window | Optional start,end in seconds to analyze a relevant excerpt |
+| Movie | The movie name, optionally with its year: `Nobody (2021)` |
+| Narrator | Warguy (default), Kit Laser or Female |
+| Length | 60, 90, 120, 150 (default) or 180 seconds per Short |
+| Speech model | Original Chatterbox (best), Turbo or Nano (faster) |
 
-Use clean movie/scene footage for production. The eight reference Shorts already contain narration and burned captions; they are style references and engineering test material. A movie title alone cannot supply movie footage. Use a relevant source excerpt containing the actions you want narrated. Automatic planning describes every indexed span using a representative midpoint frame; it does not continuously understand all motion or speech. The default 120-span cap fails explicitly on larger footage. For full films, select an excerpt using the Source window field, prepare an excerpt file, deliberately raise the CLI cap, or provide a reviewed storyboard. With a source window, storyboard times are relative to that excerpt; provenance records its offset in the original. YouTube downloading is supported through yt-dlp but can be blocked by the runner/network; direct media is the reliable alternative tested here.
+Everything else is automatic:
 
-After success, download **Artifacts → shorts-N**. It includes `final.mp4`, script and description, SRT/ASS captions, storyboard, measured timeline, three cover candidates, contact sheet, source provenance, caption-timing provenance, quality report and execution status. Cover candidates are sampled frames for selection, not evidence of an optimized thumbnail system. There is no automatic YouTube upload.
+1. **Research** — TMDB (title, cast photos, studio clips), Wikipedia plot, and the movie's full English
+   subtitles from OpenSubtitles.
+2. **Find clips** on any YouTube channel; reject trailers, recaps, reactions, edits, re-uploads and
+   other films; rank by views, subscribers, verified checkmark, likes, Most Replayed and quality.
+3. **Place each clip inside the movie** by matching its dialogue (Whisper) against the subtitles;
+   compilations are split into scenes.
+4. **Screen** downloads: burned-in subtitles, watermarks, promo/end cards, mirrored uploads, narration.
+5. **Stories**: nearby scenes become up to five Shorts that never share footage.
+6. **Write** each script with Qwen3 14B from the movie's real dialogue (3 drafts, checks + judge, fix-up),
+   keeping up to three real movie lines.
+7. **Voice** with the chosen narrator at ~195 words/minute; word-exact captions.
+8. **Edit and render** square 1080×1080 and vertical 1080×1920 at true 60 fps (RIFE, or motion
+   blending as a fallback), smart face/action framing, −14 LUFS.
+9. **Package**: covers, title options, description, tags, captions and an automatic quality review.
 
-The workflow starts local models on the Actions runner; no paid inference API or TMDB key is required. The first run downloads substantial models and can take a long time on CPU. Account Actions usage/storage limits apply. The default writer Gemma4 12B is about 8 GB of weights; the optional legacy Qwen3 4B is about 2.5 GB. Qwen3-VL 2B is about 1.9 GB and Chatterbox weights about 3 GB. For the default Gemma chain, prefer at least 16 GB RAM and 25 GB free disk; the smaller Qwen chain needs about 18 GB free disk. Preflight rejects insufficient capacity before downloading models. These sizes establish feasibility, not editorial quality. The smaller local test workspace could not run the complete configured model chain; see validation.
+Download **Artifacts → shorts**: one folder per Short with `final-square.mp4`, `final-vertical.mp4`,
+`captions-*.srt`, six covers, `title-options.txt`, `description.txt`, `tags.txt`, `contact-sheet.jpg`
+and `review.html`.
+
+Repository secrets: `TMDB_READ_TOKEN` and `OPENSUBTITLES_API_KEY` (required for good stories), and
+optionally `YOUTUBE_COOKIES` (a Netscape `cookies.txt` export, ideally from a spare account) to reduce
+YouTube's bot checks. No paid APIs are used. Footage belongs to its owners; check your platform's
+rules before publishing.
+
+The previous single-source command (`python -m shorts_pipeline generate --request …`) still works locally.
 
 ## Local setup
 
