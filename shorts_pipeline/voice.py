@@ -130,7 +130,21 @@ def validate_words(text: str, words: list[dict], duration: float) -> list[dict]:
     return clean
 
 
-def _align_script(text: str, recognized: list[dict], duration: float) -> list[dict]:
+# Short function words that recognisers often miss in fast speech. A missing content word
+# ("bag", "not", a name) still fails the narrator check.
+_SMALL_WORDS = {"a", "an", "the", "of", "to", "and", "in", "on", "at", "for", "is", "it", "as", "but", "so",
+                "he", "she", "his", "her", "him", "they", "them", "that", "this", "with", "into", "from", "by"}
+
+
+def _align_script(text: str, recognized: list[dict], duration: float, *, tolerant: bool = False) -> list[dict]:
+    """Script word timings from what speech recognition heard.
+
+    Strict mode (imported audio, source dialogue) needs a near-perfect match. Tolerant mode is for
+    our own narrator takes, where the exact script is known and the words are later timed by
+    forced alignment anyway: small recognition slips (a misheard name, "gonna" for "going to",
+    one word split in two) are accepted and timed from their neighbours, while a take that really
+    skipped words (more than a few, or more than ~8 % of the script) is still rejected.
+    """
     script = [w for w in text.split() if _normal(w)]
     spoken = [w for w in recognized if _normal(w["word"])]
     if not script or not spoken:
@@ -142,14 +156,22 @@ def _align_script(text: str, recognized: list[dict], duration: float) -> list[di
         for index,unit in enumerate(units):
             spoken_units.append({"unit":unit,"start":word["start"]+span*index/len(units),"end":word["start"]+span*(index+1)/len(units)})
     matcher = SequenceMatcher(None, [unit for unit,_ in script_units], [w["unit"] for w in spoken_units], autojunk=False)
-    if matcher.ratio() < .86:
+    opcodes = matcher.get_opcodes()
+    differing = sum(max(j - i, b - a) for tag, i, j, a, b in opcodes if tag != "equal")
+    slack = max(3, math.floor(len(script_units) * .08))
+    if matcher.ratio() < .86 and not (tolerant and differing <= slack):
         raise ValueError("Generated speech does not sufficiently match the complete script.")
+    missing = sum(j - i for tag, i, j, a, b in opcodes if tag in ("delete", "replace") and (j - i) > (b - a))
+    if tolerant and missing > slack:
+        raise ValueError(f"Speech skipped {missing} script words.")
     matches = []
-    for tag, i, j, a, b in matcher.get_opcodes():
+    for tag, i, j, a, b in opcodes:
         if tag == "delete":
+            if tolerant and all(unit in _SMALL_WORDS for unit, _ in script_units[i:j]):
+                continue  # a quiet "the"/"a" the recogniser missed; timed from its neighbours below
             raise ValueError(f"Speech verification could not find script words: {' '.join(unit for unit,_ in script_units[i:j])}")
         if tag == "insert":
-            if b - a > max(1, math.floor(len(script)*.03)):
+            if b - a > (slack if tolerant else max(1, math.floor(len(script)*.03))):
                 raise ValueError("Speech verification found extra spoken words.")
             continue
         if tag == "equal":
@@ -158,12 +180,40 @@ def _align_script(text: str, recognized: list[dict], duration: float) -> list[di
             # ASR commonly misspells names/numbers. Preserve the written script,
             # and explicitly classify these times as estimates, not forced alignment.
             if j-i != b-a:
-                raise ValueError("ASR word counts differ; retry speech or provide reviewed word timings.")
+                if not tolerant:
+                    raise ValueError("ASR word counts differ; retry speech or provide reviewed word timings.")
+                # Spread the heard span evenly over the script words it stands for.
+                start, end = spoken_units[a]["start"], spoken_units[b-1]["end"]
+                step = (end - start) / (j - i)
+                matches.extend((script_units[k][1], {"start": start + step*(k-i), "end": start + step*(k-i+1)})
+                               for k in range(i, j))
+                continue
             matches.extend((script_units[k][1],spoken_units[a+k-i]) for k in range(i,j))
     grouped={index:[] for index in range(len(script))}
     for index,word in matches:
         grouped[index].append(word)
-    aligned=[{"word":word,"start":grouped[index][0]["start"],"end":grouped[index][-1]["end"]}
+    if tolerant:  # words recognition missed get the gap between their neighbours
+        known = [i for i in range(len(script)) if grouped[i]]
+        if not known:
+            raise ValueError("Speech verification found no matching words.")
+        for index in range(len(script)):
+            if grouped[index]:
+                continue
+            before = max((k for k in known if k < index), default=None)
+            after = min((k for k in known if k > index), default=None)
+            lo = grouped[before][-1]["end"] if before is not None else 0.0
+            hi = grouped[after][0]["start"] if after is not None else duration
+            run_start = before + 1 if before is not None else 0
+            run_end = after if after is not None else len(script)
+            step = max(0.0, hi - lo) / max(1, run_end - run_start)
+            position = index - run_start
+            grouped[index] = [{"start": lo + step*position, "end": lo + step*(position+1) if step else lo + .03}]
+        for index in range(1, len(script)):  # keep order after estimates
+            if grouped[index][0]["start"] < grouped[index-1][-1]["end"]:
+                grouped[index][0] = {**grouped[index][0], "start": grouped[index-1][-1]["end"]}
+            if grouped[index][-1]["end"] <= grouped[index][0]["start"]:
+                grouped[index][-1] = {**grouped[index][-1], "end": grouped[index][0]["start"] + .03}
+    aligned=[{"word":word,"start":grouped[index][0]["start"],"end":min(grouped[index][-1]["end"], duration)}
              for index,word in enumerate(script)]
     return validate_words(text, aligned, duration)
 
@@ -172,7 +222,7 @@ class _Verifier:
     def __init__(self):
         self.model = None
 
-    def transcribe(self, path: Path) -> list[dict]:
+    def transcribe(self, path: Path, hint: str = "") -> list[dict]:
         if self.model is None:
             try:
                 from faster_whisper import WhisperModel
@@ -181,7 +231,8 @@ class _Verifier:
             self.model = WhisperModel(os.getenv("SHORTS_WHISPER_MODEL", "base.en"), device="cpu", compute_type="int8",
                                       cpu_threads=max(1, int(os.getenv("SHORTS_CPU_THREADS", "2"))))
         segments, _ = self.model.transcribe(str(path), language="en", beam_size=3, word_timestamps=True,
-                                             vad_filter=True, condition_on_previous_text=False)
+                                             vad_filter=True, condition_on_previous_text=False,
+                                             initial_prompt=hint or None)
         return [{"word": w.word.strip(), "start": w.start, "end": w.end}
                 for segment in segments for w in (segment.words or []) if w.word.strip()]
 
@@ -303,18 +354,21 @@ def synthesize_plan(plan: dict, narrator: str, workdir: Path, model: str = "orig
             if engine is None:
                 engine=_Synthesizer(reference,model)
             error=None
-            for attempt in range(2):
+            names=" ".join(dict.fromkeys(re.findall(r"\b[A-Z][a-zA-Z'’-]+", text)))  # spelling hints only
+            for attempt in range(3):
                 spoken=None
                 duration=None
                 stage="generation"
                 try:
-                    engine.generate(text,audio,beat.get("delivery","normal"),int(fingerprint[:8],16)+attempt*101)
+                    # The last try uses the careful delivery: slower, but it rarely drops words.
+                    delivery=beat.get("delivery","normal") if attempt < 2 else "normal"
+                    engine.generate(text,audio,delivery,int(fingerprint[:8],16)+attempt*101)
                     stage="duration"
                     duration=_duration(audio)
                     stage="transcription"
-                    spoken=verifier.transcribe(audio)
+                    spoken=verifier.transcribe(audio, f"Names: {names}." if names else "")
                     stage="alignment"
-                    words=_align_script(text,spoken,duration)
+                    words=_align_script(text,spoken,duration,tolerant=True)
                     metadata.write_text(json.dumps({"words":words,"duration":duration,"model":model,"narrator":narrator,"timing_provenance":"asr-estimated-script-matched"},indent=2))
                     error=None
                     break

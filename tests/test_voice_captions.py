@@ -130,8 +130,8 @@ def test_usd_notation_and_explicit_currency_forms_share_estimated_intervals(text
 @pytest.mark.parametrize('recover', [False,True])
 def test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(tmp_path,monkeypatch,recover):
     text='He takes the bag and runs.'
-    omitted=[{'word':word,'start':index*.2,'end':index*.2+.15}
-             for index,word in enumerate('He takes bag and runs.'.split())]
+    omitted=[{'word':word,'start':index*.2,'end':index*.2+.15}  # the take dropped a content word ("bag")
+             for index,word in enumerate('He takes the and runs.'.split())]
     complete=[{'word':word,'start':index*.2,'end':index*.2+.15}
               for index,word in enumerate(text.split())]
     reference=tmp_path/'warguy.ogg'
@@ -145,7 +145,7 @@ def test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(tm
             calls.append(script)
             path.write_bytes(f'attempt-{len(calls)}'.encode())
     class Verifier:
-        def transcribe(self,path):
+        def transcribe(self,path,hint=''):
             return complete if recover and len(calls)%2==0 else omitted
     monkeypatch.setattr(voice,'_Synthesizer',Synthesizer)
     monkeypatch.setattr(voice,'_Verifier',Verifier)
@@ -160,7 +160,7 @@ def test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(tm
         diagnostics=tmp_path/'speech'/'diagnostics'
         errors=sorted(diagnostics.glob('*.json'))
         rejected=sorted(diagnostics.glob('*.wav'))
-        assert len(errors)==len(rejected)==(1 if recover else 2)
+        assert len(errors)==len(rejected)==(1 if recover else 3)
         for error in errors:
             record=json.loads(error.read_text())
             assert record['text']==text
@@ -168,8 +168,9 @@ def test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(tm
             assert record['duration']==2
             assert record['stage']=='alignment'
             assert record['error_type']=='ValueError'
-            assert 'could not find script words' in record['error']
+            assert 'could not find script words' in record['error'] or 'skipped' in record['error'] \
+                or 'sufficiently match' in record['error']
             assert Path(record['audio_path']).read_bytes().startswith(b'attempt-')
-    assert len(calls)==(2 if recover else 4)
+    assert len(calls)==(2 if recover else 6)  # three tries per Short, the last in the careful delivery
     # Failed attempts never acquire success metadata or masquerade as cache hits.
     assert len(list((tmp_path/'speech').glob('*.json')))==(1 if recover else 0)

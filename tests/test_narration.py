@@ -78,3 +78,29 @@ def test_preview_mixes_beats_at_their_positions(tmp_path):
     _preview({"beats": [{"audio_path": str(a), "timeline_start": 0.0}, {"audio_path": str(b), "timeline_start": 2.0}]},
              target)
     assert abs(n._duration(target) - 3.0) < 0.1
+
+
+def _heard(words, step=0.3):
+    return [{"word": w, "start": i * step, "end": i * step + 0.25} for i, w in enumerate(words)]
+
+
+def test_narrator_check_accepts_small_recognition_slips_but_not_skipped_speech():
+    import pytest
+    from shorts_pipeline.voice import _align_script
+    text = "John Wick limps into the Continental and Winston refuses him shelter so he runs again tonight"
+    # A misheard name and a quiet "the" not heard: still the whole script.
+    heard = _heard("Jon Wick limps into Continental and Winston refuses him shelter so he runs again tonight".split())
+    words = _align_script(text, heard, 6.0, tolerant=True)
+    assert [w["word"] for w in words] == text.split()
+    assert all(b["start"] >= a["end"] - 0.04 for a, b in zip(words, words[1:]))
+    with pytest.raises(ValueError):  # strict mode (imported audio) stays strict
+        _align_script(text, heard, 6.0)
+    skipped = _heard("John Wick limps into the Continental tonight".split())
+    with pytest.raises(ValueError):  # half the script missing is a bad take
+        _align_script(text, skipped, 6.0, tolerant=True)
+
+    dropped = _heard("John Wick limps into the Continental and Winston refuses him so he runs again tonight".split())
+    with pytest.raises(ValueError):  # a missing content word ("shelter") fails
+        _align_script(text, dropped, 6.0, tolerant=True)
+    split = _heard("John Wick limps into the Continental and Wins ton refuses him shelter so he runs again tonight".split())
+    assert len(_align_script(text, split, 6.0, tolerant=True)) == len(text.split())  # one name heard as two words
