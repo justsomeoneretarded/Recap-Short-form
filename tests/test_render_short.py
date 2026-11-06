@@ -45,10 +45,13 @@ def test_rife_only_on_moving_shots_within_budget_and_at_native_size(tmp_path, mo
     assert rs.motion(still, 0, 2) < rs.CALM_MOTION < rs.motion(moving, 0, 2)
     calls = []
 
-    def fake_rife(video, target, frames_out, size):
-        calls.append(rs.probe(video)["width"])
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"fps=60,scale={size[0]}:{size[1]}",
-                        "-c:a", "copy", str(target)], check=True)
+    def fake_rife(frames, audio, target, frames_out, size):
+        from PIL import Image
+        first = sorted(frames.glob("*.jpg"))
+        calls.append(Image.open(first[0]).width)  # frames go to RIFE at native crop size
+        assert len(first) >= 30 and audio.exists()
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-framerate", "24", "-i", str(frames / "%06d.jpg"), "-i", str(audio),
+                        "-vf", f"fps=60,scale={size[0]}:{size[1]}", "-c:a", "pcm_s16le", "-shortest", str(target)], check=True)
 
     monkeypatch.setattr(rs, "rife_available", lambda: True)
     monkeypatch.setattr(rs, "_rife", fake_rife)

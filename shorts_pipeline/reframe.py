@@ -29,15 +29,14 @@ def sample(video: Path, start: float, end: float, count: int = 6) -> list[np.nda
     width, height = info["width"], info["height"]
     out_w = SAMPLE_WIDTH
     out_h = int(round(height * out_w / width / 2) * 2)
-    frames = []
-    for i in range(count):
-        t = start + (end - start) * (i + 0.5) / count
-        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", str(video), "-frames:v", "1",
-                              "-vf", f"scale={out_w}:{out_h}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
-                             capture_output=True, check=True).stdout
-        if len(raw) == out_w * out_h * 3:
-            frames.append(np.frombuffer(raw, dtype=np.uint8).reshape(out_h, out_w, 3))
-    return frames
+    # One decode of the shot (instead of one seek per frame), keeping `count` evenly spaced frames.
+    span = max(0.05, end - start)
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{span:.3f}", "-i", str(video),
+                          "-vf", f"fps={count / span:.6f},scale={out_w}:{out_h}", "-frames:v", str(count),
+                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    size = out_w * out_h * 3
+    return [np.frombuffer(raw[i * size:(i + 1) * size], dtype=np.uint8).reshape(out_h, out_w, 3)
+            for i in range(len(raw) // size)]
 
 
 @lru_cache(maxsize=1)

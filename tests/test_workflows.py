@@ -35,6 +35,11 @@ def test_pipeline_order_and_per_story_matrix():
     assert story['strategy']['matrix']['slot']=='${{ fromJSON(needs.discover.outputs.slots) }}'
     assert '--arc-index ${{ matrix.slot }}' in ' '.join(s.get('run','') for s in story['steps'])
     assert jobs['write']['needs']==['write-story'] and 'arcs' in jobs['write']['outputs']
+    # Render machines reuse the voice machine's clips; YouTube is only a fallback there.
+    assert 'footage-${{ matrix.arc }}' in str(jobs['voice']['steps']) and 'footage-${{ matrix.arc }}' in str(jobs['render']['steps'])
+    for step in jobs['render']['steps']:
+        if 'YouTube' in step.get('name', '') or 'WARP' in step.get('name', ''):
+            assert step.get('if') == "steps.footage.outcome != 'success'"
     assert jobs['voice']['strategy']['matrix']['arc']=='${{ fromJSON(needs.write.outputs.arcs) }}'
     render=jobs['render']['strategy']['matrix']
     assert render['aspect']==['square','vertical'] and render['chunk']==['0','1','2','3']

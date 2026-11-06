@@ -273,6 +273,13 @@ jobs:
             output/voice
             output/edit
           retention-days: 7
+      - name: Ship this story's clips to the render machines (no YouTube downloads there)
+        uses: actions/upload-artifact@v4
+        with:
+          name: footage-${{ matrix.arc }}
+          path: work/shorts/footage/*.mp4
+          compression-level: 0
+          retention-days: 2
 
   render:
     # Every story × shape is split into 4 chunks rendered on separate machines at the same time.
@@ -297,7 +304,15 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+      - name: Get this story's clips from the voice machine
+        id: footage
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: footage-${{ matrix.arc }}
+          path: work/shorts/footage
       - uses: actions/setup-node@v4
+        if: steps.footage.outcome != 'success'
         with:
           node-version: '22'
       - name: Install FFmpeg, downloader and RIFE
@@ -310,13 +325,16 @@ jobs:
           python -m pip install -e '.[source]' 'bgutil-ytdlp-pot-provider>=2.0'
           bash scripts/install_rife.sh || echo "::warning::RIFE unavailable; 60 fps uses motion-blended interpolation"
       - name: Prepare optional YouTube cookies
+        if: steps.footage.outcome != 'success'
         env:
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: python scripts/prepare_youtube_cookies.py
       - name: Start YouTube proof-of-origin token provider
+        if: steps.footage.outcome != 'success'
         continue-on-error: true
         run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
       - name: Prepare WARP fallback route
+        if: steps.footage.outcome != 'success'
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}

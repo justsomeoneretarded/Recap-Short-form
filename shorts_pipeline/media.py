@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+from functools import lru_cache
 import hashlib
 import math
 import subprocess
@@ -19,6 +20,13 @@ def run(args: list[str], *, timeout: float = 1800) -> subprocess.CompletedProces
 
 
 def probe(path: Path) -> dict:
+    """Duration, audio flag, size and fps. Cached per file version (the render probes the same clip per shot)."""
+    stat = Path(path).stat()
+    return dict(_probe(str(Path(path).resolve()), stat.st_mtime_ns, stat.st_size))
+
+
+@lru_cache(maxsize=512)
+def _probe(path: str, _mtime: int, _size: int) -> dict:
     data = json.loads(run(['ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(path)]).stdout)
     video = next((s for s in data['streams'] if s['codec_type'] == 'video'), None)
     seconds = float(data['format']['duration'])

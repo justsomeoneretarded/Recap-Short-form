@@ -34,23 +34,20 @@ def rife_available() -> bool:
     return bool(binary and Path(binary).exists() and os.environ.get("SHORTS_RIFE_MODEL"))
 
 
-def _rife(video: Path, target: Path, frames_out: int, size: tuple[int, int]) -> None:
-    """Interpolate one shot with rife-ncnn-vulkan on the CPU, then scale to the output size.
+def _rife(frames: Path, audio: Path, target: Path, frames_out: int, size: tuple[int, int]) -> None:
+    """Interpolate one shot's frames with rife-ncnn-vulkan on the CPU, then scale and encode with its sound.
 
-    JPEG frames (quality 95) are several times faster to write/read than PNG at no visible cost;
-    all cores are used for processing.
+    The framed shot is written straight to JPEG frames (no intermediate video encode/decode);
+    JPEG (quality 95) is several times faster than PNG at no visible cost; all cores are used.
     """
     threads = os.environ.get("SHORTS_RIFE_THREADS", f"2:{max(2, os.cpu_count() or 4)}:2")
-    with tempfile.TemporaryDirectory(dir=target.parent) as temp:
-        src, dst = Path(temp) / "in", Path(temp) / "out"
-        src.mkdir()
-        dst.mkdir()
-        _run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-q:v", "2", str(src / "%06d.jpg")])
-        _run([os.environ["SHORTS_RIFE_BIN"], "-i", str(src), "-o", str(dst), "-m", os.environ["SHORTS_RIFE_MODEL"],
-              "-n", str(frames_out), "-g", os.environ.get("SHORTS_RIFE_GPU", "-1"), "-j", threads, "-f", "jpg"])
-        _run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(dst / "%08d.jpg"), "-i", str(video),
-              "-map", "0:v", "-map", "1:a?", "-vf", f"scale={size[0]}:{size[1]}:flags=lanczos,format=yuv420p",
-              "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-c:a", "copy", "-shortest", str(target)])
+    dst = frames.parent / "out"
+    dst.mkdir(exist_ok=True)
+    _run([os.environ["SHORTS_RIFE_BIN"], "-i", str(frames), "-o", str(dst), "-m", os.environ["SHORTS_RIFE_MODEL"],
+          "-n", str(frames_out), "-g", os.environ.get("SHORTS_RIFE_GPU", "-1"), "-j", threads, "-f", "jpg"])
+    _run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(dst / "%08d.jpg"), "-i", str(audio),
+          "-map", "0:v", "-map", "1:a", "-vf", f"scale={size[0]}:{size[1]}:flags=lanczos,format=yuv420p",
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-c:a", "pcm_s16le", "-shortest", str(target)])
 
 
 def motion(source: Path, start: float, span: float) -> float:
@@ -86,14 +83,18 @@ def render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], ta
              f"aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{shot['duration']:.4f}[a]")
     if not info.get("has_audio"):
         audio = f"anullsrc=r=48000:cl=stereo,atrim=0:{shot['duration']:.4f}[a]"
-    first = target.with_suffix(".base.mkv") if use_rife else target
-    _run(["ffmpeg", "-y", "-v", "error", "-ss", f"{shot['start']:.4f}", "-t", f"{span:.4f}", "-i", shot["source"],
-          "-filter_complex", f"{graph};{timing};{audio}", "-map", "[v]", "-map", "[a]",
-          "-t", f"{shot['duration']:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
-          "-c:a", "pcm_s16le", str(first)])
+    cut = ["ffmpeg", "-y", "-v", "error", "-ss", f"{shot['start']:.4f}", "-t", f"{span:.4f}", "-i", shot["source"],
+           "-filter_complex", f"{graph};{timing};{audio}"]
     if use_rife:
-        _rife(first, target, max(2, round(shot["duration"] * FPS)), size)
-        first.unlink(missing_ok=True)
+        with tempfile.TemporaryDirectory(dir=target.parent) as temp:
+            frames, sound = Path(temp) / "in", Path(temp) / "sound.wav"
+            frames.mkdir()
+            _run(cut + ["-map", "[v]", "-t", f"{shot['duration']:.4f}", "-q:v", "2", str(frames / "%06d.jpg"),
+                        "-map", "[a]", "-t", f"{shot['duration']:.4f}", "-c:a", "pcm_s16le", str(sound)])
+            _rife(frames, sound, target, max(2, round(shot["duration"] * FPS)), size)
+    else:
+        _run(cut + ["-map", "[v]", "-map", "[a]", "-t", f"{shot['duration']:.4f}", "-c:v", "libx264",
+                    "-preset", "veryfast", "-crf", "14", "-c:a", "pcm_s16le", str(target)])
     return {"interpolation": "rife" if use_rife else "blend", "mode": plan["mode"],
             "work_size": [work_w, work_h]}
 
@@ -140,7 +141,7 @@ def finish(mixed: Path, captions: Path | None, target: Path) -> dict:
           "linear=true,aresample=48000")
     vf = f"ass=filename='{_escape(captions)}'," if captions else ""
     _run(["ffmpeg", "-y", "-v", "error", "-i", str(mixed), "-vf", f"{vf}fps={FPS},format=yuv420p", "-af", af,
-          "-c:v", "libx264", "-preset", os.environ.get("SHORTS_X264_PRESET", "slow"), "-crf", "17",
+          "-c:v", "libx264", "-preset", os.environ.get("SHORTS_X264_PRESET", "medium"), "-crf", "17",
           "-profile:v", "high", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "256k", str(target)])
     final = _loudness(target)
     return {"integrated_lufs": float(final["input_i"]), "true_peak_db": float(final["input_tp"])}
@@ -148,13 +149,14 @@ def finish(mixed: Path, captions: Path | None, target: Path) -> dict:
 
 def duplicate_frame_ratio(video: Path) -> float:
     """Share of near-identical adjacent frames (fake 60 fps shows ~0.6)."""
-    total = int(subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries",
-                                "stream=nb_read_frames", "-of", "csv=p=0", str(video)],
-                               capture_output=True, text=True).stdout.strip() or 0)
-    log = subprocess.run(["ffmpeg", "-i", str(video), "-vf", "mpdecimate", "-f", "null", "-"],
+    # One decode (the frame count comes from the file header); small frames are enough to see copies.
+    log = subprocess.run(["ffmpeg", "-i", str(video), "-an", "-vf", "scale=320:-2,mpdecimate", "-f", "null", "-"],
                          capture_output=True, text=True).stderr
+    total = int(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                "stream=nb_frames", "-of", "csv=p=0", str(video)],
+                               capture_output=True, text=True).stdout.strip().split(",")[0] or 0)
     kept = re.findall(r"frame=\s*(\d+)", log)
-    return round(1 - int(kept[-1]) / total, 3) if total and kept else 0.0
+    return round(max(0.0, 1 - int(kept[-1]) / total), 3) if total and kept else 0.0
 
 
 def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertical")) -> dict:

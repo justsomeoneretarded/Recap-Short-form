@@ -79,6 +79,18 @@ def apply_tempo(audio: Path, factor: float, target: Path) -> Path:
     return target
 
 
+_ALIGNER: dict = {}
+
+
+def _mms():
+    """MMS model, tokenizer and aligner, loaded once per process (loading takes seconds; there is one call per beat)."""
+    if not _ALIGNER:
+        from torchaudio.pipelines import MMS_FA as bundle
+        _ALIGNER.update(bundle=bundle, model=bundle.get_model(with_star=False), tokenizer=bundle.get_tokenizer(),
+                        aligner=bundle.get_aligner())
+    return _ALIGNER["bundle"], _ALIGNER["model"], _ALIGNER["tokenizer"], _ALIGNER["aligner"]
+
+
 def forced_align(audio: Path, text: str) -> list[dict] | None:
     """Exact-text word timings with torchaudio's MMS forced aligner; None when unavailable."""
     if os.environ.get("SHORTS_FORCED_ALIGN", "1") == "0":
@@ -86,7 +98,7 @@ def forced_align(audio: Path, text: str) -> list[dict] | None:
     try:
         import torch
         import torchaudio
-        from torchaudio.pipelines import MMS_FA as bundle
+        bundle, model, tokenizer, aligner = _mms()
     except Exception:  # noqa: BLE001 - optional dependency
         return None
     words = text.split()
@@ -96,8 +108,6 @@ def forced_align(audio: Path, text: str) -> list[dict] | None:
         return None
     waveform, rate = torchaudio.load(str(audio))
     waveform = torchaudio.functional.resample(waveform.mean(0, keepdim=True), rate, bundle.sample_rate)
-    model = bundle.get_model(with_star=False)
-    tokenizer, aligner = bundle.get_tokenizer(), bundle.get_aligner()
     with torch.inference_mode():
         emission, _ = model(waveform)
         spans = aligner(emission[0], tokenizer([clean[i] for i in keep]))

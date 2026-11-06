@@ -97,3 +97,15 @@ def test_parallel_chunks_match_single_machine(tmp_path, monkeypatch):
     assert done["outputs"]["vertical"]["fps"] == pytest.approx(60, abs=0.1)
     cli.run_package(discover, scripts, tmp_path / "voice", tmp_path / "render", tmp_path / "shorts", length=30)
     assert (tmp_path / "shorts" / "arc1" / "final-vertical.mp4").exists()
+
+
+def test_footage_shipped_to_this_machine_is_used_without_youtube(tmp_path, monkeypatch):
+    from shorts_pipeline import cli, discovery
+
+    def no_youtube(*_a, **_k):
+        raise AssertionError("YouTube must not be contacted")
+
+    monkeypatch.setattr(discovery, "YouTube", no_youtube)
+    (tmp_path / "footage").mkdir()
+    (tmp_path / "footage" / "abc123.mp4").write_bytes(b"x")
+    assert cli._footage(["abc123"], {}, tmp_path) == {"abc123": str(tmp_path / "footage" / "abc123.mp4")}

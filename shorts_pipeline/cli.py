@@ -354,6 +354,9 @@ def _footage(clip_ids, screened: dict, workdir: Path) -> dict[str, str]:
     youtube, footage = None, {}
     for clip_id in dict.fromkeys(clip_ids):
         path = screened.get(clip_id, {}).get('path')
+        local = Path(workdir)/'footage'/f'{clip_id}.mp4'
+        if (not path or not Path(path).exists()) and local.exists():
+            path = str(local)  # shipped from the voice machine: no YouTube request
         if not path or not Path(path).exists():
             youtube = youtube or YouTube()
             found = youtube.download(clip_id, Path(workdir)/'footage')
