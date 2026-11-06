@@ -15,6 +15,8 @@ on:
       - 'shorts_pipeline/locate.py'
       - 'shorts_pipeline/discovery.py'
       - 'shorts_pipeline/placement.py'
+      - 'shorts_pipeline/screening.py'
+      - 'shorts_pipeline/compilations.py'
       - '.github/workflows/shorts-research.yml'
 
 permissions:
@@ -22,7 +24,7 @@ permissions:
 
 concurrency:
   group: shorts-research-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false  # queue behind a running discovery instead of discarding its work
 
 jobs:
   movies:
@@ -114,7 +116,7 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
           APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends ffmpeg jq
-          python -m pip install -e '.[source]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
+          python -m pip install -e '.[source,screening]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
       - name: Start YouTube proof-of-origin token provider
         continue-on-error: true
         run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
@@ -137,7 +139,7 @@ jobs:
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
           OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
           MOVIE: ${{ matrix.movie }}
-        run: python -u -m shorts_pipeline discover --movie "$MOVIE" --output output/discover > /dev/null
+        run: python -u -m shorts_pipeline discover --movie "$MOVIE" --screen 8 --output output/discover > /dev/null
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -146,6 +148,7 @@ jobs:
             output/discover/summary.json
             output/discover/clips.json
             output/discover/research.json
+            output/discover/screening.json
           retention-days: 7
 
   summary:

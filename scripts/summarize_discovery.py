@@ -16,14 +16,15 @@ for path in sorted(glob.glob(f"{root}/discover-*/summary.json")):
     s = json.load(open(path))
     rows += ["", f"**{s['movie']} ({s['year']})**: {s['candidates']} candidates, {s['rejected']} rejected, "
                  f"{s['placed']}/{s['considered']} placed in the movie, {s['search_errors']} search errors", "",
-             "| # | Clip | Channel | Views | ✔ | Height | Score | Comp. | Placed by | Movie time |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "| # | Clip | Channel | Views | ✔ | Height | Score | Comp. | Placed by | Movie time | Screening |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
     for c in s["clips"]:
         t = c["movie_time"]
         when = f"{int(t[0] // 60)}:{int(t[0] % 60):02d}–{int(t[1] // 60)}:{int(t[1] % 60):02d}" if t else "–"
         rows.append(f"| {c['rank']} | {c['title'][:45]} | {(c['channel'] or '')[:20]} | {c['views'] or 0:,} | "
                     f"{'✔' if c['verified'] else ''} | {c['height']} | {c['score']} | {'yes' if c['compilation'] else ''} | "
-                    f"{c['method'] or '–'} | {when} |")
+                    f"{c['method'] or '–'}{' (' + str(c.get('segments_placed')) + ' segs)' if c.get('segments_placed') else ''} | "
+                    f"{when} | {(c.get('screen') or '–')[:60]} |")
 text = "\n".join(rows)
 print("SUMMARY\n" + text)
 if os.environ.get("GITHUB_STEP_SUMMARY"):

@@ -76,3 +76,21 @@ def test_without_subtitles_nothing_is_guessed(tmp_path):
     result = p.place_candidates({"movie": {"tmdb_id": 1}, "subtitles": {}}, {"candidates": [{"id": "a", "title": "x"}]},
                                 FakeYouTube({}), tmp_path, comments_for=0)
     assert result["placed"] == 0 and result["clips"][0]["placement"]["reason"] == "no movie subtitles"
+
+
+def test_compilation_segments_are_placed(tmp_path):
+    (tmp_path / "movie.srt").write_text(srt())
+    research = {"movie": {"tmdb_id": 8}, "subtitles": {"path": str(tmp_path / "movie.srt")}}
+    first, second = vtt(20, 35), vtt(250, 265)
+    # Two scenes back to back in one video: shift the second scene by 60 s.
+    import re
+    shifted = re.sub(r"00:(\d\d):(\d\d)", lambda m: f"00:{int(m.group(1)) + 1:02d}:{m.group(2)}", second.split("\n\n", 1)[1])
+    captions = first + "\n" + shifted
+    discovered = {"candidates": [{"id": "comp", "title": "all scenes", "duration": 120, "compilation": True,
+                                  "signals": {"chapters": [{"start": 0, "title": "A"}, {"start": 60, "title": "B"}]}}]}
+    result = p.place_candidates(research, discovered, FakeYouTube({"comp": captions}), tmp_path, comments_for=0,
+                                use_whisper=False)
+    placement = result["clips"][0]["placement"]
+    assert placement["segments_placed"] == 2
+    starts = sorted(round(s["movie_start"]) for s in placement["segments"])
+    assert abs(starts[0] - 80) < 3 and abs(starts[1] - 1000) < 3

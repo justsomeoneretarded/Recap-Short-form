@@ -45,26 +45,42 @@ def _audio(youtube: YouTube, video_id: str, folder: Path) -> Path | None:
 
 def place_clip(candidate: dict, movie: MovieTranscript | None, youtube: YouTube, folder: Path, *,
                use_whisper: bool = True, transcribe=whisper_words) -> dict:
-    """Return placement evidence for one candidate (never raises for a single clip)."""
+    """Return placement evidence for one candidate (never raises for a single clip).
+
+    Compilations are split into segments and each segment is placed on its own.
+    """
+    from .compilations import place_segments, split
     result: dict = {"method": None, "matched": False}
     if movie is None:
         return {**result, "reason": "no movie subtitles"}
+    words: list[tuple[float, str]] = []
     try:
         captions = youtube.captions(candidate["id"], folder / "captions")
     except RuntimeError as exc:
         captions, result["caption_error"] = None, str(exc)[:160]
     if captions:
-        clip = timed_words(parse_cues(captions.read_text(errors="ignore")))
-        located = movie.locate(clip)
-        result.update(method="captions", caption_file=captions.name, **located)
-    if not result["matched"] and use_whisper:
+        words = timed_words(parse_cues(captions.read_text(errors="ignore")))
+        result.update(method="captions", caption_file=captions.name, **movie.locate(words))
+    needs_audio = not result["matched"] or (candidate.get("compilation") and len(words) < 30)
+    if needs_audio and use_whisper:
         try:
             audio = _audio(youtube, candidate["id"], folder / "audio")
             if audio:
-                located = movie.locate(transcribe(audio))
-                result.update(method="whisper", **located)
+                heard = transcribe(audio)
+                located = movie.locate(heard)
+                if located.get("matched") or not result["matched"]:
+                    words = heard
+                    result.update(method="whisper", **located)
         except Exception as exc:  # noqa: BLE001 - one failing clip must not stop the run
             result["whisper_error"] = str(exc)[:160]
+    if candidate.get("compilation") and words:
+        segments = place_segments(split(candidate, words), words, movie)
+        result["segments"] = segments
+        result["segments_placed"] = sum(1 for s in segments if s.get("matched"))
+        if result["segments_placed"] and not result["matched"]:
+            first = next(s for s in segments if s.get("matched"))
+            result.update(matched=True, movie_start=first["movie_start"], movie_end=first["movie_end"],
+                          confidence=first.get("confidence"))
     if result.get("matched"):
         result["context"] = movie.context(result["movie_start"], result["movie_end"])
     return result

@@ -106,7 +106,8 @@ def run_research(movie: str, workdir: Path, output: Path | None = None) -> dict:
     return result
 
 
-def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_whisper: bool = True) -> dict:
+def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_whisper: bool = True,
+                 screen: int = 0) -> dict:
     """Movie name → ranked, placed clip list (clips.json) plus a short summary."""
     from .discovery import YouTube, discover
     from .placement import place_candidates
@@ -114,8 +115,13 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     youtube = YouTube()
     found = discover(research, youtube)
     placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
+    screened = {}
+    if screen:
+        from .screening import screen_candidates
+        screened = {r['id']: r for r in screen_candidates(placed, youtube, Path(workdir).resolve(), top=screen)}
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    write_json(output/'screening.json', list(screened.values()))
     write_json(output/'clips.json', {'movie': research['movie']['title'], 'queries': found['queries'],
                                      'placed': placed, 'rejected': found['rejected'], 'errors': found['errors'],
                                      'youtube_log': youtube.log[-200:]})
@@ -123,7 +129,10 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
              'views': c['signals']['views'], 'verified': c['signals']['verified'], 'height': c['signals']['height'],
              'score': c['score']['total'], 'compilation': c['compilation'], 'method': c['placement'].get('method'),
              'movie_time': [c['placement'].get('movie_start'), c['placement'].get('movie_end')]
-             if c['placement'].get('matched') else None}
+             if c['placement'].get('matched') else None,
+             'segments_placed': c['placement'].get('segments_placed'),
+             'screen': (None if c['id'] not in screened else
+                        'pass' if screened[c['id']].get('accept') else '; '.join(screened[c['id']].get('reasons', [])))}
             for i, c in enumerate(placed['clips'])]
     summary = {'movie': research['movie']['title'], 'year': research['movie']['year'],
                'candidates': len(found['candidates']), 'rejected': len(found['rejected']),
@@ -150,6 +159,7 @@ def main(argv=None) -> int:
     scout.add_argument('--output',type=Path,default=Path('output/discover'))
     scout.add_argument('--top',type=int,default=12,help='How many ranked clips to place in the movie')
     scout.add_argument('--no-whisper',action='store_true',help='Skip audio transcription for clips without captions')
+    scout.add_argument('--screen',type=int,default=0,help='Download and screen this many top clips (0 = skip)')
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--ollama-url',default='http://127.0.0.1:11434')
     args = parser.parse_args(argv)
@@ -158,7 +168,8 @@ def main(argv=None) -> int:
             result=run_research(args.movie,args.workdir,args.output)
             print(json.dumps({k:result[k] for k in ('movie','wikipedia','subtitles','warnings')},default=str,indent=2))
         elif args.command=='discover':
-            summary=run_discover(args.movie,args.workdir,args.output,top=args.top,use_whisper=not args.no_whisper)
+            summary=run_discover(args.movie,args.workdir,args.output,top=args.top,use_whisper=not args.no_whisper,
+                                 screen=args.screen)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='generate':
             result=generate(json.loads(args.request.read_text()),args.workdir,args.output)

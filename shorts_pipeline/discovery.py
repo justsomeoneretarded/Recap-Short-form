@@ -16,6 +16,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .compilations import description_chapters
+
 # Words that mark a video as something other than a clean scene of the film.
 REJECT_TITLE = re.compile(
     r"\b(trailer|teaser|tv spot|promo|review|reaction|reacts?|explained|explain|recap|summary|ending|"
@@ -173,13 +175,14 @@ def candidate(info: dict, movie: dict, query: str, official_ids: set[str]) -> Ca
                  "subscribers": info.get("channel_follower_count"), "verified": bool(info.get("channel_is_verified")),
                  "heatmap_peaks": heatmap_peaks(info), "chapters": [
                      {"title": c.get("title"), "start": c.get("start_time"), "end": c.get("end_time")}
-                     for c in info.get("chapters") or []],
+                     for c in info.get("chapters") or []] or description_chapters(description),
                  "description_timestamps": len(_STAMP.findall(description)),
                  "captions": sorted(set((info.get("subtitles") or {}).keys()) |
                                     ({"en (auto)"} if "en" in (info.get("automatic_captions") or {}) else set())),
                  **fmt},
         queries=[query], official=info["id"] in official_ids,
-        compilation=bool(COMPILATION.search(info.get("title") or "")) or len(info.get("chapters") or []) >= 3)
+        compilation=bool(COMPILATION.search(info.get("title") or "")) or len(info.get("chapters") or []) >= 3
+        or len(description_chapters(description)) >= 3)
 
 
 class YouTube:
@@ -236,6 +239,18 @@ class YouTube:
                             extractor_args={"youtube": {"max_comments": [str(count), "all", "0", "0"],
                                                         "comment_sort": ["top"]}})
         return info.get("comments") or []
+
+    def download(self, video_id: str, folder: Path, max_height: int = 1080) -> Path | None:
+        """Best video up to max_height plus audio, merged to MP4 (yt-dlp's own downloader honours the proxy)."""
+        folder.mkdir(parents=True, exist_ok=True)
+        existing = sorted(folder.glob(f"{video_id}.mp4"))
+        if existing:
+            return existing[0]
+        self.extract(f"https://www.youtube.com/watch?v={video_id}", skip_download=False,
+                     format=f"bv*[height<={max_height}]+ba/b[height<={max_height}]", merge_output_format="mp4",
+                     outtmpl=str(folder / f"{video_id}.%(ext)s"), max_filesize=600 * 1024 * 1024)
+        found = sorted(folder.glob(f"{video_id}.mp4"))
+        return found[0] if found else None
 
     def captions(self, video_id: str, folder: Path) -> Path | None:
         folder.mkdir(parents=True, exist_ok=True)
