@@ -40,6 +40,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       list: ${{ steps.pick.outputs.list }}
+      indexes: ${{ steps.pick.outputs.indexes }}
     steps:
       - uses: actions/checkout@v4
       - id: pick
@@ -50,7 +51,9 @@ jobs:
           import json, os
           movie = os.environ.get("MOVIE", "").strip()
           films = [movie] if movie else [f"{f['title']} ({f['year']})" for f in json.load(open("scripts/phase0/films.json"))]
-          open(os.environ["GITHUB_OUTPUT"], "a").write(f"list={json.dumps(films)}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"list={json.dumps(films)}\n")
+              out.write(f"indexes={json.dumps(list(range(len(films))))}\n")
           EOF
 
   research:
@@ -107,7 +110,6 @@ jobs:
     timeout-minutes: 80
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         movie: ${{ fromJSON(needs.movies.outputs.list) }}
     env:
@@ -171,15 +173,17 @@ jobs:
           retention-days: 7
 
   write:
+    # One machine per story: every movie's 2 stories are written at the same time.
+    name: write (${{ fromJSON(needs.movies.outputs.list)[matrix.index] }}, story ${{ matrix.slot }})
     needs: [movies, discover]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
-        movie: ${{ fromJSON(needs.movies.outputs.list) }}
+        index: ${{ fromJSON(needs.movies.outputs.indexes) }}
+        slot: [0, 1]
     env:
       SCRIPT_MODEL: qwen3:14b
       SHORTS_WRITER_MODEL: qwen3:14b
@@ -202,15 +206,15 @@ jobs:
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: discover-${{ strategy.job-index }}
+          name: discover-${{ matrix.index }}
           path: output/discover
-      - name: Write scripts for the top stories
+      - name: Write this story's script
         if: hashFiles('output/discover/arcs.json') != ''
-        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 2 --drafts 2
+        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 2 --drafts 2 --arc-index ${{ matrix.slot }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: write-${{ strategy.job-index }}
+          name: write-${{ matrix.index }}-${{ matrix.slot }}
           path: output/write
           retention-days: 7
 
@@ -221,7 +225,6 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         movie: ${{ fromJSON(needs.movies.outputs.list) }}
     env:
@@ -272,8 +275,23 @@ jobs:
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: write-${{ strategy.job-index }}
-          path: output/write
+          pattern: write-${{ strategy.job-index }}-*
+          path: parts
+      - name: Join this movie's story scripts
+        run: |
+          python3 - <<'EOF'
+          import glob, json
+          from pathlib import Path
+          results = []
+          for folder in sorted(glob.glob("parts/write-*-*"), key=lambda p: int(p.rsplit("-", 1)[1])):
+              scripts = Path(folder, "scripts.json")
+              if scripts.exists():
+                  results += json.loads(scripts.read_text())
+          if results:
+              Path("output/write").mkdir(parents=True, exist_ok=True)
+              Path("output/write/scripts.json").write_text(json.dumps(results, indent=1))
+          print("Stories written:", [r["arc"] for r in results])
+          EOF
       - name: Voice the top story and make captions
         if: hashFiles('output/write/scripts.json') != ''
         run: python -u -m shorts_pipeline voice --discover output/discover --scripts output/write --output output/voice --max-arcs 1
@@ -291,7 +309,6 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         movie: ${{ fromJSON(needs.movies.outputs.list) }}
     env:
