@@ -25,7 +25,9 @@ from .media import probe
 SAMPLE_WIDTH = 640
 PROMO = re.compile(r"\b(in theaters|in cinemas|coming soon|only in|now playing|this (?:summer|fall|winter|spring|"
                    r"christmas)|tickets|rated [rgp]|pg-?13|restricted|subscribe|official trailer|in theatres|"
-                   r"streaming|now on|watch now|available on)\b", re.I)
+                   r"streaming|now on|watch now|available on|like and|follow (?:us|me|for)|"
+                   r"turn on notifications)\b|subscri|@[a-z0-9_.]{3,}", re.I)
+MIN_HEIGHT = 720  # re-uploads below this look soft once cropped to 9:16 / 1:1
 
 
 @lru_cache(maxsize=1)
@@ -98,6 +100,7 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     """Group OCR boxes into subtitles, watermarks, promo cards and incidental scene text."""
     subtitle_frames, subtitle_texts, inside_picture = 0, set(), 0
     corner: Counter = Counter()
+    logos: Counter = Counter()
     promo_frames, promo_times = 0, []
     ax0, ay0, ax1, ay1 = active
     for when, rows, frame in samples:
@@ -114,6 +117,9 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
             if near_corner and (x1 - x0) < 0.3:
                 corner[(round(cx, 1), round(cy, 1), row["text"].lower()[:12])] += 1
                 continue
+            if (x1 - x0) < 0.35 and re.search(r"@|\.com|\bclips?\b|\bhd\b|\b4k\b", row["text"], re.I):
+                logos[(round(cx, 1), round(cy, 1), row["text"].lower()[:12])] += 1  # channel handle/logo
+                continue
             if cy > ay0 + 0.6 * (ay1 - ay0) and 0.15 < rel_x < 0.85 or cy > ay1:
                 has_sub = True
                 subtitle_texts.add(row["text"].lower())
@@ -121,9 +127,12 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
         subtitle_frames += has_sub
     n = max(1, len(samples))
     watermarks = [{"x": k[0], "y": k[1], "text": k[2], "frames": v} for k, v in corner.items() if v / n >= 0.4]
+    # A handle/logo inside the picture (not in a corner the crop removes) in several frames ruins the Short.
+    inner_marks = [{"x": k[0], "y": k[1], "text": k[2], "frames": v} for k, v in logos.items() if v >= 2]
     return {"frames": len(samples), "subtitle_frames": subtitle_frames, "subtitle_share": round(subtitle_frames / n, 3),
             "distinct_subtitle_lines": len(subtitle_texts), "subtitle_boxes_inside_picture": inside_picture,
-            "watermarks": watermarks, "promo_frames": promo_frames, "promo_times": sorted(set(promo_times))}
+            "watermarks": watermarks, "inner_watermarks": inner_marks, "promo_frames": promo_frames,
+            "promo_times": sorted(set(promo_times))}
 
 
 def mirrored(samples: list[tuple[float, list[dict], np.ndarray]], checks: int = 4) -> dict:
@@ -198,8 +207,10 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
         reasons.append("speech does not match the movie's dialogue (narration or commentary)")
     if active["bars"]:
         notes.append(f"black bars: active picture {active['box']}")
-    if (info.get("height") or 0) < 720:
-        notes.append(f"low resolution ({info.get('height')}p)")
+    if (info.get("height") or 0) < MIN_HEIGHT:
+        reasons.append(f"low resolution ({info.get('height')}p; needs {MIN_HEIGHT}p+)")
+    for mark in text.get("inner_watermarks", []):
+        reasons.append(f"channel watermark inside the picture: '{mark['text']}'")
     return {"accept": not reasons, "reasons": reasons, "notes": notes, "usable": usable, "active": active, "text": text,
             "mirror_check": flip, "cutting": cutting, "width": info.get("width"), "height": info.get("height"),
             "fps": info.get("fps"), "duration": info.get("duration")}

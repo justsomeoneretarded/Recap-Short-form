@@ -46,3 +46,15 @@ def test_arcs_cover_nearby_scenes_never_share_footage_and_rank():
 def test_thin_footage_still_makes_one_shorter_short():
     result = a.build_arcs([clip("only", 100, duration=50)], {}, target_seconds=150)
     assert len(result["arcs"]) == 1 and result["arcs"][0]["shorter_than_requested"]
+
+
+def test_long_preview_does_not_swallow_focused_scene_uploads_and_low_res_is_dropped():
+    preview = clip("preview", 0, duration=600, score=0.84, title="The Conjuring | 4K Full Movie Preview")
+    exorcism = clip("scene", 240, duration=100, score=0.82, title="The Conjuring | A Terrifying Exorcism")
+    soft = clip("soft", 400, duration=90, score=0.95, height=360, title="Film - The Conjuring")
+    units = a.merge_duplicates(a.units_from([preview, exorcism, soft], {}))
+    assert all(u.clip_id != "soft" for u in units)                      # 360p re-upload never used
+    assert all(u.seconds <= 2 * a.MAX_UNIT_SECONDS for u in units)       # preview cut into scene-sized pieces
+    assert any(u.clip_id == "scene" for u in units)                      # the focused scene upload survives
+    arcs = a.choose_arcs(units, 60)
+    assert all(arc["footage_seconds"] <= a.ARC_FOOTAGE_FACTOR * 60 + a.MAX_UNIT_SECONDS for arc in arcs)

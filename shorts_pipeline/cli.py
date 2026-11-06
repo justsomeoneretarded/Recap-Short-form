@@ -177,7 +177,7 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
     transcript = MovieTranscript.from_subtitles(srt.read_text(errors='ignore')) if srt.exists() else None
     llm = Ollama(model or WRITER_MODEL)
     output.mkdir(parents=True, exist_ok=True)
-    results, lines = [], [f"# {research['movie']['title']} ({research['movie']['year']}) — scripts", '']
+    results, rejected, lines = [], [], [f"# {research['movie']['title']} ({research['movie']['year']}) — scripts", '']
     chosen = stories['arcs'][:max_arcs]
     if arc_index is not None:  # one story per machine: the workflow writes stories in parallel
         chosen = chosen[arc_index:arc_index+1]
@@ -185,6 +185,13 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
         started = time.time()
         result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '', drafts=drafts)
         result['seconds_to_write'] = round(time.time()-started, 1)
+        if result.get('rejected'):  # never voiced or rendered; kept for review
+            rejected.append(result)
+            write_json(output/'rejected.json', rejected)
+            lines += [f"## {arc['id']}: REJECTED ({'; '.join(result['rejected_because'])})", '',
+                      f"Title: {result['script'].get('title')} · issues: {'; '.join(result['check']['issues'])}", '']
+            (output/'scripts.md').write_text('\n'.join(lines))
+            continue
         results.append(result)
         write_json(output/'scripts.json', results)
         script, check = result['script'], result['check']

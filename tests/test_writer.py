@@ -132,3 +132,40 @@ def test_write_command_can_write_one_story_per_machine(tmp_path, monkeypatch):
     monkeypatch.setattr(w, "Ollama", Model)
     summary = cli.run_write(source, tmp_path / "out", arc_index=1)
     assert [s["arc"] for s in summary["scripts"]] == ["arc-2"]
+
+
+def test_writer_only_sees_the_plot_up_to_the_chosen_scenes():
+    plot = " ".join(f"Event {i} happens." for i in range(1, 21))  # 20 sentences over a 100-minute film
+    so_far, this_part = w.plot_window(plot, 30 * 60, 40 * 60, 100 * 60)
+    assert "Event 5 happens." in so_far and "Event 7 happens." in this_part
+    assert "Event 12 happens." not in so_far + this_part  # later events (and the ending) are never shown
+
+
+def test_only_complete_single_speaker_lines_are_playable():
+    assert w.playable("Viggo is not gonna like this.")
+    assert not w.playable("is John Wick.") and not w.playable("sheer will.")
+    assert not w.playable("Are you guys excited? - Yes!")
+
+
+def test_cleanup_enforces_movie_line_rules_and_removes_quotes_and_read_out_title():
+    b = brief()
+    for line in b.lines.values():
+        line["playable"] = True
+    script = {"title": "The Last Hour", "hook": 'He says "run".', "beats": [
+        {"scene": 0, "kind": "narration", "text": 'He hears "I still have time".'},
+        *[{"scene": 0, "kind": "dialogue", "line": "s0l1"} for _ in range(5)],
+        {"scene": 1, "kind": "narration", "text": "The Last Hour."}]}
+    clean = w.cleanup(script, b)
+    assert sum(x["kind"] == "dialogue" for x in clean["beats"]) == w.MAX_DIALOGUE_BEATS
+    assert '"' not in clean["hook"] + " ".join(x.get("text", "") for x in clean["beats"])
+    assert all(x.get("text") != "The Last Hour." for x in clean["beats"])
+
+
+def test_brief_fits_the_model_context():
+    from shorts_pipeline.locate import MovieTranscript
+    long_srt = "\n\n".join(f"{i}\n00:{i // 60:02d}:{i % 60:02d},000 --> 00:{i // 60:02d}:{i % 60:02d},900\n"
+                           f"Line number {i} is a fairly long piece of dialogue." for i in range(1, 3000))
+    arc = {**ARC, "scenes": [{**ARC["scenes"][0], "movie_start": 0, "movie_end": 2900, "clip_start": 0,
+                              "clip_end": 2900}] * 6}
+    b = w.build_brief(arc, RESEARCH, MovieTranscript.from_subtitles(long_srt), "A plot sentence. " * 400)
+    assert w._estimate_tokens(b.data) <= w.BRIEF_TOKEN_BUDGET

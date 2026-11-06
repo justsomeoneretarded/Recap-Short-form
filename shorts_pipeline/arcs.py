@@ -10,12 +10,16 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from .locate import MovieTranscript
 
-MAX_GAP_SECONDS = 10 * 60   # scenes further apart in the movie start a new story
-MAX_ARC_SPAN = 25 * 60      # one Short covers at most this much movie time
+MAX_GAP_SECONDS = 6 * 60    # scenes further apart in the movie start a new story
+MAX_ARC_SPAN = 15 * 60      # one Short covers at most this much movie time
+MAX_UNIT_SECONDS = 90       # pieces over twice this (previews, "first 10 minutes") are cut into ~90 s scenes
+LONG_UPLOAD_SECONDS = 360   # uploads this long are excerpts, not a scene someone chose to clip
+ARC_FOOTAGE_FACTOR = 1.6    # a story gathers at most this many times the Short's length in footage
 MAX_SHORTS = 5
 
 
@@ -31,6 +35,7 @@ class Unit:
     height: int
     peaks: list[float] = field(default_factory=list)
     alternates: list[str] = field(default_factory=list)
+    clip_seconds: float = 0.0
 
     @property
     def seconds(self) -> float:
@@ -56,19 +61,34 @@ def units_from(clips: list[dict], screening: dict[str, dict]) -> list[Unit]:
             pieces = [{"start": 0.0, "end": float(clip.get("duration") or 0.0), "offset": placement["offset_seconds"]}]
         peaks = [p["start"] for p in clip.get("signals", {}).get("heatmap_peaks") or [] if p.get("start") is not None]
         peaks += [p["second"] for p in clip.get("comment_peaks") or []]
+        height = clip.get("signals", {}).get("height") or (report or {}).get("height") or 0
+        if height and height < 720:
+            continue  # soft re-uploads look bad once cropped
+        clip_seconds = float(clip.get("duration") or (report or {}).get("duration") or 0.0)
+        score = clip.get("score", {}).get("total", 0.0)
+        if clip_seconds >= LONG_UPLOAD_SECONDS:
+            score *= 0.85  # a long excerpt is less of an audience signal for any one scene in it
         for piece in pieces:
             start, end = max(piece["start"], usable[0]), min(piece["end"], usable[1])
             if end - start < 6:
                 continue
-            units.append(Unit(clip["id"], clip.get("title", ""), start, end, max(0.0, piece["offset"] + start),
-                              piece["offset"] + end, clip.get("score", {}).get("total", 0.0),
-                              clip.get("signals", {}).get("height") or 0, [p for p in peaks if start <= p <= end]))
+            # Long pieces become several scene-sized units, so a 10-minute preview cannot swallow the
+            # focused scene uploads that overlap it, and a story is built from scenes, not whole reels.
+            count = 1 if end - start <= 2 * MAX_UNIT_SECONDS else math.ceil((end - start) / MAX_UNIT_SECONDS - 1e-9)
+            step = (end - start) / count
+            for k in range(count):
+                s, e = start + k * step, start + (k + 1) * step
+                units.append(Unit(clip["id"], clip.get("title", ""), s, e, max(0.0, piece["offset"] + s),
+                                  piece["offset"] + e, score, height, [p for p in peaks if s <= p <= e],
+                                  clip_seconds=clip_seconds))
     return units
 
 
 def merge_duplicates(units: list[Unit], threshold: float = 0.5) -> list[Unit]:
     """Same stretch of the movie uploaded by several channels → keep the best, remember the rest."""
-    best_first = sorted(units, key=lambda u: (u.score, u.height, u.seconds), reverse=True)
+    # Best audience score first; among similar scores a focused scene upload beats a long excerpt.
+    best_first = sorted(units, key=lambda u: (round(u.score, 2), u.clip_seconds < LONG_UPLOAD_SECONDS, u.height),
+                        reverse=True)
     kept: list[Unit] = []
     for unit in best_first:
         twin = next((k for k in kept if k.overlap(unit) >= threshold), None)
@@ -98,7 +118,7 @@ def candidate_arcs(units: list[Unit], target: float) -> list[list[Unit]]:
                 break
             run.append(unit)
             arcs.append(list(run))
-            if sum(u.seconds for u in run) >= 2.5 * target:
+            if sum(u.seconds for u in run) >= ARC_FOOTAGE_FACTOR * target:
                 break
     return arcs
 

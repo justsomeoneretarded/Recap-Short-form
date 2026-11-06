@@ -24,6 +24,11 @@ def make(path, vf, size="960x540", seconds=12):
     return path
 
 
+@pytest.fixture(autouse=True)
+def small_test_clips(monkeypatch):
+    monkeypatch.setattr(s, "MIN_HEIGHT", 480)  # test clips are 540p to stay fast
+
+
 @pytest.fixture(scope="module")
 def videos(tmp_path_factory):
     d = tmp_path_factory.mktemp("screen")
@@ -79,3 +84,16 @@ def test_narration_heuristic():
     assert s.narration_suspected({"clip_words": 300, "share": 0.02, "matched": False}, 120)
     assert not s.narration_suspected({"clip_words": 300, "share": 0.6, "matched": True}, 120)
     assert not s.narration_suspected({"clip_words": 20, "share": 0.0, "matched": False}, 120)
+
+
+def test_low_resolution_uploads_are_rejected(videos, monkeypatch):
+    monkeypatch.setattr(s, "MIN_HEIGHT", 720)
+    report = s.screen(videos["clean"])  # 540p test clip
+    assert any("low resolution" in r for r in report["reasons"])
+
+
+def test_channel_handle_inside_the_picture_is_rejected(tmp_path):
+    clip = make(tmp_path / "handle.mp4", f"drawtext=fontfile={FONT}:text='@filmcharacter':fontsize=34:fontcolor=white:"
+                                         "x=w*0.12:y=h*0.62")
+    report = s.screen(clip)
+    assert not report["accept"]

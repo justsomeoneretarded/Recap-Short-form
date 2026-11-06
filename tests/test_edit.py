@@ -37,3 +37,20 @@ def test_short_footage_is_slowed_gently_not_frozen():
     scene_b = [s for s in edl["shots"] if s["clip_id"] == "B"]
     assert all(s["speed"] >= e.MIN_SPEED for s in scene_b)
     assert sum(s["duration"] for s in scene_b) == pytest.approx(12.0, abs=0.05)
+
+
+def test_long_narration_before_an_early_movie_line_uses_more_footage_not_a_freeze():
+    # The Conjuring case: 31 s of narration, but the first movie line starts 1.7 s into the clip.
+    arc = {"scenes": [{"clip_id": "A", "clip_start": 0.0, "clip_end": 120.0, "peaks": []}]}
+    voice = {"beats": [
+        {"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 31.0},
+        {"id": "b1", "kind": "dialogue", "scene": 0, "timeline_start": 31.1, "duration": 4.0, "clip_start": 1.73},
+        {"id": "b2", "kind": "narration", "scene": 0, "timeline_start": 35.2, "duration": 20.0}]}
+    edl = e.build_edl(arc, voice, {"A": "a.mp4"}, cuts={"A": [5, 9, 14, 20, 26, 33, 41, 50, 58, 66, 75, 90]})
+    shots = edl["shots"]
+    assert edl["duration"] == pytest.approx(55.2, abs=0.05)
+    for shot in shots:  # every shot is real motion: never a frame held for seconds
+        assert shot["speed"] >= e.MIN_SPEED - 1e-6
+        assert shot["duration"] <= (shot["end"] - shot["start"]) / e.MIN_SPEED + 0.06
+    for prev, nxt in zip(shots, shots[1:]):
+        assert nxt["timeline_start"] == pytest.approx(prev["timeline_start"] + prev["duration"], abs=0.02)

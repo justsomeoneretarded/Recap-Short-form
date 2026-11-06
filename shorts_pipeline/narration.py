@@ -355,5 +355,5 @@ def write_short_captions(voiceover: dict, outdir: Path, *, aspect: str = "square
     plan = {"beats": [{"id": b["id"], "text": b["text"], "words": b["words"], "duration": b["duration"],
                        "timeline_start": b["timeline_start"], "timing_provenance": b.get("timing_provenance")}
                       for b in voiceover["beats"]]}
-    return write_captions(plan, outdir, width, height, max_words=3, y=0.62 if aspect == "square" else 0.66,
+    return write_captions(plan, outdir, width, height, max_words=3, y=0.62 if aspect == "square" else 0.72,  # 9:16: under faces
                           size_ratio=0.072 if aspect == "square" else 0.068)

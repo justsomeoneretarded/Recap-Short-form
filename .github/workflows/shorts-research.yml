@@ -313,19 +313,23 @@ jobs:
         movie: ${{ fromJSON(needs.movies.outputs.list) }}
     env:
       SHORTS_YUNET_MODEL: ${{ github.workspace }}/work/models/face_detection_yunet_2023mar.onnx
+      SHORTS_RIFE_BUDGET: '2700'   # per shape; calm shots and anything past the budget use blending
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
-      - name: Install FFmpeg, OpenCV and downloader
+      - name: Install FFmpeg, OpenCV, downloader and RIFE
         timeout-minutes: 10
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq
+          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq unzip libvulkan1 mesa-vulkan-drivers libgomp1
           python -m pip install -e '.[source,screening]' 'bgutil-ytdlp-pot-provider>=2.0'
           mkdir -p work/models
+          bash scripts/install_rife.sh || echo "::warning::RIFE unavailable; 60 fps uses motion-blended interpolation"
           curl -fsSL --retry 3 -o "$SHORTS_YUNET_MODEL" https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx || echo "::warning::YuNet face model unavailable; framing uses motion only"
       - uses: actions/setup-node@v4
         with:
@@ -352,9 +356,9 @@ jobs:
         with:
           name: voice-${{ strategy.job-index }}
           path: output/voice
-      - name: Edit and render (square + vertical, 60 fps)
+      - name: Edit and render (square + vertical, 60 fps with RIFE on moving shots)
         if: hashFiles('output/voice/*/voiceover.json') != ''
-        run: python -u -m shorts_pipeline render --discover output/discover --voice output/voice --output output/render --interpolation blend
+        run: python -u -m shorts_pipeline render --discover output/discover --voice output/voice --output output/render --interpolation auto
       - uses: actions/upload-artifact@v4
         if: always()
         with:

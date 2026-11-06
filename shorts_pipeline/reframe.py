@@ -6,7 +6,9 @@ its model file is configured) and a motion/edge "attention" map locate what matt
 Modes:
 - track: the crop window follows the subject with a smooth linear pan (or holds still);
 - fit:   when the important content is wider than the crop (two people far apart, wide
-         action), the whole picture is shown over a blurred, zoomed copy of itself.
+         action), a wider window that holds all of it (square for 9:16, 4:3 for 1:1, or the whole
+         picture if needed) is shown across the full width over a blurred copy of itself. A thin
+         16:9 strip in the middle of a 9:16 frame looked cheap; the wider window keeps it large.
 
 Nothing is ever cropped out silently: a shot whose subjects cannot fit in the window falls
 back to fit.
@@ -21,6 +23,8 @@ from pathlib import Path
 import numpy as np
 
 SAMPLE_WIDTH = 480
+FIT_ASPECT_VERTICAL = 1.0      # a 9:16 Short shows a square window when it cannot track one subject
+FIT_ASPECT_SQUARE = 4 / 3      # a 1:1 Short shows a 4:3 window
 
 
 def sample(video: Path, start: float, end: float, count: int = 6) -> list[np.ndarray]:
@@ -108,9 +112,14 @@ def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> 
             span = max(((b[2] - x0a) / (x1a - x0a)) for b, s in zip(boxes, sizes) if s >= 0.35 * sizes[big]) - \
                 min(((b[0] - x0a) / (x1a - x0a)) for b, s in zip(boxes, sizes) if s >= 0.35 * sizes[big])
             spreads.append(span)
+    fit_frac = window_fraction(active_aspect, FIT_ASPECT_VERTICAL if output_aspect < 0.8 else FIT_ASPECT_SQUARE)
     if found_faces >= max(2, len(frames) // 2):
         if max(spreads) > win * 0.95:
-            return {"mode": "fit", "window": win, "reason": "important faces wider than the crop"}
+            centre = float(np.median(centres))
+            frac = fit_frac if max(spreads) <= fit_frac * 0.95 else 1.0
+            centre = min(1 - frac / 2, max(frac / 2, centre))
+            return {"mode": "fit", "window": win, "fit_window": round(frac, 4), "x_center": round(centre, 4),
+                    "reason": "important faces wider than the crop"}
         reason = "faces"
     else:
         cols = attention(frames)
@@ -120,7 +129,10 @@ def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> 
         centre = float((cols * positions).sum())
         spread = float(np.sqrt((cols * (positions - centre) ** 2).sum()))
         if spread > 0.30 and win < 0.6:
-            return {"mode": "fit", "window": win, "reason": "wide action"}
+            frac = fit_frac if spread < 0.36 else 1.0
+            centre = min(1 - frac / 2, max(frac / 2, centre))
+            return {"mode": "fit", "window": win, "fit_window": round(frac, 4), "x_center": round(centre, 4),
+                    "reason": "wide action"}
         half = len(frames) // 2 or 1
         centres = [centre] * len(frames)
         if len(frames) >= 4:  # pan only if attention clearly moves between halves
@@ -150,6 +162,11 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
     ah = int((active[3] - active[1]) * src_h) // 2 * 2
     base = f"[{label_in}]crop={aw}:{ah}:{ax}:{ay},setsar=1"
     if plan["mode"] == "fit":
+        frac = float(plan.get("fit_window") or 1.0)
+        if frac < 0.999:  # the wider window around the action, not the whole frame
+            fw = max(2, int(aw * frac) // 2 * 2)
+            left = int(min(max(0.0, plan.get("x_center", 0.5) * aw - fw / 2), aw - fw)) // 2 * 2
+            base += f",crop={fw}:{ah}:{left}:0"
         return (f"{base},split=2[fgsrc][bgsrc];"
                 f"[bgsrc]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},"
                 f"boxblur=24:2,eq=brightness=-0.10:saturation=0.85[bg];"
