@@ -65,19 +65,38 @@ CALM_MOTION = float(os.environ.get("SHORTS_CALM_MOTION", "2.5"))
 
 def render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], target: Path, *,
                 interpolation: str = "auto", use_rife: bool | None = None) -> dict:
+    """One shot, with fallbacks: RIFE → motion blending → plain 60 fps (never a missing shot)."""
+    tries = (["rife"] if (use_rife if use_rife is not None else
+                          interpolation == "rife" or (interpolation == "auto" and rife_available())) else []) + \
+        ["blend", "plain"]
+    errors = []
+    for how in tries:
+        try:
+            row = _render_shot(shot, plan, active, size, target, how)
+            if errors:
+                row["fallback"] = "; ".join(errors)[:300]
+            return row
+        except Exception as exc:  # noqa: BLE001 - try the next, simpler method
+            errors.append(f"{how} failed: {str(exc)[:120]}")
+            target.unlink(missing_ok=True)
+    raise RuntimeError(f"Shot could not be rendered: {errors}")
+
+
+def _render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], target: Path, how: str) -> dict:
     out_w, out_h = size
     info = probe(Path(shot["source"]))
     span = shot["end"] - shot["start"]
-    if use_rife is None:
-        use_rife = interpolation == "rife" or (interpolation == "auto" and rife_available())
+    use_rife = how == "rife"
     work_w, work_h = native_size(plan, info["width"], info["height"], active, out_w, out_h) if use_rife else size
     graph = filter_graph(plan, info["width"], info["height"], active, work_w, work_h, span, "0:v", "framed")
     timing = f"[framed]setpts=(PTS-STARTPTS)/{shot['speed']:.6f}"
     if use_rife:
         timing += f",fps={info.get('fps') or 24:.3f},format=yuv420p[v]"
-    else:
+    elif how == "blend":
         # Motion-blended interpolation: every output frame is new (no duplicated frames).
         timing += f",framerate=fps={FPS}:interp_start=0:interp_end=255:scene=8,format=yuv420p[v]"
+    else:  # last resort: plain conversion to 60 fps
+        timing += f",fps={FPS},format=yuv420p[v]"
     gain = 1.0 if shot["audio"] == "full" else DUCK_GAIN
     audio = (f"[0:a]atrim=0:{span:.4f},asetpts=PTS-STARTPTS,atempo={shot['speed']:.4f},volume={gain},"
              f"aresample=48000,aformat=channel_layouts=stereo,apad,atrim=0:{shot['duration']:.4f}[a]")
@@ -95,7 +114,7 @@ def render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], ta
     else:
         _run(cut + ["-map", "[v]", "-map", "[a]", "-t", f"{shot['duration']:.4f}", "-c:v", "libx264",
                     "-preset", "veryfast", "-crf", "14", "-c:a", "pcm_s16le", str(target)])
-    return {"interpolation": "rife" if use_rife else "blend", "mode": plan["mode"],
+    return {"interpolation": how, "mode": plan["mode"],
             "work_size": [work_w, work_h]}
 
 
@@ -218,7 +237,8 @@ def finish_aspect(edl: dict, voiceover: dict, aspect: str, parts_folder: Path, c
     return {"path": str(final), "duration": info["duration"], "width": info["width"], "height": info["height"],
             "fps": info["fps"], **audio, "duplicate_frames": duplicate_frame_ratio(final),
             "modes": {m: sum(1 for x in rows if x["mode"] == m) for m in ("track", "fit")},
-            "interpolation": sorted({x["interpolation"] for x in rows}), "interpolation_reasons": reasons}
+            "interpolation": sorted({x["interpolation"] for x in rows}), "interpolation_reasons": reasons,
+            "shot_rows": [{"index": x.get("index"), "fallback": x["fallback"]} for x in rows if x.get("fallback")]}
 
 
 def render_short(edl: dict, voiceover: dict, screening: dict[str, dict], captions: dict[str, Path], outdir: Path,

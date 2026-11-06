@@ -101,6 +101,15 @@ def forced_align(audio: Path, text: str) -> list[dict] | None:
         bundle, model, tokenizer, aligner = _mms()
     except Exception:  # noqa: BLE001 - optional dependency
         return None
+    try:
+        return _forced_align(audio, text, bundle, model, tokenizer, aligner)
+    except Exception:  # noqa: BLE001 - alignment is an improvement, never a reason to fail
+        return None
+
+
+def _forced_align(audio: Path, text: str, bundle, model, tokenizer, aligner) -> list[dict] | None:
+    import torch
+    import torchaudio
     words = text.split()
     clean = [re.sub(r"[^a-z']", "", w.lower().replace("’", "'")) for w in words]
     keep = [i for i, w in enumerate(clean) if w]
@@ -121,6 +130,14 @@ def forced_align(audio: Path, text: str) -> list[dict] | None:
     return rows
 
 
+def _number(value, default: float) -> float:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value == value and abs(value) != float("inf") else default
+
+
 def tidy_words(words: list[dict], duration: float) -> list[dict]:
     """Word times in order, inside the audio, never overlapping.
 
@@ -130,9 +147,10 @@ def tidy_words(words: list[dict], duration: float) -> list[dict]:
     """
     rows, previous = [], 0.0
     for word in words:
-        start = min(max(float(word["start"]), previous), max(0.0, duration - 0.01))
-        end = min(max(float(word["end"]), start + 0.01), duration)
-        rows.append({**word, "start": round(start, 3), "end": round(end, 3)})
+        given_start, given_end = _number(word.get("start"), previous), _number(word.get("end"), previous)
+        start = round(min(max(given_start, previous), max(0.0, duration - 0.01)), 3)
+        end = min(round(max(given_end, start + 0.01), 3), duration)  # cap after rounding
+        rows.append({**word, "start": start, "end": end})
         previous = end
     return rows
 
@@ -146,6 +164,7 @@ def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narra
     folder = workdir / "voiceover" / result["arc"]
     folder.mkdir(parents=True, exist_ok=True)
     beats = voice_beats(result)
+    skipped: list[dict] = []
     narration = [dict(b) for b in beats if b["kind"] == "narration"]
     spoken = synthesize({"beats": narration}, narrator, workdir, model)["beats"] if narration else []
     spoken_by_id = {b["id"]: b for b in spoken}
@@ -162,7 +181,10 @@ def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narra
             if not words:
                 words = [{**w, "start": round(w["start"] / factor, 3), "end": round(w["end"] / factor, 3)}
                          for w in take["words"]]
+            if take.get("warning"):
+                skipped.append({"beat": beat["id"], "reason": take["warning"]})
             item = {**beat, "audio_path": str(paced), "duration": duration, "tempo": factor,
+                    "verified": take.get("timing_provenance") != "unverified-take",
                     "words": tidy_words(words, duration),
                     "timing_provenance": provenance,
                     "wpm": round(len(beat["text"].split()) * 60 / max(0.1, duration), 1)}
@@ -170,11 +192,15 @@ def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narra
             scene = arc["scenes"][beat["scene"]]
             source = footage.get(scene["clip_id"])
             if not source:
+                skipped.append({"beat": beat["id"], "reason": "clip footage unavailable"})
                 continue  # footage missing: skip the movie line rather than fail the Short
             audio = folder / f"{beat['id']}-line.wav"
             length = beat["clip_end"] - beat["clip_start"]
-            subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{beat['clip_start']:.3f}", "-i", source,
-                            "-t", f"{length:.3f}", "-vn", "-ac", "2", "-ar", "48000", str(audio)], check=True)
+            cut = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{beat['clip_start']:.3f}", "-i", source,
+                                  "-t", f"{length:.3f}", "-vn", "-ac", "2", "-ar", "48000", str(audio)])
+            if cut.returncode or not audio.exists() or length <= 0.1:
+                skipped.append({"beat": beat["id"], "reason": "movie line could not be cut from the clip"})
+                continue  # the narration carries on without this movie line
             words = forced_align(audio, beat["text"])
             if not words:
                 parts = beat["text"].split()
@@ -190,7 +216,7 @@ def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narra
     total_words = sum(len(b["text"].split()) for b in timeline)
     report = {"arc": result["arc"], "narrator": narrator, "tts_model": model, "beats": timeline,
               "duration": round(cursor - GAP_SECONDS, 3) if timeline else 0.0,
-              "words_per_minute": round(total_words * 60 / max(0.1, cursor), 1)}
+              "words_per_minute": round(total_words * 60 / max(0.1, cursor), 1), "warnings": skipped}
     (folder / "voiceover.json").write_text(json.dumps(report, indent=2))
     return report
 

@@ -94,11 +94,18 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
         scene = arc["scenes"][beat["scene"]]
         clip_id = scene["clip_id"]
         source = footage.get(clip_id)
-        if not source:
-            raise ValueError(f"Missing footage for {clip_id}")
+        borrowed = False
+        if not source:  # borrow another scene's clip rather than drop the Short
+            spare = next((footage[s["clip_id"]] for s in arc["scenes"] if footage.get(s["clip_id"])), None)
+            if not spare:
+                raise ValueError(f"No footage at all for {arc.get('id')}")
+            source = spare
+            scene = next(s for s in arc["scenes"] if footage.get(s["clip_id"]) == spare)
+            clip_id = scene["clip_id"]
+            borrowed = True  # a movie line then plays over borrowed pictures, like narration
         start_t = beat["timeline_start"]
         gap = (beats[index + 1]["timeline_start"] - start_t) if index + 1 < len(beats) else beat["duration"]
-        if beat["kind"] == "dialogue":
+        if beat["kind"] == "dialogue" and not borrowed:
             shots.append({"clip_id": clip_id, "source": source, "start": beat["clip_start"],
                           "end": beat["clip_start"] + gap, "speed": 1.0, "timeline_start": start_t,
                           "duration": gap, "audio": "full", "beat": beat["id"]})

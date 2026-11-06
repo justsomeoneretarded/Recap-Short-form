@@ -8,6 +8,37 @@ from pathlib import Path
 from .voice import validate_words
 
 
+def repair_words(text: str, words: list[dict], duration: float) -> tuple[list[dict], str | None]:
+    """Caption-ready word times. Small timing slips are fixed; a word list that does not match
+    the text is rebuilt evenly over the audio. Returns (words, repair note or None)."""
+    try:
+        return validate_words(text, words, duration), None
+    except ValueError:
+        pass
+    expected = text.split()
+    have = [w for w in words if str(w.get("word", "")).strip()]
+    if len(have) == len(expected):  # right words, messy times: keep order, stay inside the audio
+        rows, previous = [], 0.0
+        for word, given in zip(expected, have):
+            try:
+                start, end = float(given["start"]), float(given["end"])
+            except (KeyError, TypeError, ValueError):
+                start, end = previous, previous
+            if not (math.isfinite(start) and math.isfinite(end)):
+                start, end = previous, previous
+            start = min(max(start, previous), max(0.0, duration - 0.01))
+            end = min(max(end, start + 0.01), duration)
+            rows.append({"word": word, "start": start, "end": end})
+            previous = end
+        try:
+            return validate_words(text, rows, duration), "word times tidied"
+        except ValueError:
+            pass
+    step = duration / max(1, len(expected))  # last resort: spread the words evenly
+    rows = [{"word": w, "start": i * step, "end": (i + 1) * step} for i, w in enumerate(expected)]
+    return (validate_words(text, rows, duration) if expected else []), "word times estimated evenly"
+
+
 def _srt_time(value: float) -> str:
     millis=round(value*1000)
     hours,millis=divmod(millis,3600000)
@@ -95,12 +126,18 @@ def write_captions(plan: dict, outdir: Path, width: int, height: int, *, max_wor
     cues=[]
     provenance=[]
     previous_end=0.0
+    repairs=[]
     for beat in plan.get("beats",[]):
         start=float(beat["timeline_start"])
         duration=float(beat["duration"])
-        if not all(map(math.isfinite,(start,duration))) or start<0 or duration<=0 or start<previous_end-.04:
-            raise ValueError("Caption timeline must have positive, ordered beat intervals.")
-        words=validate_words(str(beat.get("text","")),beat.get("words",[]),duration)
+        if not all(map(math.isfinite,(start,duration))) or duration<=0:
+            repairs.append({"beat_id":beat.get("id"),"repair":"skipped: no usable length"})
+            continue
+        if start<previous_end-.04:  # overlapping beats: captions follow the earlier one
+            start=previous_end
+        words,note=repair_words(str(beat.get("text","")),beat.get("words",[]),duration)
+        if note:
+            repairs.append({"beat_id":beat.get("id"),"repair":note})
         provenance.append({"beat_id":beat.get("id"),"timing":beat.get("timing_provenance","provided-word-timings")})
         for group in _groups(words, max_words, 18 if max_words <= 3 else 48):
             cue_start=start+group[0]["start"]
@@ -141,6 +178,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     (outdir/"caption-timing.json").write_text(json.dumps({
         "note":"Whisper timing is an ASR estimate, not phonetic forced alignment. Supplied timings are validated structurally, not acoustically.",
         "caption_style":style,
+        "repairs":repairs,
         "animation":{
             "implementation":"Custom word-alpha approximation of sampled reference reveal/fade; the original creator's mask algorithm is unknown." if style=="reference_word_fade" else "Static full-phrase captions.",
             "word_timing":"Provided or aligned word starts drive the reveal; full phrase layout remains fixed.",
@@ -151,4 +189,4 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         },
         "beats":provenance
     },indent=2))
-    return {"srt":srt,"ass":ass}
+    return {"srt":srt,"ass":ass,"repairs":repairs}

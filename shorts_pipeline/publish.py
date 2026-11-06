@@ -96,6 +96,11 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
     add("script checks", "pass" if not issues else "warn", "; ".join(issues) or "no invented names, filler or quoting")
     hook = len((result["script"].get("hook") or "").split())
     add("hook", "pass" if 3 <= hook <= 14 else "warn", f"{hook} words")
+    repairs = list(voiceover.get("warnings") or [])
+    repairs += [{"beat": "shot", "reason": f"shot {r.get('index')}: {r['fallback']}"}
+                for out in render.values() for r in out.get("shot_rows", []) if r.get("fallback")]
+    add("automatic repairs", "pass" if not repairs else "warn",
+        "; ".join(r["reason"] for r in repairs)[:400] or "none needed")
     return checks
 
 

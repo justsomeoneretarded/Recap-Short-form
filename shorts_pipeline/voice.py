@@ -393,6 +393,29 @@ def synthesize_plan(plan: dict, narrator: str, workdir: Path, model: str = "orig
                         "timing_provenance":"asr-estimated-script-matching-attempt",
                     },indent=2),encoding="utf-8")
             if error:
+                # Keep the last real take instead of stopping the whole Short. Its words are timed
+                # by forced alignment later; the review flags it so a person can listen to it.
+                takes=sorted((cache/"diagnostics").glob(f"beat-{index:04d}-{fingerprint}-attempt-*.wav"))
+                usable=None
+                for take in reversed(takes):
+                    try:
+                        take_duration=_duration(take)
+                    except (RuntimeError, ValueError):
+                        continue
+                    if take_duration>0:
+                        usable=(take,take_duration)
+                        break
+                if usable is not None and os.environ.get("SHORTS_STRICT_SPEECH")!="1":
+                    take,duration=usable
+                    unverified=cache/f"{fingerprint}-unverified.wav"
+                    unverified.write_bytes(take.read_bytes())
+                    script=text.split()
+                    step=duration/max(1,len(script))
+                    words=[{"word":w,"start":i*step,"end":(i+1)*step} for i,w in enumerate(script)]
+                    beat.update(audio_path=str(unverified.resolve()),duration=duration,words=words,
+                                timing_provenance="unverified-take",
+                                warning=f"narration not fully verified after 3 tries: {str(error)[:120]}")
+                    continue
                 raise RuntimeError(f"Narration beat {beat.get('id',index)} failed complete-speech verification: {error}") from error
         beat.update(audio_path=str(audio.resolve()),duration=duration,words=words,timing_provenance="asr-estimated-script-matched")
     result["narrator"]=narrator

@@ -230,7 +230,6 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
               model: str = 'original', max_arcs: int = 5, only: str | None = None) -> dict:
     """Scripts → voiceover.json, preview.wav and captions (square + vertical) per story."""
     from .discovery import YouTube
-    from .narration import synthesize_voiceover, write_short_captions
     discover, scripts, output, workdir = (Path(p).resolve() for p in (discover, scripts, output, workdir))
     arcs = {a['id']: a for a in json.loads((discover/'arcs.json').read_text())['arcs']}
     screened = {r['id']: r for r in json.loads((discover/'screening.json').read_text())} \
@@ -239,40 +238,54 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
     rows = []
     chosen = json.loads((scripts/'scripts.json').read_text())
     chosen = [r for r in chosen if r['arc'] == only] if only else chosen[:max_arcs]
+    failed = []
     for result in chosen:
-        arc = arcs[result['arc']]
-        footage = {}
-        for scene in arc['scenes']:
-            path = screened.get(scene['clip_id'], {}).get('path')
-            if not path or not Path(path).exists():
-                try:
-                    found = youtube.download(scene['clip_id'], workdir/'footage')
-                    path = str(found) if found else None
-                except RuntimeError as exc:
-                    print(f'Footage {scene["clip_id"]} unavailable: {str(exc)[:120]}', file=sys.stderr)
-                    path = None
-            if path:
-                footage[scene['clip_id']] = path
-        voiceover = synthesize_voiceover(result, footage, arc, narrator, workdir, model)
-        folder = output/result['arc']
-        (folder/'audio').mkdir(parents=True, exist_ok=True)
-        import shutil
-        for beat in voiceover['beats']:  # bundle audio so another machine can render from this folder
-            local = folder/'audio'/f"{beat['id']}{Path(beat['audio_path']).suffix}"
-            shutil.copyfile(beat['audio_path'], local)
-            beat['audio_path'] = str(local)
-        write_json(folder/'voiceover.json', {**voiceover, 'beats': [
-            {**b, 'audio_path': str(Path(b['audio_path']).relative_to(folder))} for b in voiceover['beats']]})
-        _preview(voiceover, folder/'preview.wav')
-        for aspect in ('square','vertical'):
-            write_short_captions(voiceover, folder/f'captions-{aspect}', aspect=aspect)
-        rows.append({'arc': result['arc'], 'title': result['script'].get('title'), 'seconds': voiceover['duration'],
-                     'wpm': voiceover['words_per_minute'], 'beats': len(voiceover['beats']),
-                     'movie_lines': sum(1 for b in voiceover['beats'] if b['kind'] == 'dialogue'),
-                     'tempo': [b.get('tempo') for b in voiceover['beats'] if b['kind'] == 'narration'],
-                     'timing': sorted({b.get('timing_provenance') or '' for b in voiceover['beats']})})
+        try:
+            rows.append(_voice_story(result, arcs, screened, youtube, output, workdir, narrator, model))
+        except Exception as exc:  # noqa: BLE001 - one story never stops the others
+            failed.append({'arc': result['arc'], 'error': str(exc)[:300]})
+            print(f"Story {result['arc']} could not be voiced: {str(exc)[:300]}", file=sys.stderr)
     write_json(output/'summary.json', rows)
-    return {'voiced': rows}
+    if chosen and not rows:
+        raise RuntimeError(f'No story could be voiced: {failed}')
+    return {'voiced': rows, 'failed': failed}
+
+
+def _voice_story(result: dict, arcs: dict, screened: dict, youtube, output: Path, workdir: Path, narrator: str,
+                 model: str) -> dict:
+    import shutil
+    from .narration import synthesize_voiceover, write_short_captions
+    arc = arcs[result['arc']]
+    footage = {}
+    for scene in arc['scenes']:
+        path = screened.get(scene['clip_id'], {}).get('path')
+        if not path or not Path(path).exists():
+            try:
+                found = youtube.download(scene['clip_id'], workdir/'footage')
+                path = str(found) if found else None
+            except RuntimeError as exc:
+                print(f'Footage {scene["clip_id"]} unavailable: {str(exc)[:120]}', file=sys.stderr)
+                path = None
+        if path:
+            footage[scene['clip_id']] = path
+    voiceover = synthesize_voiceover(result, footage, arc, narrator, workdir, model)
+    folder = output/result['arc']
+    (folder/'audio').mkdir(parents=True, exist_ok=True)
+    for beat in voiceover['beats']:  # bundle audio so another machine can render from this folder
+        local = folder/'audio'/f"{beat['id']}{Path(beat['audio_path']).suffix}"
+        shutil.copyfile(beat['audio_path'], local)
+        beat['audio_path'] = str(local)
+    write_json(folder/'voiceover.json', {**voiceover, 'beats': [
+        {**b, 'audio_path': str(Path(b['audio_path']).relative_to(folder))} for b in voiceover['beats']]})
+    _preview(voiceover, folder/'preview.wav')
+    for aspect in ('square','vertical'):
+        write_short_captions(voiceover, folder/f'captions-{aspect}', aspect=aspect)
+    return {'arc': result['arc'], 'title': result['script'].get('title'), 'seconds': voiceover['duration'],
+            'wpm': voiceover['words_per_minute'], 'beats': len(voiceover['beats']),
+            'movie_lines': sum(1 for b in voiceover['beats'] if b['kind'] == 'dialogue'),
+            'tempo': [b.get('tempo') for b in voiceover['beats'] if b['kind'] == 'narration'],
+            'timing': sorted({b.get('timing_provenance') or '' for b in voiceover['beats']}),
+            'repairs': voiceover.get('warnings', [])}
 
 
 def run_render(discover: Path, voice: Path, output: Path, workdir: Path, *,
@@ -319,8 +332,6 @@ def run_package(discover: Path, scripts: Path, voice: Path, render: Path, output
                 parts: Path | None = None) -> dict:
     """Everything needed to upload each Short, in one folder per story."""
     import shutil
-    from .covers import contact_sheet, make_covers
-    from .publish import write_package
     discover, scripts, voice, render, output = (Path(p).resolve() for p in (discover, scripts, voice, render, output))
     research = json.loads((discover/'research.json').read_text())
     arcs = {a['id']: a for a in json.loads((discover/'arcs.json').read_text())['arcs']}
@@ -350,18 +361,31 @@ def run_package(discover: Path, scripts: Path, voice: Path, render: Path, output
             if srt.exists():
                 shutil.copyfile(srt, folder/f'captions-{aspect}.srt')
         main_video = folder/('final-vertical.mp4' if (folder/'final-vertical.mp4').exists() else 'final-square.mp4')
-        shot_parts = Path(parts).resolve()/arc_id if parts and (Path(parts)/arc_id).exists() else None
-        made = make_covers(main_video, edl, results[arc_id]['script'].get('title', ''), folder,
-                           aspects=tuple(outputs), text_reader=text_reader, face_finder=face_finder,
-                           parts=shot_parts, plans=rendered.get('plans'))
-        sheet = contact_sheet(main_video, edl['duration'], folder/'contact-sheet.jpg')
-        pack = write_package(folder, result=results[arc_id], research=research, arc=arcs[arc_id], clips=clips,
-                             voiceover=voiceover, edl=edl, render=outputs, covers=made, sheet=str(sheet),
-                             target_seconds=length)
-        rows.append({'arc': arc_id, 'title': pack['titles'][0] if pack['titles'] else None, 'verdict': pack['verdict'],
-                     'warnings': [f"{c['check']}: {c['detail']}" for c in pack['checks'] if c['status'] != 'pass']})
+        try:
+            rows.append(_package_story(arc_id, folder, main_video, rendered, outputs, edl, voiceover, results, research,
+                                       arcs, clips, text_reader, face_finder, parts, length))
+        except Exception as exc:  # noqa: BLE001 - the videos are already in the folder; only extras are missing
+            print(f'Packaging {arc_id} incomplete: {str(exc)[:300]}', file=sys.stderr)
+            rows.append({'arc': arc_id, 'title': results.get(arc_id, {}).get('script', {}).get('title'),
+                         'verdict': 'warn', 'warnings': [f'packaging incomplete: {str(exc)[:200]}']})
     write_json(output/'summary.json', rows)
     return {'packages': rows}
+
+
+def _package_story(arc_id, folder, main_video, rendered, outputs, edl, voiceover, results, research, arcs, clips,
+                   text_reader, face_finder, parts, length) -> dict:
+    from .covers import contact_sheet, make_covers
+    from .publish import write_package
+    shot_parts = Path(parts).resolve()/arc_id if parts and (Path(parts)/arc_id).exists() else None
+    made = make_covers(main_video, edl, results[arc_id]['script'].get('title', ''), folder,
+                       aspects=tuple(outputs), text_reader=text_reader, face_finder=face_finder,
+                       parts=shot_parts, plans=rendered.get('plans'))
+    sheet = contact_sheet(main_video, edl['duration'], folder/'contact-sheet.jpg')
+    pack = write_package(folder, result=results[arc_id], research=research, arc=arcs[arc_id], clips=clips,
+                         voiceover=voiceover, edl=edl, render=outputs, covers=made, sheet=str(sheet),
+                         target_seconds=length)
+    return {'arc': arc_id, 'title': pack['titles'][0] if pack['titles'] else None, 'verdict': pack['verdict'],
+            'warnings': [f"{c['check']}: {c['detail']}" for c in pack['checks'] if c['status'] != 'pass']}
 
 
 def _footage(clip_ids, screened: dict, workdir: Path) -> dict[str, str]:

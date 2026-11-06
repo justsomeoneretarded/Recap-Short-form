@@ -129,6 +129,7 @@ def test_usd_notation_and_explicit_currency_forms_share_estimated_intervals(text
 
 @pytest.mark.parametrize('recover', [False,True])
 def test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(tmp_path,monkeypatch,recover):
+    monkeypatch.setenv('SHORTS_STRICT_SPEECH','1')  # strict mode: a take that never passes stops the Short
     text='He takes the bag and runs.'
     omitted=[{'word':word,'start':index*.2,'end':index*.2+.15}  # the take dropped a content word ("bag")
              for index,word in enumerate('He takes the and runs.'.split())]
@@ -174,3 +175,25 @@ def test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(tm
     assert len(calls)==(2 if recover else 6)  # three tries per Short, the last in the careful delivery
     # Failed attempts never acquire success metadata or masquerade as cache hits.
     assert len(list((tmp_path/'speech').glob('*.json')))==(1 if recover else 0)
+
+
+def test_unverified_take_is_kept_and_flagged_by_default(tmp_path,monkeypatch):
+    text='He takes the bag and runs.'
+    omitted=[{'word':w,'start':i*.2,'end':i*.2+.15} for i,w in enumerate('He takes the and runs.'.split())]
+    reference=tmp_path/'warguy.ogg'
+    reference.write_bytes(b'reference-fixture')
+    monkeypatch.delenv('SHORTS_STRICT_SPEECH',raising=False)
+    monkeypatch.setattr(voice,'voice_reference',lambda *args: reference)
+    monkeypatch.setattr(voice,'_duration',lambda *args: 2)
+    class Synthesizer:
+        def __init__(self,*args): pass
+        def generate(self,script,path,delivery,seed):
+            path.write_bytes(b'take')
+    class Verifier:
+        def transcribe(self,path,hint=''):
+            return omitted
+    monkeypatch.setattr(voice,'_Synthesizer',Synthesizer)
+    monkeypatch.setattr(voice,'_Verifier',Verifier)
+    beat=synthesize_plan({'beats':[{'id':'b1','kind':'narration','text':text}]},'warguy',tmp_path)['beats'][0]
+    assert beat['timing_provenance']=='unverified-take' and 'not fully verified' in beat['warning']
+    assert [w['word'] for w in beat['words']]==text.split() and Path(beat['audio_path']).read_bytes()==b'take'
