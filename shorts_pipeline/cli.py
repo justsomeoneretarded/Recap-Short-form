@@ -111,14 +111,26 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     """Movie name → ranked, placed clip list (clips.json) plus a short summary."""
     from .discovery import YouTube, discover
     from .placement import place_candidates
+    timings, clock = {}, time.time()
+
+    def lap(name):
+        nonlocal clock
+        timings[name] = round(time.time() - clock, 1)
+        print(f"[discover] {name}: {timings[name]} s", file=sys.stderr, flush=True)
+        clock = time.time()
+
     research = run_research(movie, workdir, output)
+    lap('research')
     youtube = YouTube()
     found = discover(research, youtube)
+    lap('search_and_rank')
     placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
+    lap('download_and_place')
     screened = {}
     if screen:
         from .screening import screen_candidates
         screened = {r['id']: r for r in screen_candidates(placed, youtube, Path(workdir).resolve(), top=screen)}
+    lap('screen')
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     write_json(output/'screening.json', list(screened.values()))
@@ -148,7 +160,7 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
                'arcs': [{'id': a['id'], 'movie': [a['movie_start'], a['movie_end']], 'footage': a['footage_seconds'],
                          'score': a['score'], 'scenes': [s['clip_title'][:40] for s in a['scenes']],
                          'shorter': a['shorter_than_requested']} for a in stories['arcs']],
-               'clips': rows}
+               'clips': rows, 'timings_seconds': timings}
     write_json(output/'summary.json', summary)
     return summary
 

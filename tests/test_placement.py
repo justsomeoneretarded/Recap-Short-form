@@ -115,3 +115,20 @@ def test_captions_skipped_without_cookies(tmp_path):
                                 tmp_path, comments_for=0, transcribe=lambda audio: [])
     placement = result["clips"][0]["placement"]
     assert placement["caption_error"].startswith("skipped") and ("captions", "cap") not in youtube.calls
+
+
+def test_clips_are_downloaded_ahead_once_each(tmp_path):
+    (tmp_path / "movie.srt").write_text(srt())
+    research = {"movie": {"tmdb_id": 8}, "subtitles": {"path": str(tmp_path / "movie.srt")}}
+    discovered = {"candidates": [{"id": f"c{i}", "title": "clip", "duration": 60} for i in range(5)]}
+    class Reuse(FakeYouTube):
+        signed_in = False
+
+        def download(self, vid, folder):  # like the real client: an existing file is not fetched again
+            path = folder / f"{vid}.mp4"
+            return path if path.exists() else super().download(vid, folder)
+
+    youtube = Reuse({})
+    p.place_candidates(research, discovered, youtube, tmp_path, transcribe=lambda audio: [], comments_for=0)
+    videos = [vid for kind, vid in youtube.calls if kind == "video"]
+    assert sorted(videos) == [f"c{i}" for i in range(5)]  # prefetched, never twice

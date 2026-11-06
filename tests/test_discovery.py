@@ -111,3 +111,35 @@ def test_youtube_budget_stops_requests_and_node_runtime_is_enabled(monkeypatch):
     assert d.YouTube(proxy="", cookies="")._options(False, {})["js_runtimes"] == {"node": {}}
     monkeypatch.setenv("SHORTS_YTDLP_NODE", "0")
     assert "js_runtimes" not in d.YouTube(proxy="", cookies="")._options(False, {})
+
+
+def test_parallel_lookups_give_the_same_result_as_one_at_a_time(monkeypatch):
+    import threading
+    import time as _time
+    results = {f"q{i}": [{"id": f"v{i}{j}", "title": f"Nobody scene {i}{j}", "view_count": 1000 * (10 - j)}
+                         for j in range(3)] for i in range(4)}
+    infos = {v["id"]: info(v["id"], v["title"], views=v["view_count"]) for r in results.values() for v in r}
+
+    class Slow(FakeYouTube):
+        def __init__(self, *a):
+            super().__init__(*a)
+            self.active = self.peak = 0
+            self.lock = threading.Lock()
+
+        def info(self, vid):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            _time.sleep(0.02)
+            with self.lock:
+                self.active -= 1
+            return super().info(vid)
+
+    monkeypatch.setattr(d, "build_queries", lambda movie, hints=None: list(results))
+    monkeypatch.setenv("SHORTS_YOUTUBE_WORKERS", "1")
+    serial = d.discover({"movie": MOVIE}, FakeYouTube(results, infos))
+    monkeypatch.setenv("SHORTS_YOUTUBE_WORKERS", "3")
+    slow = Slow(results, infos)
+    parallel = d.discover({"movie": MOVIE}, slow)
+    assert [c["id"] for c in parallel["candidates"]] == [c["id"] for c in serial["candidates"]]
+    assert slow.peak > 1

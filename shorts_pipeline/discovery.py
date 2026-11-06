@@ -282,6 +282,20 @@ class YouTube:
         return (manual or files or [None])[0]
 
 
+def youtube_workers() -> int:
+    """How many YouTube requests run at once (few, so the runner does not look like a bot)."""
+    return max(1, int(os.environ.get("SHORTS_YOUTUBE_WORKERS", "3")))
+
+
+def _parallel(function, items: list) -> list:
+    """function(item) for every item, a few at a time, results in input order."""
+    from concurrent.futures import ThreadPoolExecutor
+    if youtube_workers() == 1 or len(items) < 2:
+        return [function(item) for item in items]
+    with ThreadPoolExecutor(max_workers=youtube_workers()) as pool:
+        return list(pool.map(function, items))
+
+
 def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None = None, per_query: int = 10,
              max_full: int = 30) -> dict:
     """Search, filter and rank candidates. Returns kept candidates (best first) and every rejection."""
@@ -293,11 +307,17 @@ def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None 
     errors: list[dict] = []
     for key in official:  # studio clips are candidates even if search misses them
         found[key] = {"id": key, "title": "", "query": "tmdb official clip"}
-    for query in queries:
+    # Searches and info lookups wait on the network, so a few run at once; results are
+    # handled in the original order, so the outcome is the same as one at a time.
+    def search(query):
         try:
-            entries = youtube.search(query, per_query)
+            return youtube.search(query, per_query), None
         except RuntimeError as exc:
-            errors.append({"query": query, "error": str(exc)[:200]})
+            return [], {"query": query, "error": str(exc)[:200]}
+
+    for query, (entries, error) in zip(queries, _parallel(search, queries)):
+        if error:
+            errors.append(error)
             continue
         for entry in entries:
             if not entry.get("id") or entry["id"] in found:
@@ -310,11 +330,17 @@ def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None 
                                   "flat_views": entry.get("view_count") or 0}
     ordered = sorted(found.values(), key=lambda e: (e["id"] not in official, -(e.get("flat_views") or 0)))
     kept: list[Candidate] = []
-    for entry in ordered[:max_full]:
+
+    def lookup(entry):
         try:
-            info = youtube.info(entry["id"])
+            return youtube.info(entry["id"]), None
         except RuntimeError as exc:
-            errors.append({"video": entry["id"], "error": str(exc)[:200]})
+            return None, {"video": entry["id"], "error": str(exc)[:200]}
+
+    chosen = ordered[:max_full]
+    for entry, (info, error) in zip(chosen, _parallel(lookup, chosen)):
+        if error:
+            errors.append(error)
             continue
         reason = prefilter(info, movie) if entry["id"] not in official else None
         fmt = best_format(info)

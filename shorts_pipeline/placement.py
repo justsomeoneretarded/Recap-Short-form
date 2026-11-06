@@ -85,6 +85,13 @@ def place_clip(candidate: dict, movie: MovieTranscript | None, youtube: YouTube,
     return result
 
 
+def _prefetch(youtube: YouTube, video_id: str, workdir: Path) -> None:
+    try:
+        _media(youtube, video_id, workdir)
+    except Exception:  # noqa: BLE001 - placement retries and records the error itself
+        pass
+
+
 def place_candidates(research: dict, discovered: dict, youtube: YouTube, workdir: Path, *, top: int = 12,
                      comments_for: int = 3, use_whisper: bool = True, transcribe=whisper_words) -> dict:
     subtitles = research.get("subtitles", {}).get("path")
@@ -94,8 +101,19 @@ def place_candidates(research: dict, discovered: dict, youtube: YouTube, workdir
     done = json.loads(cache.read_text()) if cache.exists() else {}
     placed = []
     import time
+    from concurrent.futures import ThreadPoolExecutor
     deadline = time.monotonic() + float(os.environ.get("SHORTS_PLACEMENT_BUDGET", "1500"))
+    # Download the next clips in the background while Whisper listens to the current one
+    # (network and CPU overlap). Screening and the edit reuse the same files.
+    ahead = int(os.environ.get("SHORTS_PREFETCH", "10")) if use_whisper else 0
+    pool = ThreadPoolExecutor(max_workers=2) if ahead else None
+    pending = {}
+    for candidate in discovered["candidates"][:min(top, ahead)]:
+        if candidate["id"] not in done:
+            pending[candidate["id"]] = pool.submit(_prefetch, youtube, candidate["id"], Path(workdir))
     for rank, candidate in enumerate(discovered["candidates"][:top]):
+        if candidate["id"] in pending:
+            pending.pop(candidate["id"]).result()  # never download the same file twice at once
         row = dict(candidate)
         if candidate["id"] not in done and time.monotonic() > deadline:
             row["placement"] = {"matched": False, "reason": "time budget reached"}
@@ -116,6 +134,8 @@ def place_candidates(research: dict, discovered: dict, youtube: YouTube, workdir
             cache.write_text(json.dumps(done, indent=1))
             row.update(evidence)
         placed.append(row)
+    if pool:
+        pool.shutdown(wait=True)
     placed_count = sum(1 for p in placed if p["placement"].get("matched"))
     return {"clips": placed, "placed": placed_count, "considered": len(placed),
             "timeline": sorted(({"id": p["id"], "title": p["title"], "start": p["placement"]["movie_start"],
