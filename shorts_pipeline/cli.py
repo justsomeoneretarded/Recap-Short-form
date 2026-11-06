@@ -131,6 +131,8 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
              'movie_time': [c['placement'].get('movie_start'), c['placement'].get('movie_end')]
              if c['placement'].get('matched') else None,
              'segments_placed': c['placement'].get('segments_placed'),
+             'caption_note': c['placement'].get('caption_error') or (None if c['placement'].get('caption_file')
+                                                                    else 'no caption file'),
              'screen': (None if c['id'] not in screened else
                         'pass' if screened[c['id']].get('accept') else '; '.join(screened[c['id']].get('reasons', [])))}
             for i, c in enumerate(placed['clips'])]

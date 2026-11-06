@@ -98,9 +98,9 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     """Group OCR boxes into subtitles, watermarks, promo cards and incidental scene text."""
     subtitle_frames, subtitle_texts, inside_picture = 0, set(), 0
     corner: Counter = Counter()
-    promo_frames = 0
+    promo_frames, promo_times = 0, []
     ax0, ay0, ax1, ay1 = active
-    for _, rows, frame in samples:
+    for when, rows, frame in samples:
         has_sub = False
         for row in rows:
             x0, y0, x1, y1 = _norm(row["box"], frame)
@@ -109,6 +109,7 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
             rel_x = (cx - ax0) / max(1e-6, ax1 - ax0)
             if PROMO.search(row["text"]):
                 promo_frames += 1
+                promo_times.append(round(when, 1))
             near_corner = (rel_x < 0.22 or rel_x > 0.78) and (rel_y < 0.2 or rel_y > 0.85)
             if near_corner and (x1 - x0) < 0.3:
                 corner[(round(cx, 1), round(cy, 1), row["text"].lower()[:12])] += 1
@@ -122,7 +123,7 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     watermarks = [{"x": k[0], "y": k[1], "text": k[2], "frames": v} for k, v in corner.items() if v / n >= 0.4]
     return {"frames": len(samples), "subtitle_frames": subtitle_frames, "subtitle_share": round(subtitle_frames / n, 3),
             "distinct_subtitle_lines": len(subtitle_texts), "subtitle_boxes_inside_picture": inside_picture,
-            "watermarks": watermarks, "promo_frames": promo_frames}
+            "watermarks": watermarks, "promo_frames": promo_frames, "promo_times": sorted(set(promo_times))}
 
 
 def mirrored(samples: list[tuple[float, list[dict], np.ndarray]], checks: int = 4) -> dict:
@@ -177,9 +178,19 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
             notes.append("subtitles only in the black bars (removed by the crop)")
     for mark in text["watermarks"]:
         notes.append(f"watermark near ({mark['x']}, {mark['y']}): '{mark['text']}' — keep out of the crop")
-    if text["promo_frames"] >= 2 or (text["promo_frames"] and cutting["average_shot_seconds"] < 1.3):
-        reasons.append("trailer or promo material (promo cards)")
-    elif cutting["average_shot_seconds"] < 0.9 and info["duration"] > 20:
+    usable = [0.0, info["duration"]]
+    # Studio clip uploads open/close with title or "available on digital" cards: allow them at the ends
+    # (up to 8 s / 25 s, and never more than 15 % / 25 % of a short clip).
+    head, tail = min(8.0, 0.15 * info["duration"]), min(25.0, 0.25 * info["duration"])
+    middle = [t for t in text["promo_times"] if head < t < info["duration"] - tail]
+    if len(middle) >= 2 or (middle and cutting["average_shot_seconds"] < 1.3):
+        reasons.append("trailer or promo material (promo cards inside the clip)")
+    elif text["promo_times"]:
+        early = [t for t in text["promo_times"] if t <= head]
+        late = [t for t in text["promo_times"] if t >= info["duration"] - tail]
+        usable = [max(early) + every if early else 0.0, min(late) - every if late else info["duration"]]
+        notes.append(f"promo/end cards trimmed: usable {usable[0]:.1f}–{usable[1]:.1f} s")
+    if cutting["average_shot_seconds"] < 0.9 and info["duration"] > 20 and not reasons:
         reasons.append("trailer-like cutting (average shot under 0.9 s)")
     if flip["mirrored"]:
         reasons.append("mirrored upload (on-screen text reads backwards)")
@@ -189,7 +200,7 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
         notes.append(f"black bars: active picture {active['box']}")
     if (info.get("height") or 0) < 720:
         notes.append(f"low resolution ({info.get('height')}p)")
-    return {"accept": not reasons, "reasons": reasons, "notes": notes, "active": active, "text": text,
+    return {"accept": not reasons, "reasons": reasons, "notes": notes, "usable": usable, "active": active, "text": text,
             "mirror_check": flip, "cutting": cutting, "width": info.get("width"), "height": info.get("height"),
             "fps": info.get("fps"), "duration": info.get("duration")}
 

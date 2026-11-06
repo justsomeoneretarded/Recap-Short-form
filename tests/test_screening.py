@@ -35,6 +35,8 @@ def videos(tmp_path_factory):
         "promo": make(d / "promo.mp4", f"drawtext=fontfile={FONT}:text='IN THEATERS JULY 4':fontsize=48:fontcolor=white:"
                                        "x=(w-tw)/2:y=(h-th)/2:enable='lt(mod(t,4),2)'"),
         "mirror": make(d / "mirror.mp4", subtitles("h*0.80") + ",hflip"),
+        "endcard": make(d / "endcard.mp4", f"drawtext=fontfile={FONT}:text='AVAILABLE ON DIGITAL NOW':fontsize=44:"
+                                           "fontcolor=white:x=(w-tw)/2:y=(h-th)/2:enable='gte(t,9)'", seconds=12),
     }
 
 
@@ -57,6 +59,12 @@ def test_subtitles_only_in_black_bars_are_allowed(videos):
 def test_corner_watermark_is_noted_not_rejected(videos):
     report = s.screen(videos["mark"])
     assert report["accept"] and report["text"]["watermarks"]
+
+
+def test_end_card_is_trimmed_not_rejected(videos):
+    report = s.screen(videos["endcard"])
+    assert report["accept"], report["reasons"]
+    assert report["usable"][1] <= 9.0 and any("trimmed" in n for n in report["notes"])
 
 
 def test_promo_cards_are_rejected(videos):

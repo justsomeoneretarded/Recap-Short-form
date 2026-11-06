@@ -193,6 +193,7 @@ class YouTube:
         self.proxy = proxy if proxy is not None else os.environ.get("YTDLP_FALLBACK_PROXY", "")
         self.cookies = cookies if cookies is not None else os.environ.get("YOUTUBE_COOKIE_FILE", "")
         self.pause = pause
+        self.bot_backoff = float(os.environ.get("SHORTS_BOT_BACKOFF", "30"))
         self.prefer_proxy = False  # once the direct route is bot-checked, go straight to the proxy
         self.log: list[dict] = []
 
@@ -210,7 +211,7 @@ class YouTube:
         routes = ([True] if self.prefer_proxy else [False]) + ([True] if self.proxy and not self.prefer_proxy else [])
         last = "no route"
         for use_proxy in routes:
-            for attempt in range(2):
+            for attempt in range(3):
                 try:
                     with yt_dlp.YoutubeDL(self._options(use_proxy, extra)) as ydl:
                         info = ydl.extract_info(target, download=not extra.get("skip_download", True))
@@ -224,6 +225,9 @@ class YouTube:
                     if bot and not use_proxy and self.proxy:
                         self.prefer_proxy = True
                         break
+                    if bot:  # the proxy route was challenged too: back off before retrying
+                        time.sleep(self.bot_backoff * (attempt + 1))
+                        continue
                     if "unavailable" in last.lower() or "private" in last.lower():
                         raise RuntimeError(last) from exc
                     time.sleep(self.pause * (attempt + 1))
