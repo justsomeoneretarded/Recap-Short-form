@@ -1,0 +1,21 @@
+{
+  "movie": "John Wick: Chapter 3 - Parabellum (2019)",
+  "note": "Phase 0 writing sample. Scene facts are paraphrased story events for the opening stretch, standing in for the scene dossiers the new pipeline will build from subtitles and clips.",
+  "target_seconds": 60,
+  "scenes": [
+    {"id": "s1", "seconds": 9, "shows": "A wounded man in a soaked suit runs through rainy New York streets at night, checking a clock.", "dialogue": []},
+    {"id": "s2", "seconds": 8, "shows": "He was declared excommunicado for killing a crime-lord member on hotel grounds; a $14 million bounty goes live in one hour.", "dialogue": []},
+    {"id": "s3", "seconds": 10, "shows": "In a public library he retrieves a hidden book holding a medallion and a crucifix. A giant hitman blocks the aisle.", "dialogue": ["I still have time.", "Who's gonna know the difference?"]},
+    {"id": "s4", "seconds": 9, "shows": "The giant overpowers him. He grabs a heavy book from the shelf and beats the man down with it.", "dialogue": []},
+    {"id": "s5", "seconds": 8, "shows": "Bleeding, he reaches an underground doctor who must stop treating him the moment the clock strikes six.", "dialogue": []},
+    {"id": "s6", "seconds": 8, "shows": "The clock strikes. The doctor stops. He finishes stitching himself, then asks to be shot in the shoulder to keep his cover.", "dialogue": ["Good luck, Mr. Wick."]},
+    {"id": "s7", "seconds": 8, "shows": "Out on the street, phones buzz everywhere. Every stranger turns to look at him.", "dialogue": []}
+  ],
+  "rules": [
+    "Open on the most intense visible moment, not on background.",
+    "Present tense, plain spoken English, short sentences, concrete nouns and verbs.",
+    "Each scene's narration must fit its seconds at about 3.3 words per second, leaving room for the listed dialogue.",
+    "Use cause and effect: but, so, then. No filler such as 'in this movie' or 'little did he know'.",
+    "End so the last line flows back into the opening shot (Shorts loop)."
+  ]
+}

@@ -1,0 +1,155 @@
+name: Phase 0 probes
+
+# Measurements only: these jobs never change production code or packages.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/**']
+    paths:
+      - 'scripts/phase0/**'
+      - '.github/workflows/phase0-probes.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase0-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROBE_OUT: work/phase0
+
+jobs:
+  youtube:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install FFmpeg and downloader
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg jq
+          python -m pip install 'yt-dlp[default]>=2026.1.1' 'bgutil-ytdlp-pot-provider>=2.0' requests
+      - name: Start YouTube proof-of-origin token provider
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare optional WARP fallback route
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/phase0/warp_proxy.sh
+      - name: Probe search, ranking signals and downloads
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: python -u scripts/phase0/probe_youtube.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase0-youtube
+          path: work/phase0/youtube
+          retention-days: 7
+
+  research:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install requests
+      - name: Probe plot, subtitle and screenplay sources
+        env:
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+          OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
+        run: python -u scripts/phase0/probe_research.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase0-research
+          path: work/phase0/research
+          retention-days: 7
+
+  writers-github:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      models: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install requests
+      - name: Write the sample brief with GitHub Models
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -u scripts/phase0/probe_writers.py --backend github
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase0-writers-github
+          path: work/phase0/writers-github
+          retention-days: 7
+
+  writers-gemma:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SCRIPT_MODEL: gemma4:12b
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zstd
+          python -m pip install requests
+      - name: Start Ollama with Top10's Gemma 4 12B setup
+        run: |
+          python scripts/install_ollama.py
+          "$RUNNER_TEMP/shorts-ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:11434/api/version && break; sleep 1; done
+          "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull gemma4:12b
+      - name: Write the sample brief with Gemma
+        run: python -u scripts/phase0/probe_writers.py --backend ollama --model gemma4:12b
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase0-writers-gemma
+          path: work/phase0/writers-ollama
+          retention-days: 7
+
+  interpolation:
+    needs: youtube
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install FFmpeg and CPU Vulkan (lavapipe)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg mesa-vulkan-drivers libvulkan1 libgomp1
+          python -m pip install requests
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: phase0-youtube
+          path: work/phase0/youtube
+      - name: Time 24→60 fps methods
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -u scripts/phase0/probe_interpolation.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase0-interpolation
+          path: work/phase0/interpolation
+          retention-days: 7
