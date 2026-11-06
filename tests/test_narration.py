@@ -104,3 +104,13 @@ def test_narrator_check_accepts_small_recognition_slips_but_not_skipped_speech()
         _align_script(text, dropped, 6.0, tolerant=True)
     split = _heard("John Wick limps into the Continental and Wins ton refuses him shelter so he runs again tonight".split())
     assert len(_align_script(text, split, 6.0, tolerant=True)) == len(text.split())  # one name heard as two words
+
+
+def test_word_times_are_tidied_for_captions():
+    from shorts_pipeline.narration import tidy_words
+    from shorts_pipeline.voice import validate_words
+    rough = [{"word": "He", "start": 0.0, "end": 0.3}, {"word": "fires", "start": 0.25, "end": 0.6},
+             {"word": "3", "start": 0.6, "end": 0.65}, {"word": "shots", "start": 0.55, "end": 0.9},
+             {"word": "now.", "start": 0.9, "end": 1.31}]
+    clean = tidy_words(rough, 1.2)
+    assert validate_words("He fires 3 shots now.", clean, 1.2) == clean  # ordered, inside the audio

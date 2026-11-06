@@ -121,6 +121,22 @@ def forced_align(audio: Path, text: str) -> list[dict] | None:
     return rows
 
 
+def tidy_words(words: list[dict], duration: float) -> list[dict]:
+    """Word times in order, inside the audio, never overlapping.
+
+    Aligners can return a word that starts a hair before the previous one ends, a token they
+    cannot time (a number, a dash) on top of its neighbour, or a last word just past the end of
+    the audio. Captions need clean, ordered times, so small slips are fixed here.
+    """
+    rows, previous = [], 0.0
+    for word in words:
+        start = min(max(float(word["start"]), previous), max(0.0, duration - 0.01))
+        end = min(max(float(word["end"]), start + 0.01), duration)
+        rows.append({**word, "start": round(start, 3), "end": round(end, 3)})
+        previous = end
+    return rows
+
+
 def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narrator: str, workdir: Path,
                          model: str = "original", synthesize=None) -> dict:
     """Return a timeline of voice beats with audio paths, durations and word timings."""
@@ -146,7 +162,8 @@ def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narra
             if not words:
                 words = [{**w, "start": round(w["start"] / factor, 3), "end": round(w["end"] / factor, 3)}
                          for w in take["words"]]
-            item = {**beat, "audio_path": str(paced), "duration": duration, "tempo": factor, "words": words,
+            item = {**beat, "audio_path": str(paced), "duration": duration, "tempo": factor,
+                    "words": tidy_words(words, duration),
                     "timing_provenance": provenance,
                     "wpm": round(len(beat["text"].split()) * 60 / max(0.1, duration), 1)}
         else:
@@ -164,7 +181,8 @@ def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narra
                 step = max(0.05, (length - 2 * DIALOGUE_PAD) / max(1, len(parts)))
                 words = [{"word": w, "start": round(DIALOGUE_PAD + i * step, 3),
                           "end": round(DIALOGUE_PAD + (i + 1) * step, 3)} for i, w in enumerate(parts)]
-            item = {**beat, "audio_path": str(audio), "duration": _duration(audio), "words": words,
+            line_duration = _duration(audio)
+            item = {**beat, "audio_path": str(audio), "duration": line_duration, "words": tidy_words(words, line_duration),
                     "clip_id": scene["clip_id"], "timing_provenance": "forced-alignment-mms" if words else "even"}
         item["timeline_start"] = round(cursor, 3)
         cursor += item["duration"] + GAP_SECONDS
