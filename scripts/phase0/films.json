@@ -1,7 +1,7 @@
 [
-  {"title": "John Wick: Chapter 3 - Parabellum", "short": "John Wick Chapter 3", "year": 2019, "role": "popular action"},
-  {"title": "The Dark Knight", "short": "The Dark Knight", "year": 2008, "role": "popular, dialogue and action"},
-  {"title": "Nobody", "short": "Nobody", "year": 2021, "role": "mid-popularity action, ambiguous title"},
-  {"title": "Prisoners", "short": "Prisoners", "year": 2013, "role": "dialogue-heavy thriller"},
-  {"title": "Upgrade", "short": "Upgrade", "year": 2018, "role": "less popular action, ambiguous title"}
+  {"title": "The Conjuring", "short": "The Conjuring", "year": 2013, "role": "horror, dialogue and scares"},
+  {"title": "Fractured", "short": "Fractured", "year": 2019, "role": "mid-popularity thriller, ambiguous title"},
+  {"title": "John Wick", "short": "John Wick", "year": 2014, "role": "popular action"},
+  {"title": "Safe House", "short": "Safe House", "year": 2012, "role": "action thriller, ambiguous title"},
+  {"title": "Sicario", "short": "Sicario", "year": 2015, "role": "dialogue-heavy crime thriller"}
 ]

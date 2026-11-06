@@ -23,6 +23,9 @@ on:
       - 'shorts_pipeline/edit.py'
       - 'shorts_pipeline/reframe.py'
       - 'shorts_pipeline/render_short.py'
+      - 'shorts_pipeline/voice.py'
+      - 'shorts_pipeline/covers.py'
+      - 'scripts/phase0/films.json'
       - '.github/workflows/shorts-research.yml'
 
 permissions:
