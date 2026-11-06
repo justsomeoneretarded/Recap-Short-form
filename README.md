@@ -4,7 +4,7 @@ A standalone movie recap Shorts pipeline with its own **Generate Shorts** workfl
 
 The initial style profile comes from eight owner-supplied references: action before backstory, causal story beats, compact white italic captions, meaningful object/face shots, selected movie dialogue, and story-dependent endings. All supplied exports are 1080×1080, roughly 136–180 seconds. Square is the default; vertical is an explicit option. This is an initial implementation, not a verified recreation of the creator's production process.
 
-Read the [reference analysis](docs/reference-analysis.md), [ten-repository comparison](docs/technology-comparison.md), and [validation record](docs/validation.md). A [Gemma-written Warguy engineering preview](docs/validation-samples/automatic-warguy-pilot.mp4) demonstrates automatic writing plus real speech/editing. Its generated storyboard was resumed locally after an interrupted job; the existing reference captions overlap generated captions, so it is not a channel-ready Short.
+Read the [reference analysis](docs/reference-analysis.md), [ten-repository comparison](docs/technology-comparison.md), and [validation record](docs/validation.md). The [complete automatic workflow passed](https://github.com/justsomeoneretarded/Recap-Short-form/actions/runs/42165849180), producing a [14-second Warguy engineering preview](docs/validation-samples/automatic-warguy-pilot.mp4) at1080square/60fps. This test reused verified source analysis and generated a fresh script, voice and edit. The reference already has captions/narration, which overlap the generated content; the sample is not channel-ready.
 
 ## Generate a Short on GitHub
 
