@@ -25,6 +25,13 @@ for path in sorted(glob.glob(f"{root}/discover-*/summary.json")):
                     f"{'✔' if c['verified'] else ''} | {c['height']} | {c['score']} | {'yes' if c['compilation'] else ''} | "
                     f"{c['method'] or '–'}{' (' + str(c.get('segments_placed')) + ' segs)' if c.get('segments_placed') else ''} | "
                     f"{when} | {(c.get('screen') or '–')[:60]} |")
+    if s.get("arcs") is not None:
+        rows += ["", f"Stories (one Short each): {len(s['arcs'])}"]
+        for arc in s["arcs"]:
+            m = arc["movie"]
+            rows.append(f"- {arc['id']}: {int(m[0] // 60)}:{int(m[0] % 60):02d}–{int(m[1] // 60)}:{int(m[1] % 60):02d}, "
+                        f"{arc['footage']:.0f} s footage, score {arc['score']}{' (shorter)' if arc['shorter'] else ''}: "
+                        + " → ".join(arc["scenes"]))
     notes = sorted({(c.get("caption_note") or "")[:90] for c in s["clips"] if c.get("caption_note")})
     if notes:
         rows += ["", "Caption notes: " + " · ".join(notes[:3])]

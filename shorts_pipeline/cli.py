@@ -107,7 +107,7 @@ def run_research(movie: str, workdir: Path, output: Path | None = None) -> dict:
 
 
 def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_whisper: bool = True,
-                 screen: int = 0) -> dict:
+                 screen: int = 0, length: float = 150) -> dict:
     """Movie name → ranked, placed clip list (clips.json) plus a short summary."""
     from .discovery import YouTube, discover
     from .placement import place_candidates
@@ -122,6 +122,12 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     write_json(output/'screening.json', list(screened.values()))
+    from .arcs import build_arcs
+    from .locate import MovieTranscript
+    subtitles = research.get('subtitles', {}).get('path')
+    transcript = MovieTranscript.from_subtitles(Path(subtitles).read_text(errors='ignore')) if subtitles else None
+    stories = build_arcs(placed['clips'], screened, length, transcript)
+    write_json(output/'arcs.json', stories)
     write_json(output/'clips.json', {'movie': research['movie']['title'], 'queries': found['queries'],
                                      'placed': placed, 'rejected': found['rejected'], 'errors': found['errors'],
                                      'youtube_log': youtube.log[-200:]})
@@ -139,6 +145,9 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     summary = {'movie': research['movie']['title'], 'year': research['movie']['year'],
                'candidates': len(found['candidates']), 'rejected': len(found['rejected']),
                'search_errors': len(found['errors']), 'placed': placed['placed'], 'considered': placed['considered'],
+               'arcs': [{'id': a['id'], 'movie': [a['movie_start'], a['movie_end']], 'footage': a['footage_seconds'],
+                         'score': a['score'], 'scenes': [s['clip_title'][:40] for s in a['scenes']],
+                         'shorter': a['shorter_than_requested']} for a in stories['arcs']],
                'clips': rows}
     write_json(output/'summary.json', summary)
     return summary
@@ -162,6 +171,7 @@ def main(argv=None) -> int:
     scout.add_argument('--top',type=int,default=12,help='How many ranked clips to place in the movie')
     scout.add_argument('--no-whisper',action='store_true',help='Skip audio transcription for clips without captions')
     scout.add_argument('--screen',type=int,default=0,help='Download and screen this many top clips (0 = skip)')
+    scout.add_argument('--length',type=float,default=150,help='Target Short length in seconds, used to group stories')
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--ollama-url',default='http://127.0.0.1:11434')
     args = parser.parse_args(argv)
@@ -171,7 +181,7 @@ def main(argv=None) -> int:
             print(json.dumps({k:result[k] for k in ('movie','wikipedia','subtitles','warnings')},default=str,indent=2))
         elif args.command=='discover':
             summary=run_discover(args.movie,args.workdir,args.output,top=args.top,use_whisper=not args.no_whisper,
-                                 screen=args.screen)
+                                 screen=args.screen,length=args.length)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='generate':
             result=generate(json.loads(args.request.read_text()),args.workdir,args.output)

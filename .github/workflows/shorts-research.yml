@@ -17,6 +17,7 @@ on:
       - 'shorts_pipeline/placement.py'
       - 'shorts_pipeline/screening.py'
       - 'shorts_pipeline/compilations.py'
+      - 'shorts_pipeline/arcs.py'
       - '.github/workflows/shorts-research.yml'
 
 permissions:
@@ -149,6 +150,7 @@ jobs:
             output/discover/clips.json
             output/discover/research.json
             output/discover/screening.json
+            output/discover/arcs.json
           retention-days: 7
 
   summary:
