@@ -88,6 +88,24 @@ def generate(request: dict, workdir: Path, outdir: Path) -> dict:
         raise
 
 
+def run_research(movie: str, workdir: Path, output: Path | None = None) -> dict:
+    """Movie name → research.json (+ plot.txt, movie.srt), cached under the work directory."""
+    import shutil
+    from .research import research
+    result = research(movie, Path(workdir).resolve())
+    if output:
+        output = Path(output).resolve()
+        output.mkdir(parents=True, exist_ok=True)
+        write_json(output/'research.json', result)
+        for name in ('plot.txt', 'movie.srt'):
+            source = Path(result['folder'])/name
+            if source.exists():
+                shutil.copyfile(source, output/name)
+    for warning in result['warnings']:
+        print(f'Research warning: {warning}', file=sys.stderr)
+    return result
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Generate a standalone movie recap Short.')
     sub = parser.add_subparsers(dest='command',required=True)
@@ -95,11 +113,18 @@ def main(argv=None) -> int:
     make.add_argument('--request',required=True,type=Path)
     make.add_argument('--workdir',type=Path,default=Path('work/shorts'))
     make.add_argument('--output',type=Path,default=Path('output/shorts'))
+    find = sub.add_parser('research', help='Resolve a movie by name and gather plot and full subtitles.')
+    find.add_argument('--movie',required=True,help="Movie name, optionally with its year: 'Nobody (2021)'")
+    find.add_argument('--workdir',type=Path,default=Path('work/shorts'))
+    find.add_argument('--output',type=Path,default=None,help='Optional folder for research.json, plot.txt and movie.srt')
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--ollama-url',default='http://127.0.0.1:11434')
     args = parser.parse_args(argv)
     try:
-        if args.command=='generate':
+        if args.command=='research':
+            result=run_research(args.movie,args.workdir,args.output)
+            print(json.dumps({k:result[k] for k in ('movie','wikipedia','subtitles','warnings')},default=str,indent=2))
+        elif args.command=='generate':
             result=generate(json.loads(args.request.read_text()),args.workdir,args.output)
             print(json.dumps(result,default=str,indent=2))
         else:

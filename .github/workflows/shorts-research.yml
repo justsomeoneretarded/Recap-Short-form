@@ -1,0 +1,89 @@
+name: Shorts research
+
+# Phase 1: movie name → TMDB identity, cast, clips, Wikipedia plot and full subtitles.
+on:
+  workflow_dispatch:
+    inputs:
+      movie:
+        description: Movie name, optionally with its year, e.g. Nobody (2021)
+        required: true
+        type: string
+  push:
+    branches: ['claude/**']
+    paths:
+      - 'shorts_pipeline/research.py'
+      - 'shorts_pipeline/locate.py'
+      - '.github/workflows/shorts-research.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shorts-research-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  movies:
+    runs-on: ubuntu-24.04
+    outputs:
+      list: ${{ steps.pick.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pick
+        env:
+          MOVIE: ${{ inputs.movie }}
+        run: |
+          python - <<'EOF'
+          import json, os
+          movie = os.environ.get("MOVIE", "").strip()
+          films = [movie] if movie else [f"{f['title']} ({f['year']})" for f in json.load(open("scripts/phase0/films.json"))]
+          open(os.environ["GITHUB_OUTPUT"], "a").write(f"list={json.dumps(films)}\n")
+          EOF
+
+  research:
+    needs: movies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        movie: ${{ fromJSON(needs.movies.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -e .
+      - name: Cache research (saves subtitle download quota)
+        uses: actions/cache@v4
+        with:
+          path: work/shorts/research
+          key: shorts-research-v1-${{ hashFiles('shorts_pipeline/research.py') }}-${{ matrix.movie }}
+          restore-keys: shorts-research-v1-
+      - name: Research the movie
+        env:
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+          OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
+          MOVIE: ${{ matrix.movie }}
+        run: |
+          python -m shorts_pipeline research --movie "$MOVIE" --output output/research > research-summary.json
+          python - <<'EOF'
+          import json, os
+          r = json.load(open("output/research/research.json"))
+          m, w, s = r["movie"], r["wikipedia"], r["subtitles"]
+          lines = [f"### {m['title']} ({m['year']})",
+                   f"- TMDB {m['tmdb_id']} · IMDb {m['imdb_id']} · {m['runtime_minutes']} min · {', '.join(m['genres'])}",
+                   f"- Cast with photos: {sum(1 for c in m['cast'] if c['photo'])}/{len(m['cast'])} · official clips: {len(m['clips'])} · backdrops: {len(m['backdrops'])}",
+                   f"- Wikipedia: {w.get('page')} ({w.get('words')} plot words)",
+                   f"- Subtitles: {'cached' if s.get('cached') else s.get('release', s.get('skipped'))} · quota left: {s.get('remaining_quota', '–')}",
+                   *[f"- ⚠️ {x}" for x in r["warnings"]], ""]
+          print("\n".join(lines))
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("\n".join(lines) + "\n")
+          EOF
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: research-${{ strategy.job-index }}
+          path: output/research
+          retention-days: 7
