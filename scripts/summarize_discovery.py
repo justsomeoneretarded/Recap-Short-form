@@ -39,6 +39,12 @@ for path in sorted(glob.glob(f"{root}/voice-*/summary.json")):
     for v in json.load(open(path)):
         rows.append(f"- 🎙 {v['arc']} \"{v['title']}\": {v['seconds']:.0f} s, {v['wpm']} wpm, {v['movie_lines']} movie lines, "
                     f"tempo {v['tempo']}, timing {', '.join(v['timing'])}")
+for path in sorted(glob.glob(f"{root}/render-*/summary.json")):
+    for r in json.load(open(path)):
+        for aspect, o in r["outputs"].items():
+            rows.append(f"- 🎬 {r['arc']} {aspect}: {o['width']}×{o['height']} @ {o['fps']:.0f} fps, {o['duration']:.1f} s, "
+                        f"{o['integrated_lufs']:.1f} LUFS / {o['true_peak_db']:.1f} dBTP, duplicate frames {o['duplicate_frames']}, "
+                        f"{r['shots']} shots (median {r['median_shot']} s), framing {o['modes']}, {', '.join(o['interpolation'])}")
 for path in sorted(glob.glob(f"{root}/write-*/scripts.md")):
     rows += ["", "---", "", open(path, encoding="utf-8").read()]
 text = "\n".join(rows)

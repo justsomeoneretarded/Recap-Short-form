@@ -232,8 +232,14 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
                 footage[scene['clip_id']] = path
         voiceover = synthesize_voiceover(result, footage, arc, narrator, workdir, model)
         folder = output/result['arc']
-        folder.mkdir(parents=True, exist_ok=True)
-        write_json(folder/'voiceover.json', voiceover)
+        (folder/'audio').mkdir(parents=True, exist_ok=True)
+        import shutil
+        for beat in voiceover['beats']:  # bundle audio so another machine can render from this folder
+            local = folder/'audio'/f"{beat['id']}{Path(beat['audio_path']).suffix}"
+            shutil.copyfile(beat['audio_path'], local)
+            beat['audio_path'] = str(local)
+        write_json(folder/'voiceover.json', {**voiceover, 'beats': [
+            {**b, 'audio_path': str(Path(b['audio_path']).relative_to(folder))} for b in voiceover['beats']]})
         _preview(voiceover, folder/'preview.wav')
         for aspect in ('square','vertical'):
             write_short_captions(voiceover, folder/f'captions-{aspect}', aspect=aspect)
@@ -244,6 +250,46 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
                      'timing': sorted({b.get('timing_provenance') or '' for b in voiceover['beats']})})
     write_json(output/'summary.json', rows)
     return {'voiced': rows}
+
+
+def run_render(discover: Path, voice: Path, output: Path, workdir: Path, *,
+               aspects: tuple[str, ...] = ('square', 'vertical'), interpolation: str = 'auto') -> dict:
+    """Voiced stories → edit decision list → final-square.mp4 / final-vertical.mp4 per story."""
+    from .discovery import YouTube
+    from .edit import build_edl, shot_changes
+    from .render_short import render_short
+    discover, voice, output, workdir = (Path(p).resolve() for p in (discover, voice, output, workdir))
+    arcs = {a['id']: a for a in json.loads((discover/'arcs.json').read_text())['arcs']}
+    screened = {r['id']: r for r in json.loads((discover/'screening.json').read_text())} \
+        if (discover/'screening.json').exists() else {}
+    youtube, rows = YouTube(), []
+    for path in sorted(voice.glob('*/voiceover.json')):
+        folder = path.parent
+        voiceover = json.loads(path.read_text())
+        for beat in voiceover['beats']:
+            beat['audio_path'] = str((folder/beat['audio_path']).resolve())
+        arc = arcs[voiceover['arc']]
+        footage, cuts = {}, {}
+        for scene in arc['scenes']:
+            clip = screened.get(scene['clip_id'], {}).get('path')
+            if not clip or not Path(clip).exists():
+                found = youtube.download(scene['clip_id'], workdir/'footage')
+                clip = str(found) if found else None
+            if not clip:
+                raise RuntimeError(f"Footage {scene['clip_id']} could not be downloaded")
+            footage[scene['clip_id']] = clip
+            cuts[scene['clip_id']] = shot_changes(Path(clip), scene['clip_start'], scene['clip_end'])
+        edl = build_edl(arc, voiceover, footage, cuts)
+        captions = {a: folder/f'captions-{a}'/'captions.ass' for a in aspects
+                    if (folder/f'captions-{a}'/'captions.ass').exists()}
+        reports = render_short(edl, voiceover, screened, captions, output/voiceover['arc'], aspects=aspects,
+                               interpolation=interpolation)
+        rows.append({'arc': voiceover['arc'], 'shots': edl['shot_count'], 'median_shot': edl['median_shot'],
+                     'outputs': {a: {k: r[k] for k in ('duration', 'width', 'height', 'fps', 'integrated_lufs',
+                                                        'true_peak_db', 'duplicate_frames', 'modes', 'interpolation')}
+                                 for a, r in reports.items()}})
+    write_json(output/'summary.json', rows)
+    return {'rendered': rows}
 
 
 def main(argv=None) -> int:
@@ -279,6 +325,13 @@ def main(argv=None) -> int:
     speak.add_argument('--narrator',default='warguy',choices=['warguy','kit-laser','female'])
     speak.add_argument('--tts-model',default='original',choices=['original','turbo','nano'])
     speak.add_argument('--max-arcs',type=int,default=5)
+    cut = sub.add_parser('render', help='Edit and render the voiced Shorts (square + vertical, 60 fps).')
+    cut.add_argument('--discover',type=Path,default=Path('output/discover'))
+    cut.add_argument('--voice',type=Path,default=Path('output/voice'))
+    cut.add_argument('--output',type=Path,default=Path('output/render'))
+    cut.add_argument('--workdir',type=Path,default=Path('work/shorts'))
+    cut.add_argument('--aspects',default='square,vertical')
+    cut.add_argument('--interpolation',default='auto',choices=['auto','rife','blend'])
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--ollama-url',default='http://127.0.0.1:11434')
     args = parser.parse_args(argv)
@@ -296,6 +349,11 @@ def main(argv=None) -> int:
         elif args.command=='voice':
             summary=run_voice(args.discover,args.scripts,args.output,args.workdir,narrator=args.narrator,
                               model=args.tts_model,max_arcs=args.max_arcs)
+            print(json.dumps(summary,default=str,indent=2))
+        elif args.command=='render':
+            summary=run_render(args.discover,args.voice,args.output,args.workdir,
+                               aspects=tuple(a.strip() for a in args.aspects.split(',') if a.strip()),
+                               interpolation=args.interpolation)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='generate':
             result=generate(json.loads(args.request.read_text()),args.workdir,args.output)

@@ -20,6 +20,9 @@ on:
       - 'shorts_pipeline/arcs.py'
       - 'shorts_pipeline/writer.py'
       - 'shorts_pipeline/narration.py'
+      - 'shorts_pipeline/edit.py'
+      - 'shorts_pipeline/reframe.py'
+      - 'shorts_pipeline/render_short.py'
       - '.github/workflows/shorts-research.yml'
 
 permissions:
@@ -259,8 +262,62 @@ jobs:
           path: output/voice
           retention-days: 7
 
+  render:
+    needs: [movies, voice]
+    if: always() && needs.voice.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        movie: ${{ fromJSON(needs.movies.outputs.list) }}
+    env:
+      SHORTS_YUNET_MODEL: ${{ github.workspace }}/work/models/face_detection_yunet_2023mar.onnx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install FFmpeg, OpenCV and downloader
+        timeout-minutes: 10
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq
+          python -m pip install -e '.[source,screening]' 'bgutil-ytdlp-pot-provider>=2.0'
+          mkdir -p work/models
+          curl -fsSL --retry 3 -o "$SHORTS_YUNET_MODEL" https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx || echo "::warning::YuNet face model unavailable; framing uses motion only"
+      - name: Start YouTube proof-of-origin token provider
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare WARP route
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/phase0/warp_proxy.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: discover-${{ strategy.job-index }}
+          path: output/discover
+      - uses: actions/download-artifact@v4
+        with:
+          name: voice-${{ strategy.job-index }}
+          path: output/voice
+      - name: Edit and render (square + vertical, 60 fps)
+        run: python -u -m shorts_pipeline render --discover output/discover --voice output/voice --output output/render --interpolation blend
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: render-${{ strategy.job-index }}
+          path: |
+            output/render/summary.json
+            output/render/*/final-*.mp4
+            output/render/*/render.json
+          retention-days: 7
+
   summary:
-    needs: [research, discover, write, voice]
+    needs: [research, discover, write, voice, render]
     if: always()
     runs-on: ubuntu-24.04
     steps:
