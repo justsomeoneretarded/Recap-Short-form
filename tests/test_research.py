@@ -137,6 +137,11 @@ def test_missing_subtitles_is_a_warning_not_a_failure(tmp_path):
     assert "path" not in result["subtitles"] and result["warnings"]
 
 
+def test_http_sends_our_user_agent_not_the_library_default():
+    import requests
+    assert r.Http(requests.Session()).session.headers["User-Agent"] == r.USER_AGENT
+
+
 def test_missing_tmdb_token_is_a_clear_error(tmp_path):
     with pytest.raises(r.ResearchError, match="TMDB_READ_TOKEN"):
         r.research("Nobody", tmp_path, http=r.Http(FakeSession([]), pause=0), tmdb_token="", subtitles_key="")

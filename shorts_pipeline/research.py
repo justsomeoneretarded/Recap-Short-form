@@ -26,7 +26,7 @@ TMDB = "https://api.themoviedb.org/3"
 TMDB_IMAGES = "https://image.tmdb.org/t/p/"
 WIKI = "https://en.wikipedia.org/w/api.php"
 OPENSUBTITLES = "https://api.opensubtitles.com/api/v1"
-RESEARCH_VERSION = 1
+RESEARCH_VERSION = 2
 
 
 class ResearchError(RuntimeError):
@@ -73,7 +73,9 @@ class Http:
 
     def __init__(self, session: requests.Session | None = None, attempts: int = 3, pause: float = 2.0):
         self.session = session or requests.Session()
-        self.session.headers.setdefault("User-Agent", USER_AGENT)
+        # requests ships its own default User-Agent, so setdefault would keep "python-requests/x",
+        # which Wikipedia refuses (HTTP 403, robot policy).
+        self.session.headers["User-Agent"] = USER_AGENT
         self.attempts, self.pause = attempts, pause
 
     def request(self, method: str, url: str, **kwargs) -> requests.Response:
@@ -272,7 +274,9 @@ def research(movie_text: str, workdir: Path, *, http: Http | None = None,
     if cache.exists():
         cached = json.loads(cache.read_text(encoding="utf-8"))
         if cached.get("version") == RESEARCH_VERSION and cached.get("movie", {}).get("tmdb_id") == movie["tmdb_id"]:
-            if cached.get("subtitles", {}).get("path") or not subtitles_key:
+            complete = cached.get("wikipedia", {}).get("words") and (cached.get("subtitles", {}).get("path")
+                                                                      or not subtitles_key)
+            if complete:
                 return cached
     folder.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []

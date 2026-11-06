@@ -1,0 +1,94 @@
+import pytest
+
+from shorts_pipeline import discovery as d
+
+MOVIE = {"title": "Nobody", "year": 2021, "genres": ["Action", "Thriller"],
+         "cast": [{"name": "Bob Odenkirk"}, {"name": "Connie Nielsen"}],
+         "clips": [{"key": "official1", "name": "Bus Fight Scene | Nobody (2021)"}]}
+
+
+def info(vid, title, views=1_000_000, subs=1_000_000, verified=True, height=1080, heat=True, **extra):
+    return {"id": vid, "title": title, "description": extra.pop("description", "Bob Odenkirk in Nobody (2021)"),
+            "duration": extra.pop("duration", 180), "view_count": views, "like_count": views // 50,
+            "channel": "Clips", "channel_follower_count": subs, "channel_is_verified": verified,
+            "heatmap": [{"start_time": 30, "end_time": 35, "value": 1.0}] if heat else None,
+            "formats": [{"vcodec": "avc1", "height": height, "fps": 24}], **extra}
+
+
+class FakeYouTube:
+    def __init__(self, results, infos):
+        self.results, self.infos, self.searched = results, infos, []
+
+    def search(self, query, count=10):
+        self.searched.append(query)
+        return self.results.get(query, [])
+
+    def info(self, vid):
+        if vid not in self.infos:
+            raise RuntimeError("Video unavailable")
+        return self.infos[vid]
+
+
+def test_queries_use_studio_clip_names_hints_and_genres():
+    queries = d.build_queries(MOVIE, scene_hints=["bus fight"])
+    assert queries[0] == "Nobody 2021 scene"
+    assert "Nobody Bus Fight Scene Nobody" not in queries and any("Bus Fight Scene" in q for q in queries)
+    assert "Nobody bus fight scene" in queries and "Nobody 2021 fight scene" in queries
+    assert queries[-1].endswith("compilation") or len(queries) == 12
+
+
+@pytest.mark.parametrize("title,reason", [
+    ("Nobody (2021) - Official Trailer", "title marks non-scene content"),
+    ("Nobody Ending Explained", "title marks non-scene content"),
+    ("Nobody Movie Recap in 10 minutes", "title marks non-scene content"),
+    ("Random action fight", "title names neither the film nor its cast"),
+])
+def test_prefilter_rejects(title, reason):
+    assert d.prefilter({"title": title, "duration": 120}, MOVIE) == reason
+
+
+def test_prefilter_accepts_cast_named_scene():
+    assert d.prefilter({"title": "Odenkirk bus fight scene", "duration": 120}, MOVIE) is None
+
+
+def test_identity_rejects_other_year_namesake():
+    other = info("x", "Nobody (2007) best scene", description="Nobody 2007 Japanese film")
+    assert not d.identity(other, MOVIE)["ok"]
+    assert d.identity(info("y", "Nobody bus fight scene"), MOVIE)["ok"]
+
+
+def test_score_rewards_audience_and_penalises_low_resolution():
+    big = d.score(info("a", "t", views=50_000_000, subs=5_000_000, verified=True))
+    small = d.score(info("b", "t", views=2_000, subs=300, verified=False, heat=False))
+    soft = d.score(info("c", "t", views=50_000_000, subs=5_000_000, height=480))
+    assert big["total"] > small["total"] and big["total"] > soft["total"]
+    assert big["parts"]["verified"] == 1 and small["parts"]["verified"] == 0
+
+
+def test_comment_peaks_weight_by_likes():
+    peaks = d.comment_peaks([{"text": "2:13 that look", "like_count": 900}, {"text": "0:45 lol", "like_count": 1},
+                             {"text": "9:99 nonsense"}, {"text": "2:13!!", "like_count": 10}], duration=300)
+    assert peaks[0]["second"] == 133 and peaks[1]["second"] == 45
+
+
+def test_discover_ranks_and_records_rejections():
+    results = {"Nobody 2021 scene": [
+        {"id": "big", "title": "Nobody bus fight scene", "view_count": 9_000_000},
+        {"id": "small", "title": "Nobody kitchen scene", "view_count": 5_000},
+        {"id": "trailer", "title": "Nobody Official Trailer", "view_count": 50_000_000},
+        {"id": "gone", "title": "Nobody house scene", "view_count": 10}]}
+    infos = {"big": info("big", "Nobody bus fight scene", views=9_000_000),
+             "small": info("small", "Nobody kitchen scene", views=5_000, subs=200, verified=False, heat=False),
+             "official1": info("official1", "Bus Fight Scene | Nobody (2021)", views=3_000_000)}
+    result = d.discover({"movie": MOVIE}, FakeYouTube(results, infos))
+    ids = [c["id"] for c in result["candidates"]]
+    assert ids[-1] == "small" and set(ids) == {"big", "small", "official1"}
+    assert any(r["id"] == "trailer" for r in result["rejected"])
+    assert any(e.get("video") == "gone" for e in result["errors"])
+    top = result["candidates"][0]
+    assert top["signals"]["verified"] and top["signals"]["heatmap_peaks"][0]["start"] == 30
+
+
+def test_compilation_flag_from_title_or_chapters():
+    movie_info = info("comp", "Nobody all fight scenes", chapters=[{"title": "a", "start_time": 0, "end_time": 60}])
+    assert d.candidate(movie_info, MOVIE, "q", set()).compilation

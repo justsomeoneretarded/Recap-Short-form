@@ -1,4 +1,4 @@
-name: Shorts research
+name: Shorts research and discovery
 
 # Phase 1: movie name → TMDB identity, cast, clips, Wikipedia plot and full subtitles.
 on:
@@ -13,6 +13,8 @@ on:
     paths:
       - 'shorts_pipeline/research.py'
       - 'shorts_pipeline/locate.py'
+      - 'shorts_pipeline/discovery.py'
+      - 'shorts_pipeline/placement.py'
       - '.github/workflows/shorts-research.yml'
 
 permissions:
@@ -88,25 +90,73 @@ jobs:
           path: output/research
           retention-days: 7
 
+  discover:
+    needs: movies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        movie: ${{ fromJSON(needs.movies.outputs.list) }}
+    env:
+      HF_HOME: ${{ github.workspace }}/work/huggingface
+      SHORTS_CPU_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install FFmpeg, downloader and Whisper
+        timeout-minutes: 10
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends ffmpeg jq
+          python -m pip install -e '.[source]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
+      - name: Start YouTube proof-of-origin token provider
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare WARP route
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/phase0/warp_proxy.sh
+      - name: Restore research, placements and Whisper model
+        uses: actions/cache@v4
+        with:
+          path: |
+            work/shorts/research
+            work/shorts/placement
+            work/huggingface
+          key: shorts-discover-v1-${{ hashFiles('shorts_pipeline/research.py', 'shorts_pipeline/placement.py', 'shorts_pipeline/locate.py') }}-${{ matrix.movie }}
+          restore-keys: shorts-discover-v1-
+      - name: Discover, rank and place clips
+        env:
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+          OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
+          MOVIE: ${{ matrix.movie }}
+        run: python -u -m shorts_pipeline discover --movie "$MOVIE" --output output/discover > /dev/null
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: discover-${{ strategy.job-index }}
+          path: |
+            output/discover/summary.json
+            output/discover/clips.json
+            output/discover/research.json
+          retention-days: 7
+
   summary:
-    needs: research
+    needs: [research, discover]
     if: always()
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: research-*
+          pattern: '*-*'
           path: all
       - name: One table for every movie
-        run: |
-          python - <<'EOF'
-          import json, glob, os
-          rows = ["| Movie | Cast photos | Clips | Plot words | Subtitles | Warnings |", "|---|---|---|---|---|---|"]
-          for path in sorted(glob.glob("all/*/research.json")):
-              r = json.load(open(path)); m = r["movie"]; s = r["subtitles"]
-              rows.append(f"| {m['title']} ({m['year']}) | {sum(1 for c in m['cast'] if c['photo'])} | {len(m['clips'])} | "
-                          f"{r['wikipedia'].get('words')} | {'yes' if s.get('path') else s.get('skipped')} | {' / '.join(r['warnings']) or '–'} |")
-          text = "\n".join(rows)
-          print("RESEARCH SUMMARY\n" + text)
-          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write(text + "\n")
-          EOF
+        run: python -u scripts/summarize_discovery.py all
