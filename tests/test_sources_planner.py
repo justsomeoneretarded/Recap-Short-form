@@ -673,7 +673,9 @@ def test_production_six_repair_uses_bounded_natural_sentences_and_preserves_all_
         alternatives = payload["format"]["properties"]["beats"]["items"]["oneOf"]
         assert [entry["properties"]["id"]["enum"] for entry in alternatives] == [["B001"], ["B002"], ["B003"]]
         for entry, beat, maximum in zip(alternatives, revised["beats"], [10, 12, 6]):
-            pattern = entry["properties"]["text"]["pattern"]
+            assert "pattern" not in entry["properties"]["text"]
+            assert f"3–{maximum} words" in entry["properties"]["text"]["description"]
+            pattern = planner._sentence_pattern(maximum)
             assert re.fullmatch(pattern, beat["text"])
             assert re.fullmatch(pattern, "John's armor works.")
             assert not re.fullmatch(pattern, " ".join(["word"]*(maximum+1))+".")
@@ -764,7 +766,7 @@ def test_production_three_timing_failure_compresses_text_without_changing_shots(
     assert repairs[0]["original_candidate"] == full
     assert repairs[0]["normalized_plan"] == plan
     assert json.loads(next((work / "planning").glob("plan-*.json")).read_text()) == plan
-    assert planner.PLAN_VERSION == 8
+    assert planner.PLAN_VERSION == 9
     assert planner.VERSION == 3
 
 

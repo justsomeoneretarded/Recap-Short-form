@@ -20,7 +20,7 @@ from .sources import _video_info, _write_json, file_digest
 
 VERSION = 3
 # Planning changes must not invalidate expensive, unchanged frame descriptions.
-PLAN_VERSION = 8
+PLAN_VERSION = 9
 SCRIPT_WORDS_PER_SECOND = 2.0
 MAX_PLANNED_WORDS_PER_SECOND = 2.5
 MAX_SOURCE_SPEECH_SECONDS = 8.0
@@ -91,13 +91,17 @@ _DANGLING_SENTENCE_ENDINGS = frozenset(
 
 
 def _compression_schema(inventory: list[dict]) -> dict:
-    """Bind each beat ID to its bounded, punctuated natural-sentence grammar."""
+    """Bind existing beat IDs while leaving natural-language decoding unmasked."""
     schema = copy.deepcopy(COMPRESSION_SCHEMA)
     entries = []
     for beat in inventory:
         entry = copy.deepcopy(COMPRESSION_SCHEMA["properties"]["beats"]["items"])
         entry["properties"]["id"]["enum"] = [beat["id"]]
-        entry["properties"]["text"]["pattern"] = _sentence_pattern(beat["maximum_words"])
+        # Lexical masks made actual writers glue words together at the budget
+        # boundary. Generate ordinary text and enforce the same limits afterward.
+        entry["properties"]["text"]["description"] = (
+            f"One complete English sentence of 3–{beat['maximum_words']} words."
+        )
         entries.append(entry)
     schema["properties"]["beats"].update(items={"oneOf": entries},
         minItems=len(inventory), maxItems=len(inventory))

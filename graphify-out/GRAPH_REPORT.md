@@ -1,17 +1,17 @@
 # Graph Report - Recap-Short-form  (2026-11-06)
 
 ## Corpus Check
-- 43 files · ~57,312 words
+- 43 files · ~57,486 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 1 file(s) not represented in the graph (top: (none) 1)
 
 ## Summary
-- 499 nodes · 1113 edges · 22 communities (12 shown, 10 thin omitted)
+- 499 nodes · 1113 edges · 23 communities (12 shown, 11 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 26 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `b87aaff7`
+- Built from commit: `3f58d5e8`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -25,7 +25,7 @@
 - Evidence-linked story beats and timed edit decisions / Source-grounded
 - analyze_source_speech
 - ci.yml / jobs
-- sources.py
+- make_plan
 - recap-shorts
 - write_captions
 - with
@@ -44,33 +44,33 @@
 10. `_normalize_model_plan()` - 16 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `prepare_model()` --calls--> `_request_json()`  [EXTRACTED]
-  scripts/validate_writer.py → shorts_pipeline/planner.py
-- `compress()` --calls--> `_compress_narration()`  [EXTRACTED]
-  scripts/validate_writer.py → shorts_pipeline/planner.py
-- `run_probe()` --calls--> `_normalize_model_plan()`  [EXTRACTED]
-  scripts/validate_writer.py → shorts_pipeline/planner.py
-- `run_probe()` --calls--> `_request_json()`  [EXTRACTED]
-  scripts/validate_writer.py → shorts_pipeline/planner.py
+- `test_ffmpeg_detector_debounces_adjacent_frame_triggers()` --calls--> `_ffmpeg_boundaries()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/sources.py
+- `test_unknown_scene_id_is_never_substituted()` --calls--> `_normalize_model_plan()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/planner.py
+- `test_reverse_chronology_within_a_beat_is_rejected()` --calls--> `_normalize_model_plan()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/planner.py
+- `test_caption_offsets_and_script_punctuation()` --calls--> `write_captions()`  [EXTRACTED]
+  tests/test_voice_captions.py → shorts_pipeline/captions.py
 - `test_segments_cover_full_source_without_gaps()` --calls--> `_segments()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/sources.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (22 total, 10 thin omitted)
+## Communities (23 total, 11 thin omitted)
 
 ### Community 0 - "test_sources_planner.py"
 Cohesion: 0.06
-Nodes (61): _compress_narration(), _compression_schema(), _describe(), _key(), make_plan(), _NarrationTimingExcess, _normalize_model_plan(), _request_json() (+53 more)
+Nodes (53): validate_storyboard(), _segments(), _is_compression(), _normalize_speech(), _plan(), _production_six_candidate(), _production_three_candidates(), _speech_candidate() (+45 more)
 
 ### Community 1 - "default / description"
 Cohesion: 0.04
 Nodes (45): default, description, options, type, description, required, type, aspect (+37 more)
 
 ### Community 2 - "difflib / re"
-Cohesion: 0.10
-Nodes (25): _align_script(), _chunks(), _contextual_units(), _duration(), _integer_words(), _lexical(), _normal(), _run() (+17 more)
+Cohesion: 0.09
+Nodes (26): _align_script(), _chunks(), _contextual_units(), _duration(), _integer_words(), _lexical(), _normal(), _run() (+18 more)
 
 ### Community 3 - "array / copy"
 Cohesion: 0.15
@@ -96,37 +96,37 @@ Nodes (17): analyze_source_speech(), _candidate(), _number(), _transcribe(), fix
 Cohesion: 0.12
 Nodes (15): jobs, test, name, on, permissions, contents, name, run (+7 more)
 
-### Community 9 - "sources.py"
-Cohesion: 0.13
-Nodes (15): _adaptive_boundaries(), _ffmpeg_boundaries(), file_digest(), _https_url(), index_source(), resolve_source(), _run(), _segments() (+7 more)
+### Community 9 - "make_plan"
+Cohesion: 0.09
+Nodes (24): _compress_narration(), _compression_schema(), _describe(), _key(), make_plan(), _NarrationTimingExcess, _normalize_model_plan(), _request_json() (+16 more)
 
 ### Community 11 - "write_captions"
-Cohesion: 0.19
-Nodes (17): _ass_time(), _escape_ass(), _groups(), _srt_time(), _word_fade_text(), _wrap(), write_captions(), _events() (+9 more)
+Cohesion: 0.21
+Nodes (16): _ass_time(), _escape_ass(), _groups(), _srt_time(), _word_fade_text(), _wrap(), write_captions(), _events() (+8 more)
 
 ### Community 12 - "with"
 Cohesion: 0.06
 Nodes (33): OLLAMA_MAX_LOADED_MODELS, OLLAMA_MODELS, OLLAMA_NUM_PARALLEL, SCRIPT_MODEL, WRITER_MODEL, writer_model, jobs, probe (+25 more)
 
 ## Knowledge Gaps
-- **106 isolated node(s):** `name`, `description`, `required`, `type`, `default` (+101 more)
+- **106 isolated node(s):** `default`, `description`, `options`, `type`, `description` (+101 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 188 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **10 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **11 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `make_plan()` connect `test_sources_planner.py` to `sources.py`, `argparse / pathlib`?**
+- **Why does `make_plan()` connect `make_plan` to `test_sources_planner.py`, `array / copy`, `argparse / pathlib`?**
   _High betweenness centrality (0.002) - this node is a cross-community bridge._
-- **What connects `name`, `description`, `required` to the rest of the system?**
+- **What connects `default`, `description`, `options` to the rest of the system?**
   _106 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `test_sources_planner.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.05541368743615935 - nodes in this community are weakly interconnected._
-- **Why does `generate()` connect `argparse / pathlib` to `test_sources_planner.py`, `difflib / re`, `array / copy`, `analyze_source_speech`, `sources.py`, `write_captions`?**
+  _Cohesion score 0.06060606060606061 - nodes in this community are weakly interconnected._
+- **Why does `generate()` connect `argparse / pathlib` to `test_sources_planner.py`, `difflib / re`, `array / copy`, `analyze_source_speech`, `make_plan`, `write_captions`?**
   _High betweenness centrality (0.002) - this node is a cross-community bridge._
 - **Should `default / description` be split into smaller, more focused modules?**
   _Cohesion score 0.044444444444444446 - nodes in this community are weakly interconnected._
-- **Why does `render_plan()` connect `array / copy` to `test_sources_planner.py`, `sources.py`, `argparse / pathlib`?**
+- **Why does `render_plan()` connect `array / copy` to `make_plan`, `argparse / pathlib`?**
   _High betweenness centrality (0.001) - this node is a cross-community bridge._
 - **Should `difflib / re` be split into smaller, more focused modules?**
-  _Cohesion score 0.0975609756097561 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09080841638981174 - nodes in this community are weakly interconnected._
