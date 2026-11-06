@@ -31,16 +31,9 @@ def whisper_words(audio: Path, model: str = WHISPER_MODEL, threads: int | None =
     return rows
 
 
-def _audio(youtube: YouTube, video_id: str, folder: Path) -> Path | None:
-    folder.mkdir(parents=True, exist_ok=True)
-    existing = sorted(folder.glob(f"{video_id}.audio.*"))
-    if existing:
-        return existing[0]
-    youtube.extract(f"https://www.youtube.com/watch?v={video_id}", skip_download=False,
-                    format="bestaudio[abr<=160]/bestaudio", outtmpl=str(folder / f"{video_id}.audio.%(ext)s"),
-                    max_filesize=150 * 1024 * 1024)
-    found = sorted(folder.glob(f"{video_id}.audio.*"))
-    return found[0] if found else None
+def _media(youtube: YouTube, video_id: str, workdir: Path) -> Path | None:
+    """Download the clip once (video ≤1080p); Whisper, screening and the edit all reuse this file."""
+    return youtube.download(video_id, Path(workdir) / "footage")
 
 
 def place_clip(candidate: dict, movie: MovieTranscript | None, youtube: YouTube, folder: Path, *,
@@ -54,17 +47,23 @@ def place_clip(candidate: dict, movie: MovieTranscript | None, youtube: YouTube,
     if movie is None:
         return {**result, "reason": "no movie subtitles"}
     words: list[tuple[float, str]] = []
-    try:
-        captions = youtube.captions(candidate["id"], folder / "captions")
-    except RuntimeError as exc:
-        captions, result["caption_error"] = None, str(exc)[:160]
+    captions = None
+    # Captions are one more YouTube request; signed-out runners are usually refused, so only
+    # try them with cookies (or when forced). Whisper on the downloaded clip gives the same words.
+    if getattr(youtube, "signed_in", False) or os.environ.get("SHORTS_TRY_CAPTIONS") == "1":
+        try:
+            captions = youtube.captions(candidate["id"], folder / "captions")
+        except RuntimeError as exc:
+            result["caption_error"] = str(exc)[:160]
+    else:
+        result["caption_error"] = "skipped (no YouTube cookies)"
     if captions:
         words = timed_words(parse_cues(captions.read_text(errors="ignore")))
         result.update(method="captions", caption_file=captions.name, **movie.locate(words))
     needs_audio = not result["matched"] or (candidate.get("compilation") and len(words) < 30)
     if needs_audio and use_whisper:
         try:
-            audio = _audio(youtube, candidate["id"], folder / "audio")
+            audio = _media(youtube, candidate["id"], folder.parent.parent)
             if audio:
                 heard = transcribe(audio)
                 located = movie.locate(heard)
@@ -87,7 +86,7 @@ def place_clip(candidate: dict, movie: MovieTranscript | None, youtube: YouTube,
 
 
 def place_candidates(research: dict, discovered: dict, youtube: YouTube, workdir: Path, *, top: int = 12,
-                     comments_for: int = 8, use_whisper: bool = True, transcribe=whisper_words) -> dict:
+                     comments_for: int = 3, use_whisper: bool = True, transcribe=whisper_words) -> dict:
     subtitles = research.get("subtitles", {}).get("path")
     movie = MovieTranscript.from_subtitles(Path(subtitles).read_text(errors="ignore")) if subtitles else None
     folder = Path(workdir) / "placement" / str(research["movie"]["tmdb_id"])

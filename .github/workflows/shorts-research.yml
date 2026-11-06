@@ -101,7 +101,7 @@ jobs:
   discover:
     needs: movies
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -123,6 +123,13 @@ jobs:
           APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends ffmpeg jq
           python -m pip install -e '.[source,screening]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare optional YouTube cookies
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: python scripts/prepare_youtube_cookies.py
       - name: Start YouTube proof-of-origin token provider
         continue-on-error: true
         run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
@@ -162,7 +169,7 @@ jobs:
 
   write:
     needs: [movies, discover]
-    if: always() && needs.discover.result != 'cancelled'
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -190,10 +197,12 @@ jobs:
           for _ in $(seq 1 60); do curl -sf http://127.0.0.1:11434/api/version > /dev/null && break; sleep 1; done
           "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull qwen3:14b > /dev/null
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: discover-${{ strategy.job-index }}
           path: output/discover
       - name: Write scripts for the top stories
+        if: hashFiles('output/discover/arcs.json') != ''
         run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 2 --drafts 3
       - uses: actions/upload-artifact@v4
         if: always()
@@ -204,7 +213,7 @@ jobs:
 
   voice:
     needs: [movies, write]
-    if: always() && needs.write.result != 'cancelled'
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -230,6 +239,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e '.[voice,source]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare optional YouTube cookies
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: python scripts/prepare_youtube_cookies.py
       - name: Start YouTube proof-of-origin token provider
         continue-on-error: true
         run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
@@ -246,14 +262,17 @@ jobs:
             work/torch
           key: shorts-voice-models-v1
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: discover-${{ strategy.job-index }}
           path: output/discover
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: write-${{ strategy.job-index }}
           path: output/write
       - name: Voice the top story and make captions
+        if: hashFiles('output/write/scripts.json') != ''
         run: python -u -m shorts_pipeline voice --discover output/discover --scripts output/write --output output/voice --max-arcs 1
       - uses: actions/upload-artifact@v4
         if: always()
@@ -264,7 +283,7 @@ jobs:
 
   render:
     needs: [movies, voice]
-    if: always() && needs.voice.result != 'cancelled'
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
@@ -288,6 +307,13 @@ jobs:
           python -m pip install -e '.[source,screening]' 'bgutil-ytdlp-pot-provider>=2.0'
           mkdir -p work/models
           curl -fsSL --retry 3 -o "$SHORTS_YUNET_MODEL" https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx || echo "::warning::YuNet face model unavailable; framing uses motion only"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare optional YouTube cookies
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: python scripts/prepare_youtube_cookies.py
       - name: Start YouTube proof-of-origin token provider
         continue-on-error: true
         run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
@@ -297,14 +323,17 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/phase0/warp_proxy.sh
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: discover-${{ strategy.job-index }}
           path: output/discover
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: voice-${{ strategy.job-index }}
           path: output/voice
       - name: Edit and render (square + vertical, 60 fps)
+        if: hashFiles('output/voice/*/voiceover.json') != ''
         run: python -u -m shorts_pipeline render --discover output/discover --voice output/voice --output output/render --interpolation blend
       - uses: actions/upload-artifact@v4
         if: always()

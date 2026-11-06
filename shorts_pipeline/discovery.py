@@ -189,17 +189,28 @@ def candidate(info: dict, movie: dict, query: str, official_ids: set[str]) -> Ca
 class YouTube:
     """yt-dlp wrapper: direct route first, then the WARP proxy after a bot check."""
 
-    def __init__(self, proxy: str | None = None, cookies: str | None = None, pause: float = 1.0):
+    def __init__(self, proxy: str | None = None, cookies: str | None = None, pause: float = 1.0,
+                 budget: float | None = None):
         self.proxy = proxy if proxy is not None else os.environ.get("YTDLP_FALLBACK_PROXY", "")
         self.cookies = cookies if cookies is not None else os.environ.get("YOUTUBE_COOKIE_FILE", "")
         self.pause = pause
-        self.bot_backoff = float(os.environ.get("SHORTS_BOT_BACKOFF", "30"))
+        # Fail fast like Top10-Movies: short back-off, few retries, then move on to the next clip.
+        self.bot_backoff = float(os.environ.get("SHORTS_BOT_BACKOFF", "8"))
+        seconds = budget if budget is not None else float(os.environ.get("SHORTS_YOUTUBE_BUDGET", "2700"))
+        self.deadline = time.monotonic() + seconds  # no YouTube work after this, so jobs end in time
         self.prefer_proxy = False  # once the direct route is bot-checked, go straight to the proxy
         self.log: list[dict] = []
 
+    @property
+    def signed_in(self) -> bool:
+        return bool(self.cookies and Path(self.cookies).exists())
+
     def _options(self, use_proxy: bool, extra: dict) -> dict:
-        options = {"quiet": True, "no_warnings": True, "skip_download": True, "socket_timeout": 30,
-                   "retries": 3, "extractor_retries": 3, **extra}
+        options = {"quiet": True, "no_warnings": True, "skip_download": True, "socket_timeout": 20,
+                   "retries": 2, "fragment_retries": 3, "extractor_retries": 1, **extra}
+        if os.environ.get("SHORTS_YTDLP_NODE", "1") != "0":
+            # YouTube hides media URLs behind JavaScript challenges; yt-dlp solves them with a JS runtime.
+            options.setdefault("js_runtimes", {"node": {}})
         if self.cookies:
             options["cookiefile"] = self.cookies
         if use_proxy and self.proxy:
@@ -207,11 +218,15 @@ class YouTube:
         return options
 
     def extract(self, target: str, **extra) -> dict:
+        if time.monotonic() > self.deadline:
+            raise RuntimeError("YouTube time budget reached; skipped")
         import yt_dlp
         routes = ([True] if self.prefer_proxy else [False]) + ([True] if self.proxy and not self.prefer_proxy else [])
         last = "no route"
         for use_proxy in routes:
-            for attempt in range(3):
+            for attempt in range(2):
+                if time.monotonic() > self.deadline:
+                    raise RuntimeError("YouTube time budget reached; skipped")
                 try:
                     with yt_dlp.YoutubeDL(self._options(use_proxy, extra)) as ydl:
                         info = ydl.extract_info(target, download=not extra.get("skip_download", True))
@@ -225,8 +240,8 @@ class YouTube:
                     if bot and not use_proxy and self.proxy:
                         self.prefer_proxy = True
                         break
-                    if bot:  # the proxy route was challenged too: back off before retrying
-                        time.sleep(self.bot_backoff * (attempt + 1))
+                    if bot:  # the proxy route was challenged too: one short back-off, then give up on this item
+                        time.sleep(self.bot_backoff)
                         continue
                     if "unavailable" in last.lower() or "private" in last.lower():
                         raise RuntimeError(last) from exc

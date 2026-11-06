@@ -101,3 +101,13 @@ def test_vertical_reuploads_are_rejected():
     vertical["formats"] = [{"vcodec": "avc1", "height": 1920, "width": 1080, "fps": 30}]
     result = d.discover({"movie": {**MOVIE, "clips": []}}, FakeYouTube(results, {"v": vertical}))
     assert not result["candidates"] and "vertical" in result["rejected"][0]["reason"]
+
+
+def test_youtube_budget_stops_requests_and_node_runtime_is_enabled(monkeypatch):
+    yt = d.YouTube(proxy="", cookies="", budget=0)
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="time budget"):
+        yt.extract("ytsearch1:anything")
+    assert d.YouTube(proxy="", cookies="")._options(False, {})["js_runtimes"] == {"node": {}}
+    monkeypatch.setenv("SHORTS_YTDLP_NODE", "0")
+    assert "js_runtimes" not in d.YouTube(proxy="", cookies="")._options(False, {})

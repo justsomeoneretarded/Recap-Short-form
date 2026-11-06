@@ -21,8 +21,17 @@ def vtt(first, last):
 
 
 class FakeYouTube:
+    signed_in = True  # captions are only requested with cookies
+
     def __init__(self, captions):
         self.captions_text, self.calls = captions, []
+
+    def download(self, vid, folder):
+        self.calls.append(("video", vid))
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{vid}.mp4"
+        path.write_bytes(b"video")
+        return path
 
     def captions(self, vid, folder):
         self.calls.append(("captions", vid))
@@ -66,6 +75,7 @@ def test_captions_place_clip_then_whisper_fallback_then_cache(tmp_path):
     assert by_id["silent"]["placement"]["method"] == "whisper" and abs(by_id["silent"]["placement"]["movie_start"] - 800) < 3
     assert not by_id["music"]["placement"]["matched"]
     assert by_id["cap"]["comment_peaks"][0]["second"] == 42
+    assert not any(kind == "audio" for kind, _ in youtube.calls)  # one download per clip, no separate audio
     assert [t["id"] for t in result["timeline"]] == ["cap", "silent"] and result["placed"] == 2
     calls = len(youtube.calls)
     again = p.place_candidates(research, discovered, youtube, tmp_path, transcribe=transcribe)
@@ -94,3 +104,14 @@ def test_compilation_segments_are_placed(tmp_path):
     assert placement["segments_placed"] == 2
     starts = sorted(round(s["movie_start"]) for s in placement["segments"])
     assert abs(starts[0] - 80) < 3 and abs(starts[1] - 1000) < 3
+
+
+def test_captions_skipped_without_cookies(tmp_path):
+    (tmp_path / "movie.srt").write_text(srt())
+    youtube = FakeYouTube({"cap": vtt(100, 120)})
+    youtube.signed_in = False
+    research = {"movie": {"tmdb_id": 9}, "subtitles": {"path": str(tmp_path / "movie.srt")}}
+    result = p.place_candidates(research, {"candidates": [{"id": "cap", "title": "x", "duration": 60}]}, youtube,
+                                tmp_path, comments_for=0, transcribe=lambda audio: [])
+    placement = result["clips"][0]["placement"]
+    assert placement["caption_error"].startswith("skipped") and ("captions", "cap") not in youtube.calls
