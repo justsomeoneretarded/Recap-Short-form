@@ -21,6 +21,7 @@ env:
 
 jobs:
   youtube:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[probe:') || contains(github.event.head_commit.message, '[probe:all]') || contains(github.event.head_commit.message, '[probe:youtube]')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -55,6 +56,7 @@ jobs:
           retention-days: 7
 
   research:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[probe:') || contains(github.event.head_commit.message, '[probe:all]') || contains(github.event.head_commit.message, '[probe:research]')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -76,6 +78,7 @@ jobs:
           retention-days: 7
 
   writers-local:
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[probe:') || contains(github.event.head_commit.message, '[probe:all]') || contains(github.event.head_commit.message, '[probe:writers]')
     # GitHub Models is not reachable from these runners (stub "OK" responses), so the
     # bake-off compares free local models on the same CPU runner.
     runs-on: ubuntu-24.04
@@ -114,7 +117,7 @@ jobs:
 
   interpolation:
     needs: youtube
-    if: always()
+    if: always() && (github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[probe:') || contains(github.event.head_commit.message, '[probe:all]') || contains(github.event.head_commit.message, '[probe:interpolation]'))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -146,4 +149,42 @@ jobs:
             work/phase0/interpolation
             !work/phase0/interpolation/frames
             !work/phase0/interpolation/rife-bin
+          retention-days: 7
+
+  locate:
+    needs: research
+    if: always() && needs.research.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install downloader
+        timeout-minutes: 10
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends jq
+          python -m pip install 'yt-dlp[default]>=2026.1.1' 'bgutil-ytdlp-pot-provider>=2.0'
+      - name: Start YouTube proof-of-origin token provider
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare WARP route
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/phase0/warp_proxy.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: phase0-research
+          path: work/phase0/research
+      - name: Locate clips inside the movie with its subtitles
+        run: python -u scripts/phase0/probe_locate.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase0-locate
+          path: work/phase0/locate
           retention-days: 7
