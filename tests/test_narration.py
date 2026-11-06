@@ -114,3 +114,15 @@ def test_word_times_are_tidied_for_captions():
              {"word": "now.", "start": 0.9, "end": 1.31}]
     clean = tidy_words(rough, 1.2)
     assert validate_words("He fires 3 shots now.", clean, 1.2) == clean  # ordered, inside the audio
+
+
+def test_script_is_written_the_way_it_is_spoken():
+    from shorts_pipeline.narration import speakable, voice_beats
+    assert speakable("He fires 3 shots — then 2 more.") == "He fires three shots, then two more."
+    assert speakable("Dr. Warren hears it at 3 a.m.") == "Doctor Warren hears it at three A M."
+    assert speakable("$14 million in cash, 50% gone") == "Fourteen million dollars in cash, fifty percent gone"
+    assert speakable("Back in 1971, then 2014, on the 21st floor.") == \
+        "Back in nineteen seventy one, then twenty fourteen, on the twenty first floor."
+    beats = voice_beats({"script": {"hook": "3 men. 1 bag.", "beats": [
+        {"scene": 0, "kind": "narration", "text": "Mr. Wick waits until 5:30 p.m."}]}})
+    assert [b["text"] for b in beats] == ["Three men. One bag.", "Mister Wick waits until five thirty P M."]

@@ -1,17 +1,17 @@
 # Graph Report - recap-short-form  (2026-11-06)
 
 ## Corpus Check
-- 111 files · ~97,097 words
+- 111 files · ~97,604 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 3 file(s) not represented in the graph (top: .ttf 2, (none) 1)
 
 ## Summary
-- 1355 nodes · 3070 edges · 94 communities (68 shown, 26 thin omitted)
+- 1361 nodes · 3088 edges · 89 communities (68 shown, 21 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 78 edges (avg confidence: 0.87)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `1248040d`
+- Built from commit: `86abb33a`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -33,7 +33,7 @@
 - steps
 - phase0-probes.yml
 - writers-local
-- write_json
+- cli.py
 - env
 - interpolation
 - locate
@@ -57,7 +57,7 @@
 - discovery.py
 - shorts-research.yml
 - make_plan
-- _speech_plan
+- test_sources_planner.py
 - reframe.py
 - covers.py
 - Runtime setup verification
@@ -69,13 +69,13 @@
 - research
 - jobs
 - with
-- voice
+- jobs
 - discover
 - narration.py
 - test_narration.py
 - place_candidates
-- test_voice_captions.py
-- tokens
+- test_rejected_generated_speech_retains_bounded_audio_transcript_and_error
+- placement.py
 - write
 - MovieTranscript
 - jobs
@@ -83,39 +83,34 @@
 - writer.py
 - test_sources_planner.py
 - render
-- cli.py
+- _compress_narration
 - generate-shorts.yml
 - env
 - with
 - write
 - finish
-- edit.py
+- publish.py
 - write-story
 - render
 - screen
 - install_rife.sh
 - discover
 - test_robustness.py
-- synthesize_plan
-- re
+- voice.py
+- test_workflows.py
 - validate_storyboard
-- probe
-- filter_graph
-- Ollama
-- test_unverified_take_is_kept_and_flagged_by_default
 - test_index_fallback_explains_method_and_preserves_every_time_span
-- test_footage_shipped_to_this_machine_is_used_without_youtube
 
 ## God Nodes (most connected - your core abstractions)
 1. `make_plan()` - 34 edges
 2. `render_plan()` - 30 edges
-3. `write_captions()` - 28 edges
-4. `MovieTranscript` - 28 edges
+3. `MovieTranscript` - 28 edges
+4. `write_captions()` - 28 edges
 5. `YouTube` - 23 edges
 6. `Eight reference Shorts: evidence and production guide` - 23 edges
-7. `generate()` - 21 edges
-8. `analyze_source_speech()` - 21 edges
-9. `synthesize_plan()` - 20 edges
+7. `synthesize_plan()` - 21 edges
+8. `generate()` - 21 edges
+9. `analyze_source_speech()` - 21 edges
 10. `_compress_narration()` - 20 edges
 
 ## Surprising Connections (you probably didn't know these)
@@ -133,19 +128,19 @@
 ## Import Cycles
 - None detected.
 
-## Communities (94 total, 26 thin omitted)
+## Communities (89 total, 21 thin omitted)
 
 ### Community 0 - "pytest"
 Cohesion: 0.10
-Nodes (26): allocate_shots(), _ass_escape(), _attach_narration(), _concat(), _covers(), crop_filter(), _ffmpeg(), _master_audio() (+18 more)
+Nodes (31): choose(), _pieces(), allocate_shots(), _ass_escape(), _attach_narration(), _concat(), _covers(), crop_filter() (+23 more)
 
 ### Community 2 - "write_captions"
 Cohesion: 0.18
 Nodes (17): 3. Captions match the broad look but omit observed opacity changes, _ass_time(), _escape_ass(), _groups(), _srt_time(), _word_fade_text(), _wrap(), write_captions() (+9 more)
 
 ### Community 3 - "render_short.py"
-Cohesion: 0.14
-Nodes (17): native_size(), _concat(), duplicate_frame_ratio(), _escape(), finish(), finish_aspect(), _loudness(), motion() (+9 more)
+Cohesion: 0.13
+Nodes (19): filter_graph(), native_size(), _concat(), duplicate_frame_ratio(), _escape(), finish(), finish_aspect(), _loudness() (+11 more)
 
 ### Community 4 - "env"
 Cohesion: 0.21
@@ -168,12 +163,12 @@ Cohesion: 0.12
 Nodes (15): jobs, test, name, on, permissions, contents, name, run (+7 more)
 
 ### Community 9 - "re"
-Cohesion: 0.05
-Nodes (53): films(), out_dir(), slug(), write_report(), crop(), duplicate_ratio(), ffmpeg_method(), main() (+45 more)
+Cohesion: 0.06
+Nodes (49): films(), out_dir(), slug(), write_report(), crop(), duplicate_ratio(), ffmpeg_method(), main() (+41 more)
 
 ### Community 11 - "screening.py"
-Cohesion: 0.16
-Nodes (11): active_box(), classify_text(), _inside(), mirrored(), _norm(), _ocr(), read_text(), sample_frames() (+3 more)
+Cohesion: 0.10
+Nodes (16): excerpt(), probe(), _probe(), run(), active_box(), classify_text(), _inside(), mirrored() (+8 more)
 
 ### Community 12 - "with"
 Cohesion: 0.06
@@ -195,9 +190,9 @@ Nodes (13): concurrency, cancel-in-progress, group, env, PROBE_OUT, jobs, resear
 Cohesion: 0.18
 Nodes (11): OLLAMA_MODELS, SCRIPT_MODEL, writers-local, model, fail-fast, matrix, env, if (+3 more)
 
-### Community 17 - "write_json"
-Cohesion: 0.16
-Nodes (16): chunk_indexes(), _footage(), main(), _preview(), run_discover(), run_edit_plan(), run_finish(), run_package() (+8 more)
+### Community 17 - "cli.py"
+Cohesion: 0.07
+Nodes (30): chunk_indexes(), _footage(), generate(), stage(), main(), _preview(), run_discover(), run_edit_plan() (+22 more)
 
 ### Community 18 - "env"
 Cohesion: 0.40
@@ -228,32 +223,32 @@ Cohesion: 0.23
 Nodes (20): steps, GITHUB_TOKEN, MOVIE, OPENSUBTITLES_API_KEY, TMDB_READ_TOKEN, YOUTUBE_COOKIES, steps, steps (+12 more)
 
 ### Community 37 - "sources.py"
-Cohesion: 0.16
-Nodes (15): _key(), _adaptive_boundaries(), _ffmpeg_boundaries(), file_digest(), _https_url(), index_source(), resolve_source(), _run() (+7 more)
+Cohesion: 0.15
+Nodes (15): _number(), _adaptive_boundaries(), _ffmpeg_boundaries(), file_digest(), _https_url(), index_source(), resolve_source(), _run() (+7 more)
 
 ### Community 38 - "discovery.py"
 Cohesion: 0.08
-Nodes (26): best_format(), build_queries(), candidate(), Candidate, comment_peaks(), discover(), fold(), heatmap_peaks() (+18 more)
+Nodes (27): best_format(), build_queries(), candidate(), Candidate, comment_peaks(), discover(), fold(), heatmap_peaks() (+19 more)
 
 ### Community 39 - "shorts-research.yml"
 Cohesion: 0.12
 Nodes (16): concurrency, cancel-in-progress, group, movie, description, required, type, name (+8 more)
 
 ### Community 40 - "make_plan"
-Cohesion: 0.11
-Nodes (18): 1. Automatic stories exclude original-dialogue passages, 2. Important actions and their framing are not verified through time, Standalone Shorts fidelity review, Voice pace and sound: what can and cannot be concluded, _compress_narration(), _compression_schema(), _describe(), make_plan() (+10 more)
+Cohesion: 0.14
+Nodes (15): 1. Automatic stories exclude original-dialogue passages, 2. Important actions and their framing are not verified through time, Standalone Shorts fidelity review, Voice pace and sound: what can and cannot be concluded, _describe(), _key(), make_plan(), _NarrationTimingExcess (+7 more)
 
-### Community 41 - "_speech_plan"
-Cohesion: 0.27
-Nodes (13): _normalize_speech(), _speech_candidate(), _speech_plan(), test_compression_preserves_selected_native_quote_and_uses_remaining_narration_budget(), api(), test_dialogue_words_do_not_expand_the_narration_budget(), test_source_speech_cache_binds_exact_candidates_and_writer_request(), api() (+5 more)
+### Community 41 - "test_sources_planner.py"
+Cohesion: 0.18
+Nodes (19): _normalize_speech(), _speech_candidate(), _speech_plan(), test_bad_segment_limits_rejected(), test_compression_preserves_selected_native_quote_and_uses_remaining_narration_budget(), test_dialogue_words_do_not_expand_the_narration_budget(), test_narration_only_remains_available_with_or_without_source_speech(), test_remote_sources_require_https_without_embedded_credentials() (+11 more)
 
 ### Community 42 - "reframe.py"
 Cohesion: 0.18
 Nodes (11): attention(), _detector(), faces(), plan_shot(), sample(), window_fraction(), moving_box_frames(), test_attention_tracks_the_action_side() (+3 more)
 
 ### Community 43 - "covers.py"
-Cohesion: 0.11
-Nodes (25): _package_story(), contact_sheet(), _crop(), grab(), _grab_all(), _grade(), hook_words(), make_covers() (+17 more)
+Cohesion: 0.23
+Nodes (14): _package_story(), contact_sheet(), _crop(), grab(), _grab_all(), _grade(), hook_words(), make_covers() (+6 more)
 
 ### Community 44 - "Runtime setup verification"
 Cohesion: 0.25
@@ -268,15 +263,15 @@ Cohesion: 0.29
 Nodes (7): resemble-ai/chatterbox, Chatterbox Nano, Original and multilingual Chatterbox variants, Chatterbox Turbo, Female reference sample, Kit Laser reference sample, Warguy reference sample
 
 ### Community 47 - "MovieTranscript"
-Cohesion: 0.20
-Nodes (7): attach_dialogue(), place_segments(), MovieTranscript, _media(), place_clip(), _prefetch(), whisper_words()
+Cohesion: 0.31
+Nodes (4): attach_dialogue(), place_segments(), MovieTranscript, place_clip()
 
 ### Community 48 - "test_scene_limit_fails_before_any_model_calls"
 Cohesion: 0.50
 Nodes (3): test_failed_download_is_not_cached(), fail(), test_scene_limit_fails_before_any_model_calls()
 
 ### Community 49 - "arcs.py"
-Cohesion: 0.19
+Cohesion: 0.18
 Nodes (14): _arc_score(), build_arcs(), candidate_arcs(), choose_arcs(), describe(), merge_duplicates(), Unit, units_from() (+6 more)
 
 ### Community 50 - "research"
@@ -291,41 +286,45 @@ Nodes (14): jobs, movies, research, summary, outputs, runs-on, indexes, list (+6
 Cohesion: 0.20
 Nodes (10): with, cache, key, name, node-version, path, pattern, python-version (+2 more)
 
-### Community 54 - "voice"
-Cohesion: 0.50
-Nodes (4): voice, needs, runs-on, timeout-minutes
+### Community 54 - "jobs"
+Cohesion: 0.12
+Nodes (16): if, needs, runs-on, concurrency, cancel-in-progress, group, if, needs (+8 more)
 
 ### Community 55 - "discover"
 Cohesion: 0.15
 Nodes (14): env, needs, runs-on, timeout-minutes, HF_HOME, SHORTS_CPU_THREADS, TORCH_HOME, discover (+6 more)
 
 ### Community 56 - "narration.py"
-Cohesion: 0.18
-Nodes (10): apply_tempo(), _duration(), forced_align(), _forced_align(), _mms(), synthesize_voiceover(), tempo_for(), voice_beats() (+2 more)
+Cohesion: 0.14
+Nodes (15): apply_tempo(), _duration(), forced_align(), _forced_align(), _mms(), _number_words(), _ordinal(), speakable() (+7 more)
 
 ### Community 57 - "test_narration.py"
-Cohesion: 0.17
-Nodes (10): write_short_captions(), render_short(), test_voice_render_package_chain(), fake_synthesize(), _heard(), test_narrator_check_accepts_small_recognition_slips_but_not_skipped_speech(), test_preview_mixes_beats_at_their_positions(), test_voiceover_timeline_and_captions() (+2 more)
+Cohesion: 0.15
+Nodes (10): fake_synthesize(), _heard(), test_narrator_check_accepts_small_recognition_slips_but_not_skipped_speech(), test_preview_mixes_beats_at_their_positions(), test_voiceover_timeline_and_captions(), tone(), test_covers_and_package(), test_covers_use_clean_shots_of_each_shape_and_avoid_blur_fill() (+2 more)
 
 ### Community 58 - "place_candidates"
 Cohesion: 0.20
 Nodes (11): place_candidates(), FakeYouTube, srt(), test_captions_place_clip_then_whisper_fallback_then_cache(), transcribe(), test_captions_skipped_without_cookies(), test_clips_are_downloaded_ahead_once_each(), download() (+3 more)
 
-### Community 59 - "test_voice_captions.py"
-Cohesion: 0.18
-Nodes (12): _align_script(), validate_words(), test_prefilter_rejects(), _original_warguy_currency_transcript(), test_asr_cannot_silently_drop_script_words(), test_asr_number_forms_preserve_written_script(), test_caption_offsets_and_script_punctuation(), test_currency_word_omission_without_symbol_is_still_rejected() (+4 more)
+### Community 59 - "test_rejected_generated_speech_retains_bounded_audio_transcript_and_error"
+Cohesion: 0.29
+Nodes (3): test_incomplete_or_invalid_word_timings_rejected(), test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(), test_usd_notation_and_explicit_currency_forms_share_estimated_intervals()
+
+### Community 60 - "placement.py"
+Cohesion: 0.23
+Nodes (5): tokens(), _media(), _prefetch(), whisper_words(), test_tokens_drop_sound_tags_and_speaker_labels()
 
 ### Community 62 - "write"
 Cohesion: 0.20
 Nodes (10): OLLAMA_MODELS, SCRIPT_MODEL, SHORTS_WRITER_MODEL, write, env, if, name, needs (+2 more)
 
 ### Community 63 - "MovieTranscript"
-Cohesion: 0.21
+Cohesion: 0.19
 Nodes (13): Cue, locate_captions(), parse_cues(), flush(), _seconds(), timed_words(), _movie(), _rolling_vtt() (+5 more)
 
 ### Community 64 - "jobs"
-Cohesion: 0.15
-Nodes (13): if, needs, runs-on, jobs, collect, validate, length, movie (+5 more)
+Cohesion: 0.25
+Nodes (8): validate, length, movie, narrator, speech_model, outputs, runs-on, timeout-minutes
 
 ### Community 65 - "compilations.py"
 Cohesion: 0.21
@@ -336,20 +335,20 @@ Cohesion: 0.13
 Nodes (24): Brief, build_brief(), check(), _clean_title(), draft(), fix(), judge(), _names() (+16 more)
 
 ### Community 67 - "test_sources_planner.py"
-Cohesion: 0.10
-Nodes (29): _is_compression(), _production_six_candidate(), _production_three_candidates(), test_bad_segment_limits_rejected(), test_compression_undershoot_exhausts_text_attempts_before_full_storyboard_retry(), api(), test_invalid_compression_is_bounded_diagnosed_and_never_cached(), api() (+21 more)
+Cohesion: 0.11
+Nodes (19): _is_compression(), _production_three_candidates(), api(), test_compression_undershoot_exhausts_text_attempts_before_full_storyboard_retry(), api(), test_invalid_compression_is_bounded_diagnosed_and_never_cached(), api(), test_plan_cache_binds_source_and_models_and_preserves_review_status() (+11 more)
 
 ### Community 68 - "render"
 Cohesion: 0.29
 Nodes (7): SHORTS_YUNET_MODEL, render, env, if, needs, runs-on, timeout-minutes
 
-### Community 69 - "cli.py"
-Cohesion: 0.18
-Nodes (10): generate(), stage(), assign_timeline(), request_config(), _number(), _duration(), test_automatic_path_keeps_source_speech_through_planning_and_render(), test_complete_cli_path_with_reviewed_audio() (+2 more)
+### Community 69 - "_compress_narration"
+Cohesion: 0.17
+Nodes (8): _compress_narration(), _compression_schema(), _sentence_pattern(), _production_six_candidate(), test_production_six_repair_uses_bounded_natural_sentences_and_preserves_all_anchors(), api(), test_real_gemma_seven_word_bounty_fits_existing_three_point_four_second_admission(), test_real_gemma_underfill_uses_second_text_attempt_to_restore_supported_fact()
 
 ### Community 70 - "generate-shorts.yml"
-Cohesion: 0.07
-Nodes (28): concurrency, cancel-in-progress, group, length, movie, narrator, speech_model, default (+20 more)
+Cohesion: 0.09
+Nodes (22): length, movie, narrator, speech_model, default, description, options, type (+14 more)
 
 ### Community 71 - "env"
 Cohesion: 0.22
@@ -364,12 +363,12 @@ Cohesion: 0.33
 Nodes (6): write, arcs, if, needs, outputs, runs-on
 
 ### Community 74 - "finish"
-Cohesion: 0.15
-Nodes (16): if, needs, runs-on, strategy, timeout-minutes, finish, arc, aspect (+8 more)
+Cohesion: 0.16
+Nodes (15): strategy, voice, arc, aspect, chunk, slot, strategy, fail-fast (+7 more)
 
-### Community 75 - "edit.py"
-Cohesion: 0.17
-Nodes (7): build_edl(), choose(), _pieces(), shot_changes(), test_choose_prefers_peaks_keeps_order_and_hits_length(), test_edl_is_continuous_dialogue_in_sync_and_forward_moving(), test_short_footage_is_slowed_gently_not_frozen()
+### Community 75 - "publish.py"
+Cohesion: 0.22
+Nodes (9): description(), _hashtag(), review(), review_html(), tags(), title_options(), write_package(), test_review_flags_fake_60fps_and_loudness() (+1 more)
 
 ### Community 76 - "write-story"
 Cohesion: 0.25
@@ -389,43 +388,39 @@ Nodes (6): needs, outputs, runs-on, timeout-minutes, discover, slots
 
 ### Community 81 - "test_robustness.py"
 Cohesion: 0.22
-Nodes (8): repair_words(), _number(), tidy_words(), test_word_times_are_tidied_for_captions(), _messy(), test_any_messy_word_timing_becomes_valid_captions(), test_captions_survive_bad_beats_and_report_repairs(), test_tidy_keeps_words_inside_the_audio()
+Nodes (9): repair_words(), _number(), tidy_words(), validate_words(), test_word_times_are_tidied_for_captions(), _messy(), test_any_messy_word_timing_becomes_valid_captions(), test_captions_survive_bad_beats_and_report_repairs() (+1 more)
 
-### Community 82 - "synthesize_plan"
-Cohesion: 0.21
-Nodes (7): synthesize_plan(), _Synthesizer, _Verifier, voice_reference(), test_dialogue_with_reviewed_timings_preserves_source_span(), test_explicit_reference_directory_has_no_silent_fallback(), test_imported_audio_preserves_every_word_without_models()
+### Community 82 - "voice.py"
+Cohesion: 0.10
+Nodes (22): _align_script(), _chunks(), _contextual_units(), _duration(), _lexical(), _normal(), _run(), synthesize_plan() (+14 more)
 
-### Community 83 - "re"
-Cohesion: 0.27
-Nodes (6): _chunks(), _contextual_units(), _integer_words(), _lexical(), _normal(), test_chunking_preserves_long_script()
+### Community 83 - "test_workflows.py"
+Cohesion: 0.60
+Nodes (4): _load(), test_generate_shorts_has_only_the_four_inputs(), test_pipeline_order_and_per_story_matrix(), test_user_text_never_reaches_shell_code_directly()
 
 ### Community 84 - "validate_storyboard"
 Cohesion: 0.47
 Nodes (5): validate_storyboard(), _plan(), test_dialogue_requires_one_contiguous_source_span(), test_duplicate_beat_ids_rejected(), test_storyboard_rejects_invalid_source_ranges()
 
-### Community 85 - "probe"
-Cohesion: 0.23
-Nodes (6): excerpt(), probe(), _probe(), run(), _run(), test_restored_source_cache_preserves_prepared_excerpt_without_reencoding()
-
 ## Knowledge Gaps
 - **248 isolated node(s):** `recap-shorts`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MODELS`, `OLLAMA_NUM_PARALLEL`, `SCRIPT_MODEL` (+243 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 503 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **26 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 505 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **21 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `make_plan()` connect `make_plan` to `cli.py`, `sources.py`, `validate_storyboard`?**
+- **Why does `test_parallel_chunks_match_single_machine()` connect `cli.py` to `test_narration.py`, `render_short.py`?**
   _High betweenness centrality (0.001) - this node is a cross-community bridge._
 - **What connects `recap-shorts`, `OLLAMA_MAX_LOADED_MODELS`, `OLLAMA_MODELS` to the rest of the system?**
   _248 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `pytest` be split into smaller, more focused modules?**
-  _Cohesion score 0.10352941176470588 - nodes in this community are weakly interconnected._
-- **Why does `generate()` connect `cli.py` to `pytest`, `write_captions`, `sources.py`, `os`, `make_plan`, `write_json`, `synthesize_plan`, `validate_storyboard`, `probe`?**
-  _High betweenness centrality (0.001) - this node is a cross-community bridge._
+  _Cohesion score 0.1011764705882353 - nodes in this community are weakly interconnected._
+- **Why does `make_covers()` connect `covers.py` to `reframe.py`?**
+  _High betweenness centrality (0.000) - this node is a cross-community bridge._
 - **Should `render_short.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.14482758620689656 - nodes in this community are weakly interconnected._
-- **Why does `place_candidates()` connect `place_candidates` to `YouTube`, `sources.py`, `discovery.py`, `MovieTranscript`, `MovieTranscript`?**
-  _High betweenness centrality (0.001) - this node is a cross-community bridge._
+  _Cohesion score 0.13257575757575757 - nodes in this community are weakly interconnected._
+- **Why does `_package_story()` connect `covers.py` to `publish.py`?**
+  _High betweenness centrality (0.000) - this node is a cross-community bridge._
 - **Should `Upstream technology comparison for Recap Shorts` be split into smaller, more focused modules?**
   _Cohesion score 0.1437908496732026 - nodes in this community are weakly interconnected._

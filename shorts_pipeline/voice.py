@@ -354,6 +354,7 @@ def synthesize_plan(plan: dict, narrator: str, workdir: Path, model: str = "orig
             if engine is None:
                 engine=_Synthesizer(reference,model)
             error=None
+            take_scores={}
             names=" ".join(dict.fromkeys(re.findall(r"\b[A-Z][a-zA-Z'’-]+", text)))  # spelling hints only
             for attempt in range(3):
                 spoken=None
@@ -380,6 +381,10 @@ def synthesize_plan(plan: dict, narrator: str, workdir: Path, model: str = "orig
                     diagnostics.mkdir(exist_ok=True)
                     stem=diagnostics/f"beat-{index:04d}-{fingerprint}-attempt-{attempt+1}"
                     rejected=stem.with_suffix(".wav")
+                    if spoken:  # how close this take came to the script (the best one is kept if none passes)
+                        heard=[_normal(w["word"]) for w in spoken if _normal(w["word"])]
+                        wanted=[_normal(w) for w in text.split() if _normal(w)]
+                        take_scores[str(rejected)]=SequenceMatcher(None,wanted,heard,autojunk=False).ratio()
                     if audio.exists():
                         audio.replace(rejected)
                     else:
@@ -395,7 +400,8 @@ def synthesize_plan(plan: dict, narrator: str, workdir: Path, model: str = "orig
             if error:
                 # Keep the last real take instead of stopping the whole Short. Its words are timed
                 # by forced alignment later; the review flags it so a person can listen to it.
-                takes=sorted((cache/"diagnostics").glob(f"beat-{index:04d}-{fingerprint}-attempt-*.wav"))
+                takes=sorted((cache/"diagnostics").glob(f"beat-{index:04d}-{fingerprint}-attempt-*.wav"),
+                             key=lambda t: take_scores.get(str(t),-1.0))  # closest to the script last
                 usable=None
                 for take in reversed(takes):
                     try:
@@ -414,7 +420,8 @@ def synthesize_plan(plan: dict, narrator: str, workdir: Path, model: str = "orig
                     words=[{"word":w,"start":i*step,"end":(i+1)*step} for i,w in enumerate(script)]
                     beat.update(audio_path=str(unverified.resolve()),duration=duration,words=words,
                                 timing_provenance="unverified-take",
-                                warning=f"narration not fully verified after 3 tries: {str(error)[:120]}")
+                                warning=f"narration not fully verified after 3 tries (kept the closest take, "
+                                        f"{take_scores.get(str(take),0):.0%} match): {str(error)[:100]}")
                     continue
                 raise RuntimeError(f"Narration beat {beat.get('id',index)} failed complete-speech verification: {error}") from error
         beat.update(audio_path=str(audio.resolve()),duration=duration,words=words,timing_provenance="asr-estimated-script-matched")

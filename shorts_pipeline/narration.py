@@ -23,11 +23,65 @@ DIALOGUE_PAD = 0.15
 GAP_SECONDS = 0.12
 
 
+_ABBREVIATIONS = {"mr.": "Mister", "mrs.": "Missus", "ms.": "Miz", "dr.": "Doctor", "st.": "Saint", "vs.": "versus",
+                  "vs": "versus", "lt.": "Lieutenant", "sgt.": "Sergeant", "capt.": "Captain", "det.": "Detective",
+                  "jr.": "Junior", "sr.": "Senior", "etc.": "et cetera", "no.": "number"}
+
+
+def _number_words(value: int) -> str:
+    """Numbers as spoken; four-digit years in pairs (1987 → nineteen eighty seven, 2014 → twenty fourteen)."""
+    from .voice import _integer_words
+    if 1100 <= value <= 1999 or 2010 <= value <= 2099:
+        high, low = divmod(value, 100)
+        tail = "hundred" if not low else " ".join(_integer_words(low)) if low >= 10 else "oh " + _integer_words(low)[0]
+        return " ".join(_integer_words(high)) + " " + tail
+    return " ".join(_integer_words(value))
+
+
+_ORDINAL_WORDS = {"one": "first", "two": "second", "three": "third", "five": "fifth", "eight": "eighth",
+                  "nine": "ninth", "twelve": "twelfth"}
+
+
+def _ordinal(value: int) -> str:
+    from .voice import _integer_words
+    words = _integer_words(value)
+    last = words[-1]
+    last = _ORDINAL_WORDS.get(last) or (last[:-1] + "ieth" if last.endswith("y") else last + "th")
+    return " ".join(words[:-1] + [last])
+
+
+def speakable(text: str) -> str:
+    """Script text as it should be spoken: numbers, money, times, symbols and abbreviations in words.
+
+    The narrator voice and the speech check both stumble on "3", "$1,000", "5 a.m.", "Dr." or
+    "—"; writing them as spoken words before synthesis removes the most common cause of
+    mismatched takes, and captions then show exactly what is said.
+    """
+    out = text.replace("&", " and ").replace("%", " percent").replace("—", ", ").replace("–", ", ")
+    out = re.sub(r"[()\[\]{}\"“”]", " ", out)
+    out = re.sub(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s?m\.?(?=\W|$)",
+                 lambda m: f"{_number_words(int(m.group(1)))}" +
+                 (f" {_number_words(int(m.group(2)))}" if m.group(2) and int(m.group(2)) else "") +
+                 f" {m.group(3).upper()} M", out, flags=re.I)
+    out = re.sub(r"\$(\d[\d,]*)(\s*(?:million|billion|thousand))?",
+                 lambda m: f"{_number_words(int(m.group(1).replace(',', '')))}{m.group(2) or ''} dollars", out)
+    out = re.sub(r"\b(\d+)(st|nd|rd|th)\b", lambda m: _ordinal(int(m.group(1))), out)
+    out = re.sub(r"\b\d[\d,]*\b", lambda m: _number_words(int(m.group(0).replace(",", ""))), out)
+    words = []
+    for word in out.split():
+        words.append(_ABBREVIATIONS.get(word.lower(), word))
+    spoken = re.sub(r"\s+([,.!?;:])", r"\1", " ".join(words)).replace(",,", ",").strip(" ,")
+    if text.rstrip()[-1:] in ".!?" and spoken[-1:] not in ".!?":
+        spoken += text.rstrip()[-1]  # keep the sentence's own ending (e.g. after "a.m.")
+    spoken = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), spoken)  # "3 men." → "Three men."
+    return spoken
+
+
 def voice_beats(result: dict) -> list[dict]:
     """Script → ordered voice beats; consecutive narration in a scene becomes one take."""
     script = result["script"]
     beats: list[dict] = []
-    hook = (script.get("hook") or "").strip()
+    hook = speakable((script.get("hook") or "").strip())
     pending: dict | None = {"kind": "narration", "scene": 0, "text": hook, "delivery": "punchy_hook"} if hook else None
     for beat in script.get("beats", []):
         if beat.get("kind") == "dialogue":
@@ -41,7 +95,7 @@ def voice_beats(result: dict) -> list[dict]:
                           "clip_start": max(0.0, line["clip_start"] - DIALOGUE_PAD),
                           "clip_end": line["clip_end"] + DIALOGUE_PAD})
             continue
-        text = (beat.get("text") or "").strip()
+        text = speakable((beat.get("text") or "").strip())
         if not text:
             continue
         if pending and pending["scene"] == beat.get("scene") and pending["delivery"] != "punchy_hook":
