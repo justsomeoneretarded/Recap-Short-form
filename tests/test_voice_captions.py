@@ -146,7 +146,7 @@ def test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(tm
             calls.append(script)
             path.write_bytes(f'attempt-{len(calls)}'.encode())
     class Verifier:
-        def transcribe(self,path,hint=''):
+        def transcribe(self,path,hint='',**kw):
             return complete if recover and len(calls)%2==0 else omitted
     monkeypatch.setattr(voice,'_Synthesizer',Synthesizer)
     monkeypatch.setattr(voice,'_Verifier',Verifier)
@@ -167,7 +167,7 @@ def test_rejected_generated_speech_retains_bounded_audio_transcript_and_error(tm
             assert record['text']==text
             assert record['recognized']==omitted
             assert record['duration']==2
-            assert record['stage']=='alignment'
+            assert record['stage']=='second listen'  # failed only after hearing it twice
             assert record['error_type']=='ValueError'
             assert 'could not find script words' in record['error'] or 'skipped' in record['error'] \
                 or 'sufficiently match' in record['error']
@@ -190,10 +190,34 @@ def test_unverified_take_is_kept_and_flagged_by_default(tmp_path,monkeypatch):
         def generate(self,script,path,delivery,seed):
             path.write_bytes(b'take')
     class Verifier:
-        def transcribe(self,path,hint=''):
+        def transcribe(self,path,hint='',**kw):
             return omitted
     monkeypatch.setattr(voice,'_Synthesizer',Synthesizer)
     monkeypatch.setattr(voice,'_Verifier',Verifier)
     beat=synthesize_plan({'beats':[{'id':'b1','kind':'narration','text':text}]},'warguy',tmp_path)['beats'][0]
     assert beat['timing_provenance']=='unverified-take' and 'not fully verified' in beat['warning']
     assert [w['word'] for w in beat['words']]==text.split() and Path(beat['audio_path']).read_bytes()==b'take'
+
+
+def test_good_audio_is_heard_again_before_a_new_take_is_made(tmp_path,monkeypatch):
+    text='He takes the bag and runs.'
+    reference=tmp_path/'warguy.ogg'
+    reference.write_bytes(b'reference-fixture')
+    monkeypatch.setattr(voice,'voice_reference',lambda *args: reference)
+    monkeypatch.setattr(voice,'_duration',lambda *args: 2)
+    made,listens=[],[]
+    class Synthesizer:
+        def __init__(self,*args): pass
+        def generate(self,script,path,delivery,seed):
+            made.append(script)
+            path.write_bytes(b'take')
+    class Verifier:  # the quick listen mishears; the slower second listen hears everything
+        def transcribe(self,path,hint='',vad=True,beam=3):
+            listens.append(vad)
+            words=text.split() if not vad else 'He takes.'.split()
+            return [{'word':w,'start':i*.2,'end':i*.2+.15} for i,w in enumerate(words)]
+    monkeypatch.setattr(voice,'_Synthesizer',Synthesizer)
+    monkeypatch.setattr(voice,'_Verifier',Verifier)
+    beat=synthesize_plan({'beats':[{'id':'b1','kind':'narration','text':text}]},'warguy',tmp_path)['beats'][0]
+    assert len(made)==1 and listens==[True,False]  # one recording, heard twice
+    assert beat['timing_provenance']=='asr-estimated-script-matched'

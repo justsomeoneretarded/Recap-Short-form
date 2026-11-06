@@ -222,7 +222,7 @@ class _Verifier:
     def __init__(self):
         self.model = None
 
-    def transcribe(self, path: Path, hint: str = "") -> list[dict]:
+    def transcribe(self, path: Path, hint: str = "", *, vad: bool = True, beam: int = 3) -> list[dict]:
         if self.model is None:
             try:
                 from faster_whisper import WhisperModel
@@ -230,8 +230,8 @@ class _Verifier:
                 raise RuntimeError("Speech verification requires faster-whisper; install the speech extra.") from exc
             self.model = WhisperModel(os.getenv("SHORTS_WHISPER_MODEL", "base.en"), device="cpu", compute_type="int8",
                                       cpu_threads=max(1, int(os.getenv("SHORTS_CPU_THREADS", "2"))))
-        segments, _ = self.model.transcribe(str(path), language="en", beam_size=3, word_timestamps=True,
-                                             vad_filter=True, condition_on_previous_text=False,
+        segments, _ = self.model.transcribe(str(path), language="en", beam_size=beam, word_timestamps=True,
+                                             vad_filter=vad, condition_on_previous_text=False,
                                              initial_prompt=hint or None)
         return [{"word": w.word.strip(), "start": w.start, "end": w.end}
                 for segment in segments for w in (segment.words or []) if w.word.strip()]
@@ -278,7 +278,7 @@ class _Synthesizer:
         # (exaggeration, cfg_weight, temperature). Lower cfg_weight speaks faster (Chatterbox guidance);
         # the "punchy" deliveries target recap-channel pacing (~195 words/minute before tempo matching).
         settings = {"normal": (.5,.5,.8), "calm": (.4,.55,.75), "dramatic": (.6,.45,.8), "hype": (.65,.45,.8),
-                    "punchy": (.55,.3,.8), "punchy_hook": (.7,.3,.8)}
+                    "punchy": (.55,.45,.8), "punchy_hook": (.65,.45,.8)}  # cfg below ~.45 drops or slurs words
         pieces=[]
         for i, chunk in enumerate(_chunks(text)):
             self.torch.manual_seed(seed+i)
@@ -366,10 +366,18 @@ def synthesize_plan(plan: dict, narrator: str, workdir: Path, model: str = "orig
                     engine.generate(text,audio,delivery,int(fingerprint[:8],16)+attempt*101)
                     stage="duration"
                     duration=_duration(audio)
-                    stage="transcription"
-                    spoken=verifier.transcribe(audio, f"Names: {names}." if names else "")
-                    stage="alignment"
-                    words=_align_script(text,spoken,duration,tolerant=True)
+                    # Re-listen before re-recording (as Top10-Movies does): most failed checks are the
+                    # recogniser mishearing good audio, so a second, slower listen without silence
+                    # trimming is tried before a new take is made.
+                    for listen,(vad,beam) in enumerate(((True,3),(False,5))):
+                        stage="transcription" if not listen else "second listen"
+                        spoken=verifier.transcribe(audio, f"Names: {names}." if names else "", vad=vad, beam=beam)
+                        try:
+                            words=_align_script(text,spoken,duration,tolerant=True)
+                            break
+                        except ValueError:
+                            if listen:
+                                raise
                     metadata.write_text(json.dumps({"words":words,"duration":duration,"model":model,"narrator":narrator,"timing_provenance":"asr-estimated-script-matched"},indent=2))
                     error=None
                     break
