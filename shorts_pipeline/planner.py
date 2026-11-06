@@ -21,7 +21,7 @@ from .sources import _video_info, _write_json, file_digest
 
 VERSION = 3
 # Planning changes must not invalidate expensive, unchanged frame descriptions.
-PLAN_VERSION = 9
+PLAN_VERSION = 10
 SCRIPT_WORDS_PER_SECOND = 2.0
 MAX_PLANNED_WORDS_PER_SECOND = 2.5
 MAX_SOURCE_SPEECH_SECONDS = 8.0
@@ -402,7 +402,8 @@ def _compress_narration(raw: dict, *, scenes: list[dict], described: list[dict],
         original_words = len(re.findall(r"\b[\w’'-]+\b", beat["text"]))
         inventory.append({"id": str(beat.get("id", f"B{number:03d}")),
                           "original_text": beat["text"], "selected_seconds": round(seconds, 6),
-                          "maximum_words": min(original_words, math.floor(seconds * SCRIPT_WORDS_PER_SECOND)),
+                          "target_words": max(3, min(original_words, math.floor(seconds * SCRIPT_WORDS_PER_SECOND))),
+                          "maximum_words": min(original_words, math.floor(seconds * MAX_PLANNED_WORDS_PER_SECOND)),
                           "selected_scene_descriptions": selected})
     maximum = min(math.floor(narration_seconds * COMPRESSION_WORDS_PER_SECOND),
                   sum(beat["maximum_words"] for beat in inventory))
@@ -429,7 +430,9 @@ def _compress_narration(raw: dict, *, scenes: list[dict], described: list[dict],
         "Do not add events, identities, quotations or speaker labels. Preserve factual numbers and spell them out. "
         "Never cut off a sentence or simply truncate words: write complete concise sentences. "
         "Do not narrate image captions or say that text reads something. "
-        f"Each beat MUST fit its maximum_words at {SCRIPT_WORDS_PER_SECOND:g} words/second of selected footage; "
+        f"Aim for each beat's target_words at {SCRIPT_WORDS_PER_SECOND:g} words/second of selected footage. "
+        f"Its maximum_words is the existing hard admission limit of {MAX_PLANNED_WORDS_PER_SECOND:g} words/second, "
+        "not a request to expand the sentence. A concise complete sentence may exceed its target while staying below that maximum; "
         "a word is counted as a letter/number group including internal apostrophes or hyphens. "
         f"All narration together MUST contain {minimum}–{maximum} words, with a safe global limit of "
         f"{COMPRESSION_WORDS_PER_SECOND:g} words per available narration second. "
@@ -480,12 +483,17 @@ def _compress_narration(raw: dict, *, scenes: list[dict], described: list[dict],
                 ident, text = item["id"], item["text"]
                 if not isinstance(ident, str) or ident not in limits or ident in texts:
                     raise ValueError(f"Compression returned an unknown or duplicate narration beat ID: {ident!r}.")
-                if not isinstance(text, str) or not re.fullmatch(_sentence_pattern(limits[ident]), text):
-                    raise ValueError(f"Compressed beat {ident!r} requires one complete punctuated sentence "
-                                     f"of 3–{limits[ident]} words; no prefix truncation or punctuation repair is applied.")
+                if not isinstance(text, str):
+                    raise ValueError(f"Compressed beat {ident!r} requires narration text; maximum {limits[ident]} words.")
                 words = re.findall(r"\b[\w’'-]+\b", text)
                 if not 3 <= len(words) <= limits[ident]:
-                    raise ValueError(f"Compressed beat {ident!r} exceeds its complete-sentence word budget.")
+                    raise ValueError(f"Compressed beat {ident!r} has {len(words)} words; "
+                                     f"requires 3–{limits[ident]} words under the existing "
+                                     f"{MAX_PLANNED_WORDS_PER_SECOND:g}-words/second admission limit.")
+                if not re.fullmatch(_sentence_pattern(limits[ident]), text):
+                    raise ValueError(f"Compressed beat {ident!r} requires one complete punctuated sentence "
+                                     f"(received {len(words)} words; maximum {limits[ident]}); "
+                                     "no prefix truncation or punctuation repair is applied.")
                 if words[-1].casefold() in _DANGLING_SENTENCE_ENDINGS:
                     raise ValueError(f"Compressed beat {ident!r} ends with an unfinished phrase or literal punctuation word: {words[-1]!r}.")
                 texts[ident] = text
@@ -493,9 +501,10 @@ def _compress_narration(raw: dict, *, scenes: list[dict], described: list[dict],
                 raise ValueError("Compression must return every original narration beat exactly once.")
             total = sum(len(re.findall(r"\b[\w’'-]+\b", text)) for text in texts.values())
             if total < minimum:
-                error = f"Compressed narration has {total} words; expected {minimum}–{maximum}. A full storyboard retry is required to restore enough supported story."
-                evidence.update(status="rejected", validation_error=error)
-                return None, attempt + 1, error
+                raise ValueError(f"Compressed narration has {total} words; expected {minimum}–{maximum}. "
+                                 "Restore omitted supported facts or verified names from the original narration "
+                                 "and story notes while keeping every beat within its maximum_words. "
+                                 "Do not add filler, repeated facts, or new events.")
             if total > maximum:
                 raise ValueError(f"Compressed narration has {total} words; expected {minimum}–{maximum}.")
             candidate = copy.deepcopy(raw)

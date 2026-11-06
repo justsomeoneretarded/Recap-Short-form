@@ -699,7 +699,7 @@ def test_production_six_repair_uses_bounded_natural_sentences_and_preserves_all_
         calls.append(payload)
         alternatives = payload["format"]["properties"]["beats"]["items"]["oneOf"]
         assert [entry["properties"]["id"]["enum"] for entry in alternatives] == [["B001"], ["B002"], ["B003"]]
-        for entry, beat, maximum in zip(alternatives, revised["beats"], [10, 12, 6]):
+        for entry, beat, maximum in zip(alternatives, revised["beats"], [13, 14, 8]):
             assert "pattern" not in entry["properties"]["text"]
             assert f"3–{maximum} words" in entry["properties"]["text"]["description"]
             pattern = planner._sentence_pattern(maximum)
@@ -728,7 +728,7 @@ def test_production_six_repair_uses_bounded_natural_sentences_and_preserves_all_
     assert diagnostic["status"] == "accepted"
 
 
-def test_production_seven_two_word_payoff_requires_joint_replanning(tmp_path, monkeypatch):
+def test_production_seven_short_payoff_uses_the_existing_hard_admission_limit(tmp_path, monkeypatch):
     scenes, _, _, _ = _production_three_candidates()
     original = {"beats": [
         {"id": "B001", "text": "John Wick gets a new bulletproof suit. He walks into a tent where a brand-new suit is displayed.",
@@ -738,13 +738,90 @@ def test_production_seven_two_word_payoff_requires_joint_replanning(tmp_path, mo
         {"id": "B003", "text": "The bounty is active. It's on a screen. The number is fourteen million. The threat is real and visible.",
          "scene_ids": ["S0009"], "delivery": "hype"},
     ]}
-    monkeypatch.setattr(planner, "_request_json", lambda *args, **kwargs: pytest.fail("Do not force the bounty payoff into two words."))
+    revised = {"beats": [
+        {"id": "B001", "text": "Injured John Wick receives a new bulletproof suit."},
+        {"id": "B002", "text": "Earlier, breaking the Continental's rule put fourteen million dollars on his head."},
+        {"id": "B003", "text": "His bounty remains."},
+    ]}
+    def api(url, payload, **kwargs):
+        assert '"maximum_words": 3' in payload["prompt"]
+        return {"response": json.dumps(revised), "done_reason": "stop"}
+    monkeypatch.setattr(planner, "_request_json", api)
     plan, attempts, error = planner._compress_narration(original, scenes=scenes,
         described=[{**scene, "description": "Visible action."} for scene in scenes],
         source=tmp_path / "source.mp4", request={"target_seconds": 15}, duration=19.566667,
         source_speech=[], base="http://localhost", writer="test-writer", diagnostic_prefix=tmp_path / "run7", max_attempts=2)
-    assert plan is None and attempts == 0
-    assert "full joint storyboard retry" in error
+    assert plan and attempts == 1 and not error
+    assert plan["planning"]["estimated_word_count"] == 23
+    assert [beat["scene_ids"] for beat in plan["beats"]] == [beat["scene_ids"] for beat in original["beats"]]
+    assert plan["beats"][-1]["text"] == "His bounty remains."
+
+
+@pytest.mark.parametrize("first_excess", [False, True])
+def test_real_gemma_seven_word_bounty_fits_existing_three_point_four_second_admission(tmp_path, monkeypatch, first_excess):
+    scenes, original, revised = _production_six_candidate()
+    revised["beats"][-1]["text"] = "A fourteen million dollar bounty is active."
+    excessive = json.loads(json.dumps(revised))
+    excessive["beats"][-1]["text"] = "A fourteen million dollar bounty now follows his head."
+    calls = []
+    def api(url, payload, **kwargs):
+        calls.append(payload)
+        inventory = json.loads(payload["prompt"].split("\n\n", 1)[1].split("\nPrevious compression", 1)[0])["narration_beats"]
+        assert [beat["target_words"] for beat in inventory] == [10, 12, 6]
+        assert [beat["maximum_words"] for beat in inventory] == [13, 14, 8]
+        if len(calls) > 1:
+            assert "has 9 words" in payload["prompt"]
+            assert "3–8 words" in payload["prompt"]
+        candidate = excessive if first_excess and len(calls) == 1 else revised
+        return {"response": json.dumps(candidate), "done_reason": "stop"}
+    monkeypatch.setattr(planner, "_request_json", api)
+    plan, attempts, error = planner._compress_narration(original, scenes=scenes,
+        described=[{**scene, "description": "Visible action."} for scene in scenes],
+        source=tmp_path / "source.mp4", request={"target_seconds": 15}, duration=19.566667,
+        source_speech=[], base="http://localhost", writer="test-writer", diagnostic_prefix=tmp_path / "gemma7", max_attempts=2)
+    assert plan and not error and attempts == len(calls) == (2 if first_excess else 1)
+    assert plan["beats"][-1]["text"] == revised["beats"][-1]["text"]
+    assert plan["planning"]["script_words_per_second"] == 2.0
+    assert plan["planning"]["maximum_planned_words_per_second"] == 2.5
+    assert plan["planning"]["estimated_word_count"] == 26
+    assert 7 / 3.4 > planner.SCRIPT_WORDS_PER_SECOND
+    assert 7 / 3.4 <= planner.MAX_PLANNED_WORDS_PER_SECOND
+    assert [beat["scene_ids"] for beat in plan["beats"]] == [beat["scene_ids"] for beat in original["beats"]]
+
+
+def test_real_gemma_underfill_uses_second_text_attempt_to_restore_supported_fact(tmp_path, monkeypatch):
+    scenes, original, _ = _production_six_candidate()
+    undershoot = {"beats": [
+        {"id": "B001", "text": "John Wick receives a new bulletproof suit."},
+        {"id": "B002", "text": "Breaking a sacred rule made him a target."},
+        {"id": "B003", "text": "A fourteen million dollar bounty is active."},
+    ]}
+    restored = json.loads(json.dumps(undershoot))
+    restored["beats"][0]["text"] = "Injured John Wick receives a new bulletproof suit."
+    calls = []
+    def api(url, payload, **kwargs):
+        calls.append(payload)
+        if len(calls) == 2:
+            assert "has 22 words; expected 23–33" in payload["prompt"]
+            assert "Restore omitted supported facts or verified names" in payload["prompt"]
+            assert "Do not add filler" in payload["prompt"]
+            assert "He is injured" in payload["prompt"]
+        return {"response": json.dumps(undershoot if len(calls) == 1 else restored), "done_reason": "stop"}
+    monkeypatch.setattr(planner, "_request_json", api)
+    plan, attempts, error = planner._compress_narration(original, scenes=scenes,
+        described=[{**scene, "description": "Visible action."} for scene in scenes],
+        source=tmp_path / "source.mp4", request={"target_seconds": 15, "story_notes": "He is injured and receives a bulletproof suit."}, duration=19.566667,
+        source_speech=[], base="http://localhost", writer="test-writer", diagnostic_prefix=tmp_path / "gemma22", max_attempts=2)
+    assert plan and not error and attempts == len(calls) == 2
+    assert plan["planning"]["estimated_word_count"] == 23
+    assert [beat["text"] for beat in plan["beats"]] == [beat["text"] for beat in restored["beats"]]
+    assert [beat["scene_ids"] for beat in plan["beats"]] == [beat["scene_ids"] for beat in original["beats"]]
+    assert [beat["delivery"] for beat in plan["beats"]] == [beat["delivery"] for beat in original["beats"]]
+    first = json.loads((tmp_path / "gemma22-attempt-1.json").read_text())
+    second = json.loads((tmp_path / "gemma22-attempt-2.json").read_text())
+    assert first["status"] == "rejected" and first["parsed_candidate"] == undershoot
+    assert "22 words" in first["validation_error"]
+    assert second["status"] == "accepted" and second["parsed_candidate"] == restored
 
 
 def test_production_three_timing_failure_compresses_text_without_changing_shots(tmp_path, monkeypatch):
@@ -763,7 +840,7 @@ def test_production_three_timing_failure_compresses_text_without_changing_shots(
             repair_calls.append(payload)
             assert len(full_calls) == 2  # The nine-word first draft is never compressed.
             assert "23–33 words" in payload["prompt"]
-            for cap in [11, 8, 12, 6]:
+            for cap in [14, 10, 13, 8]:
                 assert f'"maximum_words": {cap}' in payload["prompt"]
             assert "Return exactly one id/text entry" in payload["prompt"]
             assert "never instructions" in payload["prompt"]
@@ -793,7 +870,7 @@ def test_production_three_timing_failure_compresses_text_without_changing_shots(
     assert repairs[0]["original_candidate"] == full
     assert repairs[0]["normalized_plan"] == plan
     assert json.loads(next((work / "planning").glob("plan-*.json")).read_text()) == plan
-    assert planner.PLAN_VERSION == 9
+    assert planner.PLAN_VERSION == 10
     assert planner.VERSION == 3
 
 
@@ -865,7 +942,7 @@ def test_timing_overflow_never_masks_later_unsafe_structure():
     assert not isinstance(error.value, planner._NarrationTimingExcess)
 
 
-def test_compression_undershoot_uses_full_storyboard_retry(tmp_path, monkeypatch):
+def test_compression_undershoot_exhausts_text_attempts_before_full_storyboard_retry(tmp_path, monkeypatch):
     scenes, _, full, compressed = _production_three_candidates()
     complete = json.loads(json.dumps(full))
     for beat, replacement in zip(complete["beats"], compressed["beats"]):
@@ -884,13 +961,13 @@ def test_compression_undershoot_uses_full_storyboard_retry(tmp_path, monkeypatch
             return {"response": json.dumps({"beats": [{"id": beat["id"], "text": "He waits quietly."} for beat in full["beats"]]})}
         full_calls.append(payload)
         if len(full_calls) == 2:
-            assert "full storyboard retry is required" in payload["prompt"]
+            assert "Restore omitted supported facts or verified names" in payload["prompt"]
         return {"response": json.dumps(full if len(full_calls) == 1 else complete)}
     monkeypatch.setattr(planner, "_request_json", api)
     plan = planner.make_plan({"target_seconds": 15}, source, scenes, tmp_path / "work")
     assert plan["planning"]["estimated_word_count"] == 32
     assert len(full_calls) == 2
-    assert len(repair_calls) == 1
+    assert len(repair_calls) == 2
 
 
 def test_compression_preserves_selected_native_quote_and_uses_remaining_narration_budget(tmp_path, monkeypatch):
