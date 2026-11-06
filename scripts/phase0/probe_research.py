@@ -102,9 +102,24 @@ def opensubtitles(film: dict, imdb_id: str | None, directory: Path, allow_downlo
     return result
 
 
+_IMSDB_INDEX: list[str] = []
+
+
+def _norm(text: str) -> str:
+    text = re.sub(r"^(the|a|an)\s+(.*)$", r"\2, \1", text.strip(), flags=re.I)
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
 def imsdb(film: dict, directory: Path) -> dict:
-    name = re.sub(r"[^A-Za-z0-9 ]+", "", film["short"]).strip().replace(" ", "-")
-    url = f"https://imsdb.com/scripts/{name}.html"
+    """IMSDb names scripts like 'Dark Knight, The'; look the title up in its full index."""
+    if not _IMSDB_INDEX:
+        page = SESSION.get("https://imsdb.com/all-scripts.html", timeout=60).text
+        _IMSDB_INDEX.extend(re.findall(r'href="/Movie Scripts/([^"]+?) Script\.html"', page))
+    wanted = {_norm(film["title"]), _norm(film["short"])}
+    names = [n for n in _IMSDB_INDEX if _norm(n) in wanted]
+    if not names:
+        return {"index_size": len(_IMSDB_INDEX), "listed": False, "screenplay_words": 0}
+    url = "https://imsdb.com/scripts/" + names[0].replace(" ", "-") + ".html"
     try:
         response = SESSION.get(url, timeout=30)
     except requests.RequestException as exc:

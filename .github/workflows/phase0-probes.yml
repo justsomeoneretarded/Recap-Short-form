@@ -29,8 +29,11 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install FFmpeg and downloader
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg jq
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends ffmpeg jq
           python -m pip install 'yt-dlp[default]>=2026.1.1' 'bgutil-ytdlp-pot-provider>=2.0' requests
       - name: Start YouTube proof-of-origin token provider
         continue-on-error: true
@@ -107,7 +110,9 @@ jobs:
         with:
           python-version: '3.11'
       - run: |
-          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends zstd
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends zstd
           python -m pip install requests
       - name: Start Ollama with Top10's Gemma 4 12B setup
         run: |
@@ -135,8 +140,11 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install FFmpeg and CPU Vulkan (lavapipe)
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg mesa-vulkan-drivers libvulkan1 libgomp1
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends ffmpeg mesa-vulkan-drivers libvulkan1 libgomp1
           python -m pip install requests
       - uses: actions/download-artifact@v4
         continue-on-error: true

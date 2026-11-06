@@ -70,10 +70,19 @@ def github_models(directory: Path) -> list[dict]:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
                "X-GitHub-Api-Version": "2022-11-28", "User-Agent": USER_AGENT}
     catalog = requests.get("https://models.github.ai/catalog/models", headers=headers, timeout=30)
-    models = catalog.json() if catalog.status_code == 200 else []
+    try:
+        models = catalog.json()
+    except ValueError:
+        models = []
+        print(f"Catalog was not JSON (HTTP {catalog.status_code}, {catalog.headers.get('content-type')}): "
+              f"{catalog.text[:200]!r}", flush=True)
+    models = models if isinstance(models, list) else []
     (directory / "catalog.json").write_text(json.dumps(models, indent=1))
     ids = {m.get("id"): m for m in models if isinstance(m, dict)}
-    chosen = [m for m in PREFERRED if m in ids][:8]
+    print("Catalog ids:", sorted(ids)[:80], flush=True)
+    # Without a catalog, still try the preferred models directly: the inference call is the real test.
+    chosen = [m for m in PREFERRED if m in ids][:8] or PREFERRED[:8]
+    ids = ids or {m: {} for m in chosen}
     system, payload = prompt()
     rows = []
     for model in chosen:
@@ -85,12 +94,13 @@ def github_models(directory: Path) -> list[dict]:
         row = {"backend": "github", "model": model, "status": response.status_code,
                "seconds": round(time.time() - started, 1), "tier": ids[model].get("rate_limit_tier"),
                "rate_limit_headers": {k: v for k, v in response.headers.items() if "ratelimit" in k.lower()}}
-        if response.status_code == 200:
+        try:
             text = response.json()["choices"][0]["message"]["content"]
             row["text"] = text
             row["assessment"] = assess(parse(text), payload["brief"])
-        else:
+        except (ValueError, KeyError, IndexError, TypeError):
             row["error"] = response.text[:300]
+            print(f"{model}: HTTP {response.status_code} {response.text[:300]!r}", flush=True)
         rows.append(row)
         time.sleep(4)
     return [{"catalog_size": len(models), "catalog_status": catalog.status_code}] + rows
@@ -132,6 +142,10 @@ def main() -> None:
         a = r.get("assessment", {})
         lines.append(f"| {r['model']} | {r['status']} | {r['seconds']} | {a.get('valid', '–')} | "
                      f"{a.get('total_words', '–')} | {a.get('scenes_over_budget', '–')} | {a.get('filler_hits', '–')} |")
+    for r in samples:
+        if r.get("text"):
+            lines += ["", f"<details><summary>{r['model']} text</summary>", "", "```", r["text"].strip()[:4000],
+                      "```", "</details>"]
     if rows and "catalog_size" in rows[0]:
         lines.insert(2, f"Catalog: {rows[0]['catalog_size']} models (HTTP {rows[0]['catalog_status']})\n")
     write_report(directory, {"rows": rows}, lines)
