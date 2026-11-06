@@ -203,7 +203,7 @@ jobs:
           path: output/discover
       - name: Write scripts for the top stories
         if: hashFiles('output/discover/arcs.json') != ''
-        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 2 --drafts 3
+        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 2 --drafts 2
       - uses: actions/upload-artifact@v4
         if: always()
         with:

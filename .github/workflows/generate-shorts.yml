@@ -53,6 +53,8 @@ jobs:
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 80
+    outputs:
+      slots: ${{ steps.stories.outputs.slots }}
     env:
       HF_HOME: ${{ github.workspace }}/work/huggingface
       SHORTS_CPU_THREADS: '4'
@@ -99,6 +101,17 @@ jobs:
           TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
           OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
         run: python -u -m shorts_pipeline discover --movie "$MOVIE" --screen 10 --length "$LENGTH" --output output/discover
+      - name: Count the stories (one writing machine each, up to 5)
+        id: stories
+        run: |
+          python - <<'EOF'
+          import json, os
+          count = min(5, len(json.load(open("output/discover/arcs.json")).get("arcs", [])))
+          if not count:
+              raise SystemExit("No story could be built from the clips; see output/discover/summary.json")
+          open(os.environ["GITHUB_OUTPUT"], "a").write(f"slots={json.dumps(list(range(count)))}\n")
+          print("Stories to write:", count)
+          EOF
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -106,12 +119,15 @@ jobs:
           path: output/discover
           retention-days: 7
 
-  write:
+  write-story:
+    # Every story is written on its own machine at the same time (the writer is the slow CPU step).
     needs: [validate, discover]
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
-    outputs:
-      arcs: ${{ steps.arcs.outputs.arcs }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: ${{ fromJSON(needs.discover.outputs.slots) }}
     env:
       SCRIPT_MODEL: qwen3:14b
       SHORTS_WRITER_MODEL: qwen3:14b
@@ -135,21 +151,49 @@ jobs:
         with:
           name: discover
           path: output/discover
-      - name: Write a script for every story (3 drafts, judged, fixed)
-        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 5 --drafts 3
-      - name: List the stories to produce
+      - name: Write this story's script (2 drafts, judged, fixed)
+        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 5 --drafts 2 --arc-index ${{ matrix.slot }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: write-part-${{ matrix.slot }}
+          path: output/write
+          retention-days: 2
+
+  write:
+    # Joins the per-story scripts into one folder, in story order.
+    needs: [write-story]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    outputs:
+      arcs: ${{ steps.arcs.outputs.arcs }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: write-part-*
+          path: parts
+      - name: Join the scripts and list the stories to produce
         id: arcs
         run: |
-          python - <<'EOF'
-          import json, os
-          arcs = [r["arc"] for r in json.load(open("output/write/scripts.json"))]
-          if not arcs:
-              raise SystemExit("No story could be written; see output/discover/summary.json")
+          python3 - <<'EOF'
+          import glob, json, os
+          from pathlib import Path
+          out = Path("output/write"); out.mkdir(parents=True, exist_ok=True)
+          results, markdown = [], []
+          for folder in sorted(glob.glob("parts/write-part-*"), key=lambda p: int(p.rsplit("-", 1)[1])):
+              scripts = Path(folder, "scripts.json")
+              if scripts.exists():
+                  results += json.loads(scripts.read_text())
+                  text = Path(folder, "scripts.md").read_text()
+                  markdown.append(text if not markdown else text.split("\n", 2)[-1])
+          if not results:
+              raise SystemExit("No story could be written; see the write-story jobs")
+          (out / "scripts.json").write_text(json.dumps(results, indent=1))
+          (out / "scripts.md").write_text("\n".join(markdown))
+          arcs = [r["arc"] for r in results]
           open(os.environ["GITHUB_OUTPUT"], "a").write(f"arcs={json.dumps(arcs)}\n")
           print("Stories:", arcs)
           EOF
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: write
           path: output/write

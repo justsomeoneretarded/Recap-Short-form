@@ -7,6 +7,11 @@ dialogue beats; it never narrates them.
 
 Phase 0 bake-off: Qwen3 14B was the most faithful, fastest writer that opened on action, but
 wrote short. Hence several drafts, explicit per-scene word budgets and a fill pass.
+
+Speed on CPU runners (no GPU): most of the time goes into reading the prompt, so every call
+(drafts, judge, fix) starts with the same system prompt and the same compact brief. Ollama
+keeps that prefix in its cache, so only the first call pays for reading it. Output length is
+capped from the word budget, and per-call token/time stats are recorded for the summary.
 """
 from __future__ import annotations
 
@@ -20,6 +25,9 @@ from .locate import MovieTranscript
 WRITER_MODEL = os.environ.get("SHORTS_WRITER_MODEL", "qwen3:14b")
 WORDS_PER_SECOND = 3.25          # ≈195 narrator words/minute (references: 206–231 incl. dialogue)
 MAX_DIALOGUE_BEATS = 3
+PLOT_CHARS = 3000                # background only; scene detail comes from the dialogue
+LINES_PER_SCENE = 30
+LINE_CHARS = 160
 ENDINGS = ["renewed_threat", "reveal", "reflection", "thematic_payoff", "resolved_payoff"]
 FILLER = re.compile(r"\b(in this (?:movie|film|scene|video)|little did (?:he|she|they) know|meanwhile|as we see|"
                     r"the film|this film|this movie|our (?:hero|protagonist)|let'?s|you won'?t believe|"
@@ -42,8 +50,8 @@ SCRIPT_SCHEMA = {
 }
 JUDGE_SCHEMA = {"type": "object", "properties": {"scores": {"type": "array", "items": {"type": "object", "properties": {
     "draft": {"type": "string"}, "hook": {"type": "integer"}, "clarity": {"type": "integer"},
-    "faithfulness": {"type": "integer"}, "energy": {"type": "integer"}, "ending": {"type": "integer"},
-    "note": {"type": "string"}}, "required": ["draft", "hook", "clarity", "faithfulness", "energy", "ending"]}}},
+    "faithfulness": {"type": "integer"}, "energy": {"type": "integer"}, "ending": {"type": "integer"}},
+    "required": ["draft", "hook", "clarity", "faithfulness", "energy", "ending"]}}},
     "required": ["scores"]}
 
 SYSTEM = """You write narration for viral movie-recap Shorts, in the style of the best recap channels.
@@ -67,15 +75,26 @@ class Ollama:
 
     def __init__(self, model: str = WRITER_MODEL, base: str = "http://127.0.0.1:11434", timeout: float = 900):
         self.model, self.base, self.timeout = model, base.rstrip("/"), timeout
+        self.stats: list[dict] = []
 
     def chat(self, system: str, user: str, schema: dict, *, temperature: float = 0.7, seed: int = 0,
              max_tokens: int = 1800) -> dict:
         from .planner import _request_json
+        # num_ctx must stay the same for every call, or Ollama reloads the model and drops the prompt cache.
+        options = {"temperature": temperature, "seed": seed, "num_ctx": 8192, "num_predict": max_tokens}
+        if os.environ.get("SHORTS_OLLAMA_THREADS"):
+            options["num_thread"] = int(os.environ["SHORTS_OLLAMA_THREADS"])
         reply = _request_json(self.base + "/api/chat", {
-            "model": self.model, "stream": False, "think": False, "format": schema, "keep_alive": "10m",
-            "options": {"temperature": temperature, "seed": seed, "num_ctx": 8192, "num_predict": max_tokens},
+            "model": self.model, "stream": False, "think": False, "format": schema, "keep_alive": "30m",
+            "options": options,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
             timeout=self.timeout)
+        ns = 1e9
+        self.stats.append({"prompt_tokens": reply.get("prompt_eval_count", 0),
+                           "prompt_seconds": round(reply.get("prompt_eval_duration", 0) / ns, 1),
+                           "output_tokens": reply.get("eval_count", 0),
+                           "output_seconds": round(reply.get("eval_duration", 0) / ns, 1),
+                           "total_seconds": round(reply.get("total_duration", 0) / ns, 1)})
         return json.loads(reply["message"]["content"])
 
 
@@ -100,6 +119,16 @@ def _names(text: str) -> set[str]:
     return {w.lower() for w in re.findall(r"\b[A-Z][a-zA-Z'’-]+", text or "")}
 
 
+def _trim(text: str, limit: int) -> str:
+    """Cut at a sentence end before `limit` characters."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    return cut[:end + 1] if end > limit * 0.6 else cut
+
+
 def build_brief(arc: dict, research: dict, transcript: MovieTranscript | None, plot: str = "") -> Brief:
     movie = research["movie"]
     target = float(arc.get("short_seconds") or arc.get("footage_seconds") or 60)
@@ -109,12 +138,12 @@ def build_brief(arc: dict, research: dict, transcript: MovieTranscript | None, p
         seconds = scene["clip_end"] - scene["clip_start"]
         scene_lines = []
         for j, line in enumerate((transcript.lines_between(scene["movie_start"], scene["movie_end"])
-                                  if transcript else [])[:40]):
+                                  if transcript else [])[:LINES_PER_SCENE]):
             line_id = f"s{i}l{j}"
             words = len(line["text"].split())
             lines[line_id] = {**line, "scene": i, "clip_start": round(line["start"] - offset, 2),
                               "clip_end": round(line["end"] - offset, 2), "words": words}
-            scene_lines.append({"id": line_id, "text": line["text"]})
+            scene_lines.append({"id": line_id, "text": line["text"][:LINE_CHARS]})
         scenes.append({"scene": i, "seconds": round(seconds, 1), "clip_title": _clean_title(scene["clip_title"], movie["title"]),
                        "dialogue": scene_lines})
     footage = sum(s["seconds"] for s in scenes) or 1.0
@@ -125,7 +154,7 @@ def build_brief(arc: dict, research: dict, transcript: MovieTranscript | None, p
     cast = [{"actor": c["name"], "character": c.get("character")} for c in movie.get("cast", [])[:10]]
     data = {"movie": f"{movie['title']} ({movie.get('year')})", "short_seconds": round(target),
             "total_narration_words": narration_words, "cast": cast, "overview": movie.get("overview"),
-            "background_plot": plot[:4500], "dialogue_just_before": arc.get("dialogue_before", "")[-500:],
+            "background_plot": _trim(plot, PLOT_CHARS), "dialogue_just_before": arc.get("dialogue_before", "")[-500:],
             "scenes": scenes}
     allowed = set()
     for c in cast:
@@ -189,12 +218,20 @@ def check(script: dict, brief: Brief) -> dict:
 # ---------------------------------------------------------------------------- writing
 
 def _user(brief: Brief, extra: str = "") -> str:
-    return ("Write the Short for this story brief.\n" + json.dumps(brief.data, ensure_ascii=False, indent=1) +
-            ("\n\n" + extra if extra else ""))
+    # The brief comes first and is byte-identical in every call, so Ollama reuses its cached prompt.
+    return ("STORY BRIEF:\n" + json.dumps(brief.data, ensure_ascii=False, separators=(",", ":")) +
+            "\n\n" + (extra or "Write the Short for this story brief."))
+
+
+def output_tokens(brief: Brief) -> int:
+    """Enough tokens for the JSON script (≈1.6 tokens per word plus keys), with headroom."""
+    words = sum(brief.budgets.values()) + 14
+    return int(min(1800, max(500, words * 2.2 + 60 * len(brief.budgets) + 200)))
 
 
 def draft(llm, brief: Brief, n: int) -> dict:
-    return llm.chat(SYSTEM, _user(brief), SCRIPT_SCHEMA, temperature=0.65 + 0.15 * n, seed=101 + n)
+    return llm.chat(SYSTEM, _user(brief), SCRIPT_SCHEMA, temperature=0.65 + 0.15 * n, seed=101 + n,
+                    max_tokens=output_tokens(brief))
 
 
 def judge(llm, brief: Brief, drafts: list[dict]) -> dict[str, float]:
@@ -205,12 +242,11 @@ def judge(llm, brief: Brief, drafts: list[dict]) -> dict[str, float]:
                      "narration": " ".join(b.get("text", "") if b.get("kind") == "narration"
                                            else f"[movie line {b.get('line')}]" for b in d.get("beats", []))}
              for label, d in zip(labels, drafts)}
-    prompt = ("Score each draft 1-10 for: hook (would a scroller stop?), clarity (easy to follow), "
-              "faithfulness (only facts from the brief), energy (momentum, no filler), ending (satisfying and loops). "
-              "Be strict.\nBRIEF:\n" + json.dumps(brief.data, ensure_ascii=False)[:6000] +
-              "\nDRAFTS:\n" + json.dumps(shown, ensure_ascii=False))
-    reply = llm.chat("You are a strict editor of viral movie-recap Shorts. Return JSON only.", prompt, JUDGE_SCHEMA,
-                     temperature=0.1, seed=7, max_tokens=800)
+    task = ("Do not write a script now. Act as a strict editor of viral movie-recap Shorts and judge these drafts "
+            "of the Short for the brief above. Score each draft 1-10 for: hook (would a scroller stop?), clarity "
+            "(easy to follow), faithfulness (only facts from the brief), energy (momentum, no filler), ending "
+            "(satisfying and loops). Be strict.\nDRAFTS:\n" + json.dumps(shown, ensure_ascii=False))
+    reply = llm.chat(SYSTEM, _user(brief, task), JUDGE_SCHEMA, temperature=0.1, seed=7, max_tokens=200 + 90 * len(drafts))
     scores = {}
     for row in reply.get("scores", []):
         values = [row.get(k, 0) for k in ("hook", "clarity", "faithfulness", "energy", "ending")]
@@ -224,12 +260,14 @@ def fix(llm, brief: Brief, script: dict, report: dict) -> dict:
     problems = list(report["issues"]) + [f"scene {s} has {w} words, needs about {b}" for s, (w, b) in report["off_budget"].items()]
     extra = ("Here is a draft. Keep what works and its dialogue beats, but fix these problems:\n- " + "\n- ".join(problems) +
              "\nDRAFT:\n" + json.dumps(script, ensure_ascii=False))
-    return llm.chat(SYSTEM, _user(brief, extra), SCRIPT_SCHEMA, temperature=0.4, seed=303)
+    return llm.chat(SYSTEM, _user(brief, extra), SCRIPT_SCHEMA, temperature=0.4, seed=303,
+                    max_tokens=output_tokens(brief))
 
 
 def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, llm, *, plot: str = "",
-                drafts: int = 3) -> dict:
+                drafts: int = 2) -> dict:
     brief = build_brief(arc, research, transcript, plot)
+    calls_before = len(getattr(llm, "stats", []))
     candidates = []
     for n in range(drafts):
         try:
@@ -251,4 +289,4 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
     return {"arc": arc["id"], "script": final, "check": final_check, "brief": brief.data,
             "dialogue_lines": {k: v for k, v in brief.lines.items()
                                if any(b.get("line") == k for b in final.get("beats", []))},
-            "drafts": candidates, "fixed": final is fixed}
+            "drafts": candidates, "fixed": final is fixed, "model_calls": list(getattr(llm, "stats", []))[calls_before:]}

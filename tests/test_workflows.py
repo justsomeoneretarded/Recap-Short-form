@@ -31,6 +31,10 @@ def test_user_text_never_reaches_shell_code_directly():
 def test_pipeline_order_and_per_story_matrix():
     jobs=_load('generate-shorts.yml')['jobs']
     assert jobs['discover']['needs']=='validate'
+    story=jobs['write-story']
+    assert story['strategy']['matrix']['slot']=='${{ fromJSON(needs.discover.outputs.slots) }}'
+    assert '--arc-index ${{ matrix.slot }}' in ' '.join(s.get('run','') for s in story['steps'])
+    assert jobs['write']['needs']==['write-story'] and 'arcs' in jobs['write']['outputs']
     assert jobs['voice']['strategy']['matrix']['arc']=='${{ fromJSON(needs.write.outputs.arcs) }}'
     render=jobs['render']['strategy']['matrix']
     assert render['aspect']==['square','vertical'] and render['chunk']==['0','1','2','3']

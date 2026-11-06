@@ -27,7 +27,7 @@ Everything else is automatic:
    compilations are split into scenes.
 4. **Screen** downloads: burned-in subtitles, watermarks, promo/end cards, mirrored uploads, narration.
 5. **Stories**: nearby scenes become up to five Shorts that never share footage.
-6. **Write** each script with Qwen3 14B from the movie's real dialogue (3 drafts, checks + judge, fix-up),
+6. **Write** each script with Qwen3 14B from the movie's real dialogue (2 drafts, checks + judge, fix-up; every story is written on its own machine at the same time),
    keeping up to three real movie lines.
 7. **Voice** with the chosen narrator at ~195 words/minute; word-exact captions.
 8. **Edit and render** square 1080×1080 and vertical 1080×1920 at true 60 fps (RIFE, or motion

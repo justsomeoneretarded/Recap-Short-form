@@ -91,3 +91,44 @@ def test_write_command_end_to_end_with_fake_model(tmp_path, monkeypatch):
     assert summary["scripts"][0]["title"].startswith("He Broke")
     text = (tmp_path / "out" / "scripts.md").read_text()
     assert "I still have time." in text and "**Hook:**" in text
+
+
+def test_every_model_call_starts_with_the_same_prompt_so_ollama_can_reuse_its_cache():
+    b = brief()
+    seen = []
+
+    class Recorder(FakeLLM):
+        def chat(self, system, user, schema, **kw):
+            seen.append((system, user, kw.get("max_tokens")))
+            return super().chat(system, user, schema, **kw)
+
+    w.write_short(ARC, RESEARCH, MovieTranscript.from_subtitles(SRT), Recorder(b), drafts=2)
+    prefix = w._user(w.build_brief(ARC, RESEARCH, MovieTranscript.from_subtitles(SRT))).split("\n\n")[0]
+    assert len(seen) >= 3 and all(s == w.SYSTEM and u.startswith(prefix) for s, u, _ in seen)
+    assert all(t is not None and t <= 1800 for *_, t in seen)
+
+
+def test_long_plot_is_cut_at_a_sentence():
+    plot = "He runs. " * 1000
+    cut = w._trim(plot, w.PLOT_CHARS)
+    assert len(cut) <= w.PLOT_CHARS and cut.endswith(".")
+
+
+def test_write_command_can_write_one_story_per_machine(tmp_path, monkeypatch):
+    import json
+    from shorts_pipeline import cli
+    source = tmp_path / "discover"
+    source.mkdir()
+    second = {**ARC, "id": "arc-2"}
+    (source / "research.json").write_text(json.dumps(RESEARCH))
+    (source / "arcs.json").write_text(json.dumps({"arcs": [ARC, second]}))
+    (source / "movie.srt").write_text(SRT)
+    b = brief()
+
+    class Model(FakeLLM):
+        def __init__(self, *_args, **_kw):
+            super().__init__(b)
+
+    monkeypatch.setattr(w, "Ollama", Model)
+    summary = cli.run_write(source, tmp_path / "out", arc_index=1)
+    assert [s["arc"] for s in summary["scripts"]] == ["arc-2"]

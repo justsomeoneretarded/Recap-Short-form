@@ -153,7 +153,8 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     return summary
 
 
-def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 3, model: str | None = None) -> dict:
+def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2, model: str | None = None,
+              arc_index: int | None = None) -> dict:
     """discover folder (research.json, arcs.json, movie.srt, plot.txt) → scripts.json + scripts.md."""
     from .locate import MovieTranscript
     from .writer import Ollama, WRITER_MODEL, write_short
@@ -165,7 +166,10 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 3,
     llm = Ollama(model or WRITER_MODEL)
     output.mkdir(parents=True, exist_ok=True)
     results, lines = [], [f"# {research['movie']['title']} ({research['movie']['year']}) — scripts", '']
-    for arc in stories['arcs'][:max_arcs]:
+    chosen = stories['arcs'][:max_arcs]
+    if arc_index is not None:  # one story per machine: the workflow writes stories in parallel
+        chosen = chosen[arc_index:arc_index+1]
+    for arc in chosen:
         started = time.time()
         result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '', drafts=drafts)
         result['seconds_to_write'] = round(time.time()-started, 1)
@@ -176,6 +180,11 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 3,
                   f"Movie {arc['movie_start']/60:.1f}–{arc['movie_end']/60:.1f} min · {check['total_words']}/{check['target_words']} words · "
                   f"score {check['score']} · issues: {'; '.join(check['issues']) or 'none'} · {result['seconds_to_write']} s", '',
                   f"**Hook:** {script.get('hook')}", '']
+        calls = result.get('model_calls') or []
+        if calls:
+            lines[-2:-2] = [f"Model: {len(calls)} calls · reading prompt {sum(c['prompt_seconds'] for c in calls):.0f} s "
+                            f"({sum(c['prompt_tokens'] for c in calls)} tokens) · writing {sum(c['output_seconds'] for c in calls):.0f} s "
+                            f"({sum(c['output_tokens'] for c in calls)} tokens)", '']
         for beat in script.get('beats', []):
             if beat.get('kind') == 'dialogue':
                 line = result['dialogue_lines'].get(beat.get('line'), {})
@@ -456,7 +465,8 @@ def main(argv=None) -> int:
     pen.add_argument('--from',dest='source',type=Path,default=Path('output/discover'),help='discover output folder')
     pen.add_argument('--output',type=Path,default=Path('output/write'))
     pen.add_argument('--max-arcs',type=int,default=5)
-    pen.add_argument('--drafts',type=int,default=3)
+    pen.add_argument('--drafts',type=int,default=2)
+    pen.add_argument('--arc-index',type=int,default=None,help='Write only this story (0-based), for parallel machines')
     pen.add_argument('--model',default=None,help='Ollama writer model (default qwen3:14b)')
     speak = sub.add_parser('voice', help='Voice the written scripts and make captions.')
     speak.add_argument('--discover',type=Path,default=Path('output/discover'))
@@ -512,7 +522,8 @@ def main(argv=None) -> int:
                                  screen=args.screen,length=args.length)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='write':
-            summary=run_write(args.source,args.output,max_arcs=args.max_arcs,drafts=args.drafts,model=args.model)
+            summary=run_write(args.source,args.output,max_arcs=args.max_arcs,drafts=args.drafts,model=args.model,
+                              arc_index=args.arc_index)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='voice':
             summary=run_voice(args.discover,args.scripts,args.output,args.workdir,narrator=args.narrator,
