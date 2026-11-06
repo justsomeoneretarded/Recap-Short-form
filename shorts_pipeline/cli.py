@@ -315,7 +315,8 @@ def run_render(discover: Path, voice: Path, output: Path, workdir: Path, *,
     return {'rendered': rows}
 
 
-def run_package(discover: Path, scripts: Path, voice: Path, render: Path, output: Path, *, length: float = 150) -> dict:
+def run_package(discover: Path, scripts: Path, voice: Path, render: Path, output: Path, *, length: float = 150,
+                parts: Path | None = None) -> dict:
     """Everything needed to upload each Short, in one folder per story."""
     import shutil
     from .covers import contact_sheet, make_covers
@@ -349,8 +350,10 @@ def run_package(discover: Path, scripts: Path, voice: Path, render: Path, output
             if srt.exists():
                 shutil.copyfile(srt, folder/f'captions-{aspect}.srt')
         main_video = folder/('final-vertical.mp4' if (folder/'final-vertical.mp4').exists() else 'final-square.mp4')
+        shot_parts = Path(parts).resolve()/arc_id if parts and (Path(parts)/arc_id).exists() else None
         made = make_covers(main_video, edl, results[arc_id]['script'].get('title', ''), folder,
-                           aspects=tuple(outputs), text_reader=text_reader, face_finder=face_finder)
+                           aspects=tuple(outputs), text_reader=text_reader, face_finder=face_finder,
+                           parts=shot_parts, plans=rendered.get('plans'))
         sheet = contact_sheet(main_video, edl['duration'], folder/'contact-sheet.jpg')
         pack = write_package(folder, result=results[arc_id], research=research, arc=arcs[arc_id], clips=clips,
                              voiceover=voiceover, edl=edl, render=outputs, covers=made, sheet=str(sheet),
@@ -506,6 +509,7 @@ def main(argv=None) -> int:
     box.add_argument('--render',type=Path,default=Path('output/render'))
     box.add_argument('--output',type=Path,default=Path('output/shorts'))
     box.add_argument('--length',type=float,default=150)
+    box.add_argument('--parts',type=Path,default=None,help='Rendered shots (clean frames for covers)')
     planp = sub.add_parser('edit-plan', help='Edit decisions + framing plans for parallel rendering.')
     planp.add_argument('--discover',type=Path,default=Path('output/discover'))
     planp.add_argument('--voice',type=Path,default=Path('output/voice'))
@@ -550,7 +554,8 @@ def main(argv=None) -> int:
                                interpolation=args.interpolation)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='package':
-            summary=run_package(args.discover,args.scripts,args.voice,args.render,args.output,length=args.length)
+            summary=run_package(args.discover,args.scripts,args.voice,args.render,args.output,length=args.length,
+                                parts=args.parts)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='edit-plan':
             print(json.dumps(run_edit_plan(args.discover,args.voice,args.output,args.workdir),default=str,indent=2))

@@ -398,7 +398,7 @@ jobs:
         run: python -u -m shorts_pipeline finish --edit output/edit --voice output/voice --parts output/parts --arc "$ARC" --output output/render
       - name: Covers, titles, description, tags and quality review
         run: |
-          python -u -m shorts_pipeline package --discover output/discover --scripts output/write --voice output/voice --render output/render --output output/shorts --length "$LENGTH"
+          python -u -m shorts_pipeline package --discover output/discover --scripts output/write --voice output/voice --render output/render --parts output/parts --output output/shorts --length "$LENGTH"
           mv output/shorts/summary.json "output/shorts/$ARC/summary.json"
       - uses: actions/upload-artifact@v4
         if: always()

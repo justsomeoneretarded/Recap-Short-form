@@ -55,3 +55,25 @@ def test_covers_and_package(tmp_path):
                                  voiceover={"words_per_minute": 205, "beats": [{"kind": "dialogue"}]}, edl=edl,
                                  render=render, covers=made, sheet=str(sheet), target_seconds=10)
     assert (tmp_path / "pkg" / "review.html").read_text().count("PASS") >= 5 and pack["verdict"] in ("pass", "warn")
+
+
+def test_covers_use_clean_shots_of_each_shape_and_avoid_blur_fill(tmp_path):
+    parts = tmp_path / "parts"
+    parts.mkdir()
+    for aspect, size in (("square", "320x320"), ("vertical", "180x320")):
+        for i in range(3):
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate=24",
+                            "-t", "1", "-pix_fmt", "yuv420p", str(parts / f"{aspect}-shot-{i:04d}.mkv")], check=True)
+    final = tmp_path / "final.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=red:size=180x320:rate=24", "-t", "3",
+                    "-pix_fmt", "yuv420p", str(final)], check=True)
+    edl = {"shots": [{"timeline_start": float(t), "duration": 1.0} for t in range(3)], "duration": 3.0}
+    plans = {"0": {"vertical": {"mode": "fit"}}, "1": {"vertical": {"mode": "track"}}, "2": {"vertical": {"mode": "track"}}}
+    made = covers.make_covers(final, edl, "A Quiet Man Snaps", tmp_path / "pkg", parts=parts, plans=plans)
+    assert made["from_clean_shots"]
+    fit = next(c for c in made["candidates"] if c["index"] == 0)
+    assert all(fit["score"] < c["score"] for c in made["candidates"] if c["index"] != 0)
+    from PIL import Image
+    import numpy as np
+    clean = np.asarray(Image.open(made["covers"]["vertical-clean"]))
+    assert not (clean[..., 0] > 200).all()  # not the red captioned final video: a real shot frame

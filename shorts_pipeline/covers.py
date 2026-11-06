@@ -7,6 +7,11 @@ text (subtitles, logos), then the best distinct frames become three designs:
 1. hook  — best face frame, graded, 2–4 word hook in big bold type;
 2. punch — tighter crop on the face with the hook;
 3. clean — best overall frame, graded, no text.
+
+When the rendered shots are available (the finish machine has them), frames come from those
+clean shots: no burned captions in the cover, and each shape uses its own framing (square
+cover from the square shot, vertical from the vertical shot). Shots shown as fit-over-blur
+are avoided. Frames are grabbed a few at a time.
 """
 from __future__ import annotations
 
@@ -108,20 +113,41 @@ def _text(image: Image.Image, words: list[str], *, at: float = 0.12) -> Image.Im
     return image
 
 
+def _grab_all(jobs: list[tuple[Path, float]]) -> list[Image.Image | None]:
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:  # each grab is a separate FFmpeg process
+        return list(pool.map(lambda job: grab(*job), jobs))
+
+
+def _part(parts: Path | None, aspect: str, index: int) -> Path | None:
+    path = Path(parts) / f"{aspect}-shot-{index:04d}.mkv" if parts else None
+    return path if path and path.exists() else None
+
+
 def make_covers(video: Path, edl: dict, title: str, outdir: Path, *, aspects=("square", "vertical"),
-                text_reader=None, face_finder=None, max_candidates: int = 24) -> dict:
+                text_reader=None, face_finder=None, max_candidates: int = 24, parts: Path | None = None,
+                plans: dict | None = None) -> dict:
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    times = []
-    for shot in edl["shots"]:
-        times.append(shot["timeline_start"] + shot["duration"] / 2)
-    step = max(1, len(times) // max_candidates)
+    main = "vertical" if "vertical" in aspects else aspects[0]
+    shots = list(enumerate(edl["shots"]))
+    step = max(1, len(shots) // max_candidates)
+    picked = shots[::step][:max_candidates]
+
+    def source(index: int, shot: dict, aspect: str) -> tuple[Path, float]:
+        part = _part(parts, aspect, index)  # clean shot (no captions) in this shape's own framing
+        return (part, shot["duration"] / 2) if part else (Path(video), shot["timeline_start"] + shot["duration"] / 2)
+
+    frames = _grab_all([source(i, shot, main) for i, shot in picked])
     candidates = []
-    for t in times[::step][:max_candidates]:
-        frame = grab(video, t)
-        if frame is not None:
-            candidates.append({"time": round(t, 2), "image": frame,
-                               **score_frame(frame, text_reader=text_reader, face_finder=face_finder)})
+    for (index, shot), frame in zip(picked, frames):
+        if frame is None:
+            continue
+        row = {"time": round(shot["timeline_start"] + shot["duration"] / 2, 2), "index": index, "image": frame,
+               **score_frame(frame, text_reader=text_reader, face_finder=face_finder)}
+        if ((plans or {}).get(str(index)) or {}).get(main, {}).get("mode") == "fit":
+            row["score"] = round(row["score"] - 0.2, 4)  # blurred side bars look cheap on a cover
+        candidates.append(row)
     if not candidates:
         raise RuntimeError("No frames could be read for covers")
     candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -131,26 +157,38 @@ def make_covers(video: Path, edl: dict, title: str, outdir: Path, *, aspects=("s
     outputs = {}
     for aspect in aspects:
         size = SIZES[aspect]
-        face = max(best_face["faces"], key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if best_face["faces"] else None
+        face_image, other_image = best_face["image"], best_other["image"]
+        face_boxes = best_face["faces"]
+        if aspect != main and parts:
+            own = _grab_all([source(best_face["index"], edl["shots"][best_face["index"]], aspect),
+                             source(best_other["index"], edl["shots"][best_other["index"]], aspect)])
+            if own[0] is not None and _part(parts, aspect, best_face["index"]):
+                face_image = own[0]
+                small = np.asarray(face_image.resize((480, int(480 * face_image.height / face_image.width))))
+                face_boxes = face_finder(small) if face_finder else []
+            if own[1] is not None and _part(parts, aspect, best_other["index"]):
+                other_image = own[1]
+        face = max(face_boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if face_boxes else None
         cx = (face[0] + face[2]) / 2 if face else 0.5
         cy = (face[1] + face[3]) / 2 if face else 0.45
         designs = {
-            "hook": _text(_grade(_crop(best_face["image"], size, cx, cy)), words),
-            "punch": _text(_grade(_crop(best_face["image"], size, cx, cy, zoom=1.35 if face else 1.15)), words, at=0.70),
-            "clean": _grade(_crop(best_other["image"], size)),
+            "hook": _text(_grade(_crop(face_image, size, cx, cy)), words),
+            "punch": _text(_grade(_crop(face_image, size, cx, cy, zoom=1.35 if face else 1.15)), words, at=0.70),
+            "clean": _grade(_crop(other_image, size)),
         }
         for name, image in designs.items():
             path = outdir / f"cover-{aspect}-{name}.jpg"
             image.save(path, quality=92)
             outputs[f"{aspect}-{name}"] = str(path)
     return {"covers": outputs, "chosen_times": [best_face["time"], best_other["time"]], "hook": " ".join(words),
+            "from_clean_shots": bool(parts and _part(parts, main, best_face["index"])),
             "candidates": [{k: v for k, v in c.items() if k != "image"} for c in candidates[:8]]}
 
 
 def contact_sheet(video: Path, duration: float, target: Path, columns: int = 6, rows: int = 2) -> Path:
     tiles = []
-    for i in range(columns * rows):
-        frame = grab(video, duration * (i + 0.5) / (columns * rows))
+    count = columns * rows
+    for i, frame in enumerate(_grab_all([(Path(video), duration * (i + 0.5) / count) for i in range(count)])):
         if frame is not None:
             frame.thumbnail((240, 240))
             tiles.append((i, frame))

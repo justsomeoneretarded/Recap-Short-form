@@ -95,8 +95,11 @@ def test_parallel_chunks_match_single_machine(tmp_path, monkeypatch):
     done = cli.run_finish(tmp_path / "edit", tmp_path / "voice", tmp_path / "parts", "arc1", tmp_path / "render")
     assert set(done["outputs"]) == {"square", "vertical"}
     assert done["outputs"]["vertical"]["fps"] == pytest.approx(60, abs=0.1)
-    cli.run_package(discover, scripts, tmp_path / "voice", tmp_path / "render", tmp_path / "shorts", length=30)
+    cli.run_package(discover, scripts, tmp_path / "voice", tmp_path / "render", tmp_path / "shorts", length=30,
+                    parts=tmp_path / "parts")
     assert (tmp_path / "shorts" / "arc1" / "final-vertical.mp4").exists()
+    from PIL import Image
+    assert Image.open(tmp_path / "shorts" / "arc1" / "cover-square-clean.jpg").size == (1080, 1080)
 
 
 def test_footage_shipped_to_this_machine_is_used_without_youtube(tmp_path, monkeypatch):
