@@ -131,6 +131,14 @@ def imsdb(film: dict, directory: Path) -> dict:
     return {"url": url, "status": response.status_code, "screenplay_words": len(body.split())}
 
 
+def imsdb_cell(row: dict) -> str:
+    if row.get("error"):
+        return "error: " + row["error"][:60]
+    if row.get("listed") is False:
+        return f"not listed (index {row.get('index_size')})"
+    return f"{row.get('screenplay_words', 0)} (HTTP {row.get('status')})"
+
+
 def main() -> None:
     directory = out_dir("research")
     report = {"films": []}
@@ -157,7 +165,7 @@ def main() -> None:
         lines.append(f"| {e['film']} | {e.get('wikipedia', {}).get('plot_words', '–')} | "
                      f"{t.get('video_types', {}).get('Clip', t.get('skipped', t.get('error', '–')))} | "
                      f"{t.get('cast_with_photos', '–')} | {o.get('results', o.get('skipped', o.get('error', '–')))} | "
-                     f"{o.get('subtitle_cues', '–')} | {e.get('imsdb', {}).get('screenplay_words', '–')} |")
+                     f"{o.get('subtitle_cues', '–')} | {imsdb_cell(e.get('imsdb', {}))} |")
     write_report(directory, report, lines)
 
 

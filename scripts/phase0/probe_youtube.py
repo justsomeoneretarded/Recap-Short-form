@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import films, out_dir, slug, write_report  # noqa: E402
 
 import yt_dlp  # noqa: E402
-from yt_dlp.utils import download_range_func  # noqa: E402
 
 QUERY_FAMILIES = ["{t} {y} scene", "{t} {y} fight scene", "{t} {y} best scenes",
                   "{t} {y} clip", "{t} all scenes compilation"]
@@ -134,14 +133,27 @@ def comments(video_id: str) -> dict:
 
 
 def download_section(video_id: str, directory: Path) -> dict:
-    target = directory / f"{video_id}.%(ext)s"
+    """Download the whole clip with yt-dlp's own downloader, then cut 15 s locally.
+
+    Section downloads hand the media URL to FFmpeg, which ignores the SOCKS (WARP) proxy
+    and is refused by YouTube; the native downloader does use the proxy.
+    """
+    target = directory / f"{video_id}.full.%(ext)s"
     started = time.time()
     info, route = call(f"https://www.youtube.com/watch?v={video_id}", skip_download=False,
                        format="bv*[height<=1080]+ba/b[height<=1080]", outtmpl=str(target),
-                       download_ranges=download_range_func([], [(20, 35)]), merge_output_format="mp4")
-    files = sorted(directory.glob(f"{video_id}.*"))
+                       merge_output_format="mp4", max_filesize=400 * 1024 * 1024)
+    full = sorted(directory.glob(f"{video_id}.full.*"))
+    if full:
+        subprocess.run(["ffmpeg", "-y", "-ss", "20", "-i", str(full[0]), "-t", "15", "-c", "copy",
+                        str(directory / f"{video_id}.mp4")], capture_output=True)
+        full_probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration,size",
+                                     "-of", "json", str(full[0])], capture_output=True, text=True)
+        full_info = json.loads(full_probe.stdout or "{}").get("format", {})
+        full[0].unlink()
+    files = sorted(directory.glob(f"{video_id}.mp4"))
     result = {"id": video_id, "route": route, "seconds": round(time.time() - started, 1),
-              "files": [f.name for f in files]}
+              "files": [f.name for f in files], "full_clip": full_info if full else None}
     if files:
         probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                 "stream=width,height,avg_frame_rate", "-of", "json", str(files[0])],

@@ -84,14 +84,43 @@ def github_models(directory: Path) -> list[dict]:
     chosen = [m for m in PREFERRED if m in ids][:8] or PREFERRED[:8]
     ids = ids or {m: {} for m in chosen}
     system, payload = prompt()
+    # The first pass got HTTP 200 with a plain-text "OK" body from every call. Try a few documented
+    # request shapes once and keep the first that returns a real chat completion.
+    plain = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": USER_AGENT}
+    variants = [
+        ("github.ai, JSON accept", "https://models.github.ai/inference/chat/completions",
+         {**plain, "Accept": "application/json"}),
+        ("github.ai, GitHub accept", "https://models.github.ai/inference/chat/completions", headers),
+        ("azure legacy endpoint", "https://models.inference.ai.azure.com/chat/completions",
+         {**plain, "Accept": "application/json"}),
+    ]
+    endpoint = None
+    probe_body = {"model": "openai/gpt-4.1-mini", "messages": [{"role": "user", "content": "Say hi."}]}
+    for label, url, variant_headers in variants:
+        body = dict(probe_body)
+        if "azure" in url:
+            body["model"] = "gpt-4o-mini"
+        try:
+            response = requests.post(url, headers=variant_headers, json=body, timeout=60)
+        except requests.RequestException as exc:
+            print(f"{label}: {exc}", flush=True)
+            continue
+        print(f"{label}: HTTP {response.status_code} {response.headers.get('content-type')} "
+              f"{response.text[:160]!r} headers={dict(list(response.headers.items())[:12])}", flush=True)
+        if "choices" in response.text:
+            endpoint = (label, url, variant_headers)
+            break
+    if not endpoint:
+        return [{"catalog_size": len(models), "catalog_status": catalog.status_code,
+                 "error": "no request shape returned a chat completion"}]
+    label, url, headers = endpoint
     rows = []
     for model in chosen:
         started = time.time()
-        body = {"model": model, "messages": [{"role": "system", "content": system},
-                                             {"role": "user", "content": payload["user"]}]}
-        response = requests.post("https://models.github.ai/inference/chat/completions", headers=headers,
-                                 json=body, timeout=180)
-        row = {"backend": "github", "model": model, "status": response.status_code,
+        body = {"model": model if "azure" not in url else model.split("/")[-1],
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": payload["user"]}]}
+        response = requests.post(url, headers=headers, json=body, timeout=180)
+        row = {"backend": "github", "endpoint": label, "model": model, "status": response.status_code,
                "seconds": round(time.time() - started, 1), "tier": ids[model].get("rate_limit_tier"),
                "rate_limit_headers": {k: v for k, v in response.headers.items() if "ratelimit" in k.lower()}}
         try:
@@ -147,7 +176,7 @@ def main() -> None:
             lines += ["", f"<details><summary>{r['model']} text</summary>", "", "```", r["text"].strip()[:4000],
                       "```", "</details>"]
     if rows and "catalog_size" in rows[0]:
-        lines.insert(2, f"Catalog: {rows[0]['catalog_size']} models (HTTP {rows[0]['catalog_status']})\n")
+        lines.insert(2, f"Catalog: {rows[0]['catalog_size']} models (HTTP {rows[0]['catalog_status']}) {rows[0].get('error', '')}\n")
     write_report(directory, {"rows": rows}, lines)
 
 

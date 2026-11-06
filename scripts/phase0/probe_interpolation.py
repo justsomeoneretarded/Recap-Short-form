@@ -81,6 +81,7 @@ def rife_binary(directory: Path) -> tuple[Path, Path] | None:
     asset = next((a for a in release.get("assets", []) if a["name"].endswith("ubuntu.zip")), None)
     if not asset:
         return None
+    directory.mkdir(parents=True, exist_ok=True)
     archive = directory / asset["name"]
     archive.write_bytes(requests.get(asset["browser_download_url"], timeout=300).content)
     with zipfile.ZipFile(archive) as bundle:
