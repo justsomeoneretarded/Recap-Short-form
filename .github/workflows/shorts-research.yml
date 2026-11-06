@@ -87,3 +87,26 @@ jobs:
           name: research-${{ strategy.job-index }}
           path: output/research
           retention-days: 7
+
+  summary:
+    needs: research
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: research-*
+          path: all
+      - name: One table for every movie
+        run: |
+          python - <<'EOF'
+          import json, glob, os
+          rows = ["| Movie | Cast photos | Clips | Plot words | Subtitles | Warnings |", "|---|---|---|---|---|---|"]
+          for path in sorted(glob.glob("all/*/research.json")):
+              r = json.load(open(path)); m = r["movie"]; s = r["subtitles"]
+              rows.append(f"| {m['title']} ({m['year']}) | {sum(1 for c in m['cast'] if c['photo'])} | {len(m['clips'])} | "
+                          f"{r['wikipedia'].get('words')} | {'yes' if s.get('path') else s.get('skipped')} | {' / '.join(r['warnings']) or '–'} |")
+          text = "\n".join(rows)
+          print("RESEARCH SUMMARY\n" + text)
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write(text + "\n")
+          EOF

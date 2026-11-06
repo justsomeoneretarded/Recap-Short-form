@@ -195,20 +195,25 @@ def wikipedia_plot(movie: dict, http: Http) -> dict:
                                           "srsearch": f"{title} {year or ''} film".strip()})
     candidates = [h["title"] for h in hits.get("query", {}).get("search", [])]
     wanted = _fold(title)
+    skipped: list[str] = []
     for page in candidates:
         if wanted.split()[0] not in _fold(page):
+            skipped.append(f"{page}: title differs")
             continue
         data = http.json("GET", WIKI, params={"action": "query", "prop": "extracts", "explaintext": 1,
                                               "redirects": 1, "format": "json", "titles": page})
         extract = next(iter(data.get("query", {}).get("pages", {}).values()), {}).get("extract", "")
         intro = extract[:600]
         if year and str(year) not in intro and str(year - 1) not in intro:
+            skipped.append(f"{page}: year {year} not in intro")
             continue  # same name, different film
         plot = plot_section(extract)
+        if not plot:
+            skipped.append(f"{page}: no Plot section ({len(extract)} chars)")
         if plot:
             return {"page": page, "url": f"https://en.wikipedia.org/wiki/{page.replace(' ', '_')}",
                     "plot": plot, "words": len(plot.split())}
-    return {"page": None, "plot": "", "words": 0, "candidates": candidates}
+    return {"page": None, "plot": "", "words": 0, "candidates": skipped or candidates}
 
 
 # ------------------------------------------------------------------ OpenSubtitles
@@ -276,7 +281,8 @@ def research(movie_text: str, workdir: Path, *, http: Http | None = None,
     except ResearchError as exc:
         wiki = {"page": None, "plot": "", "words": 0, "error": str(exc)}
     if not wiki["plot"]:
-        warnings.append("No Wikipedia plot found; the story will rely on subtitles, clips and the TMDB overview.")
+        why = wiki.get("error") or f"searched {wiki.get('candidates') or 'no pages'}"
+        warnings.append(f"No Wikipedia plot found ({why}); the story will rely on subtitles, clips and the TMDB overview.")
     (folder / "plot.txt").write_text(wiki["plot"] or movie.get("overview") or "", encoding="utf-8")
     try:
         subtitles = opensubtitles_file(movie, http, subtitles_key.strip(), folder / "movie.srt")
