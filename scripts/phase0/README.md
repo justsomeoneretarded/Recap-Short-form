@@ -9,7 +9,7 @@ in the `phase0-*` artifacts (7-day retention).
 |---|---|
 | `probe_youtube.py` | Can the runner search YouTube and download? Which ranking signals come back: views, likes, subscribers, verified checkmark, Most Replayed heatmap, chapters, captions, top comments, best resolution and fps? |
 | `probe_research.py` | How much story detail is available: Wikipedia plot length, TMDB clips and cast photos, OpenSubtitles full subtitles, IMSDb screenplays? |
-| `probe_writers.py` | The same scene brief written by GitHub Models candidates and by Top10's local Gemma 4 12B, so they can be read side by side. |
+| `probe_writers.py` | The same scene brief written by several free local models (Top10's Gemma 4 12B, Qwen3 14B, Phi-4 14B, Gemma 3 12B), so they can be read side by side. GitHub Models support remains in the script, but the runners only got stub `OK` responses from it. |
 | `probe_interpolation.py` | How long true 60 fps takes on CPU (frame blending, FFmpeg motion interpolation, RIFE via ncnn on CPU or lavapipe Vulkan), and whether the output has duplicate frames. |
 
 Optional repository secrets used when present: `YOUTUBE_COOKIES`, `TMDB_READ_TOKEN`,

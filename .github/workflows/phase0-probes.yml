@@ -75,32 +75,15 @@ jobs:
           path: work/phase0/research
           retention-days: 7
 
-  writers-github:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      models: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: python -m pip install requests
-      - name: Write the sample brief with GitHub Models
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python -u scripts/phase0/probe_writers.py --backend github
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: phase0-writers-github
-          path: work/phase0/writers-github
-          retention-days: 7
-
-  writers-gemma:
+  writers-local:
+    # GitHub Models is not reachable from these runners (stub "OK" responses), so the
+    # bake-off compares free local models on the same CPU runner.
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ['gemma4:12b', 'qwen3:14b', 'phi4:14b', 'gemma3:12b']
     env:
       SCRIPT_MODEL: gemma4:12b
       OLLAMA_MODELS: ${{ github.workspace }}/work/ollama
@@ -114,18 +97,18 @@ jobs:
           APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends zstd
           python -m pip install requests
-      - name: Start Ollama with Top10's Gemma 4 12B setup
+      - name: Start Ollama and pull ${{ matrix.model }}
         run: |
           python scripts/install_ollama.py
           "$RUNNER_TEMP/shorts-ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
           for _ in $(seq 1 60); do curl -sf http://127.0.0.1:11434/api/version && break; sleep 1; done
-          "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull gemma4:12b
-      - name: Write the sample brief with Gemma
-        run: python -u scripts/phase0/probe_writers.py --backend ollama --model gemma4:12b
+          "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull "${{ matrix.model }}"
+      - name: Write the sample brief
+        run: python -u scripts/phase0/probe_writers.py --backend ollama --model "${{ matrix.model }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: phase0-writers-gemma
+          name: phase0-writers-${{ strategy.job-index }}
           path: work/phase0/writers-ollama
           retention-days: 7
 
@@ -159,5 +142,8 @@ jobs:
         if: always()
         with:
           name: phase0-interpolation
-          path: work/phase0/interpolation
+          path: |
+            work/phase0/interpolation
+            !work/phase0/interpolation/frames
+            !work/phase0/interpolation/rife-bin
           retention-days: 7

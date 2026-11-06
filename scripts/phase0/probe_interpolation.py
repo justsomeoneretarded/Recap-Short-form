@@ -93,6 +93,7 @@ def rife_binary(directory: Path) -> tuple[Path, Path] | None:
 
 
 def rife_method(binary: Path, model: Path, gpu: str, source: Path, target: Path, work: Path) -> dict:
+    binary, model, work = binary.resolve(), model.resolve(), work.resolve()
     frames_in, frames_out = work / "in", work / "out"
     for folder in (frames_in, frames_out):
         shutil.rmtree(folder, ignore_errors=True)
@@ -135,8 +136,9 @@ def main() -> None:
                     row = rife_method(*rife, gpu, cropped, directory / f"{label}-rife-g{gpu}.mp4",
                                       directory / "frames")
                     report["results"].append({"size": label, **row})
-                except subprocess.CalledProcessError as exc:
-                    report["errors"].append(f"{label} rife gpu={gpu}: {(exc.stderr or b'')[-300:]!r}")
+                except (subprocess.CalledProcessError, OSError) as exc:
+                    detail = getattr(exc, "stderr", b"") or str(exc).encode()
+                    report["errors"].append(f"{label} rife gpu={gpu}: {detail[-300:]!r}")
         print(json.dumps(report["results"][-5:], indent=1), flush=True)
     shutil.rmtree(directory / "frames", ignore_errors=True)
     shutil.rmtree(directory / "rife-bin", ignore_errors=True)
