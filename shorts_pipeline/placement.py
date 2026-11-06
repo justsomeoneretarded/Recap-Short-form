@@ -94,8 +94,14 @@ def place_candidates(research: dict, discovered: dict, youtube: YouTube, workdir
     cache = folder / "placements.json"
     done = json.loads(cache.read_text()) if cache.exists() else {}
     placed = []
+    import time
+    deadline = time.monotonic() + float(os.environ.get("SHORTS_PLACEMENT_BUDGET", "1500"))
     for rank, candidate in enumerate(discovered["candidates"][:top]):
         row = dict(candidate)
+        if candidate["id"] not in done and time.monotonic() > deadline:
+            row["placement"] = {"matched": False, "reason": "time budget reached"}
+            placed.append(row)
+            continue
         if candidate["id"] in done:
             row.update(done[candidate["id"]])
         else:

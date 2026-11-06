@@ -211,10 +211,18 @@ def write_report(path: Path, report: dict) -> None:
 
 def screen_candidates(placed: dict, youtube, workdir: Path, *, top: int = 8) -> list[dict]:
     """Download the best-ranked clips and screen them; one failure never stops the batch."""
+    import os
+    import time
     folder = Path(workdir) / "footage"
     reports = []
-    for clip in placed["clips"][:top]:
+    deadline = time.monotonic() + float(os.environ.get("SHORTS_SCREEN_BUDGET", "1200"))
+    # Placed clips first: only they can become story scenes.
+    ordered = sorted(placed["clips"], key=lambda c: not (c.get("placement") or {}).get("matched"))
+    for clip in ordered[:top]:
         row = {"id": clip["id"], "title": clip["title"]}
+        if time.monotonic() > deadline:
+            reports.append({**row, "accept": False, "reasons": ["not screened: time budget reached"], "notes": []})
+            continue
         cache = folder / f"{clip['id']}.screen.json"
         if cache.exists():
             reports.append({**row, **json.loads(cache.read_text())})

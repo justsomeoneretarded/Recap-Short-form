@@ -30,7 +30,7 @@ permissions:
 
 concurrency:
   group: shorts-research-${{ github.ref }}
-  cancel-in-progress: false  # queue behind a running discovery instead of discarding its work
+  cancel-in-progress: true  # the newest code supersedes older runs
 
 jobs:
   movies:
