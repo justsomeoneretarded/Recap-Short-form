@@ -25,7 +25,8 @@ REJECT_TITLE = re.compile(
     r"edit|amv|fmv|slowed|reverb|sped up|nightcore|lyrics?|soundtrack|ost|theme song|full movie|"
     r"fan ?made|concept|ai generated|parody|spoof|honest|pitch meeting|ranked|ranking|top \d+|"
     r"vs\.? (?:the )?real|in \d+ minutes|movie in|explained in|hindi|tamil|telugu|dubbed|"
-    r"#shorts?|bloopers?|deleted scenes?|commentary|podcast|unboxing|gameplay|game)\b", re.I)
+    r"#shorts?|bloopers?|deleted scenes?|commentary|podcast|unboxing|gameplay|game|breaks? down|"
+    r"experts?|stunt ?(?:man|woman|men|women|coordinator)s?|react(?:ion|s|ing)?|rates?|vfx artists?)\b", re.I)
 # Words that mark scene footage.
 SCENE_WORDS = {"scene", "scenes", "clip", "clips", "fight", "chase", "final", "opening", "moment", "moments"}
 COMPILATION = re.compile(r"\b(all|best|every|top)\b.*\bscenes?\b|\bcompilation\b|\bscenes? pack\b", re.I)
@@ -297,6 +298,11 @@ def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None 
             errors.append({"video": entry["id"], "error": str(exc)[:200]})
             continue
         reason = prefilter(info, movie) if entry["id"] not in official else None
+        fmt = best_format(info)
+        if not reason and fmt.get("width") and fmt["width"] < fmt["height"]:
+            reason = "vertical re-upload (already cropped; quality and framing lost)"
+        if not reason and re.search(r"#\w+", info.get("title") or "") and (info.get("duration") or 0) <= 70:
+            reason = "hashtag short (re-upload)"
         item = candidate(info, movie, entry["query"], official)
         if reason or not (item.identity["ok"] or item.official):
             rejected.append({"id": item.id, "title": item.title,

@@ -42,6 +42,7 @@ def test_queries_use_studio_clip_names_hints_and_genres():
     ("Nobody Ending Explained", "title marks non-scene content"),
     ("Nobody Movie Recap in 10 minutes", "title marks non-scene content"),
     ("Random action fight", "title names neither the film nor its cast"),
+    ("Knife Expert Breaks Down Nobody Bus Fight Scene", "title marks non-scene content"),
 ])
 def test_prefilter_rejects(title, reason):
     assert d.prefilter({"title": title, "duration": 120}, MOVIE) == reason
@@ -92,3 +93,11 @@ def test_discover_ranks_and_records_rejections():
 def test_compilation_flag_from_title_or_chapters():
     movie_info = info("comp", "Nobody all fight scenes", chapters=[{"title": "a", "start_time": 0, "end_time": 60}])
     assert d.candidate(movie_info, MOVIE, "q", set()).compilation
+
+
+def test_vertical_reuploads_are_rejected():
+    results = {"Nobody 2021 scene": [{"id": "v", "title": "Nobody bus fight scene", "view_count": 9}]}
+    vertical = info("v", "Nobody bus fight scene")
+    vertical["formats"] = [{"vcodec": "avc1", "height": 1920, "width": 1080, "fps": 30}]
+    result = d.discover({"movie": {**MOVIE, "clips": []}}, FakeYouTube(results, {"v": vertical}))
+    assert not result["candidates"] and "vertical" in result["rejected"][0]["reason"]
