@@ -4,7 +4,7 @@ A standalone movie recap Shorts pipeline with its own **Generate Shorts** workfl
 
 The initial style profile comes from eight owner-supplied references: action before backstory, causal story beats, compact white italic captions, meaningful object/face shots, selected movie dialogue, and story-dependent endings. All supplied exports are 1080×1080, roughly 136–180 seconds. Square is the default; vertical is an explicit option. This is an initial implementation, not a verified recreation of the creator's production process.
 
-Read the [reference analysis](docs/reference-analysis.md), [ten-repository comparison](docs/technology-comparison.md), and [validation record](docs/validation.md).
+Read the [reference analysis](docs/reference-analysis.md), [ten-repository comparison](docs/technology-comparison.md), and [validation record](docs/validation.md). A [reviewed Warguy engineering preview](docs/validation-samples/original-warguy-engineering-pilot.mp4) demonstrates generated speech and editing; its existing source captions overlap the generated captions, so it is not a channel-ready Short.
 
 ## Generate a Short on GitHub
 

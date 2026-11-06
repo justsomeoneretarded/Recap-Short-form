@@ -5,6 +5,8 @@ import math
 import subprocess
 from pathlib import Path
 
+EXCERPT_VERSION = 1
+
 
 def run(args: list[str], *, timeout: float = 1800) -> subprocess.CompletedProcess:
     try:
@@ -44,8 +46,13 @@ def excerpt(source: Path, workdir: Path, window: list[float]) -> Path:
         raise ValueError(f'Source window ends at {end}s, beyond the {info["duration"]:.2f}s source.')
     with source.open('rb') as stream:
         fingerprint=hashlib.file_digest(stream,'sha256').hexdigest()
-    identity=hashlib.sha256(f'{fingerprint}:{start}:{end}'.encode()).hexdigest()[:20]
-    target=Path(workdir)/f'excerpt-{identity}.mp4'
+    identity=hashlib.sha256(f'{EXCERPT_VERSION}:{fingerprint}:{start}:{end}'.encode()).hexdigest()[:20]
+    # Persist the canonical encoded excerpt with the source cache. Re-encoding
+    # on different runner CPUs can change its bytes and invalidate scene/vision
+    # caches despite using the same original footage and time window.
+    directory=Path(workdir)/'sources'/'excerpts'
+    directory.mkdir(parents=True,exist_ok=True)
+    target=directory/f'excerpt-{identity}.mp4'
     if not target.exists():
         pending=target.with_name(target.stem+'.pending.mp4')
         run(['ffmpeg','-y','-v','error','-threads','1','-filter_threads','1',

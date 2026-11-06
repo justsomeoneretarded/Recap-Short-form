@@ -1,5 +1,7 @@
 # Runtime setup verification
 
+This is the historical preflight inspection. Subsequent inference, render results and the current model defaults are recorded in [validation](validation.md); Qwen3 4B is now the default writer and Gemma4 12B is optional.
+
 Read-only upstream inspection and HTTP metadata checks. No speech packages or model weights were installed by this review; no inference was run. Existing reference-transcription weights were not modified.
 
 ## Pinned Chatterbox package
@@ -85,7 +87,7 @@ These checks establish tag availability and advertised file sizes, not model qua
 
 The Top10 pinned Ollama `v0.40.14` release asset exists: HTTP HEAD returned 200 and 1,525,335,029 bytes at https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tar.zst . This is the combined archive; Top10 excludes CUDA/Vulkan directories while extracting and deletes the archive before subsequent model downloads. Its configured checksum is `993e83d08c3d13d17c55009a3e2664c8a25445e644aec3a68bef5abb6abce67d`, which this review did not re-download and recompute.
 
-Current workspace measurements: free disk 6,337,835,008 bytes; host-reported RAM 9.7 GiB but **cgroup memory.max is 8,589,934,592 bytes (8 GiB)**. The actual cgroup cap governs execution. The 8.02 GB default Gemma4 download alone exceeds current free disk, before adding runtime/dependencies. Do not attempt a full default-model pipeline here and call a resource failure a model-quality issue.
+Current workspace measurements: free disk 6,337,835,008 bytes; host-reported RAM 9.7 GiB but **cgroup memory.max is 8,589,934,592 bytes (8 GiB)**. The actual cgroup cap governs execution. The originally proposed8.02GB Gemma4 download alone exceeds current free disk, before adding runtime/dependencies. Do not attempt a full default-model pipeline here and call a resource failure a model-quality issue.
 
 On a suitable GitHub runner, sequence stages: index/describe, unload vision; write plan, unload writer; synthesize; render. Consider deleting no-longer-needed Ollama model blobs between stages on constrained disk, rather than retaining vision + writer + TTS weights simultaneously. Merely setting `keep_alive:0` releases RAM but does not free model disk. Preserve user-managed/shared caches; cleanup should operate only on owned per-run model storage.
 
@@ -95,6 +97,6 @@ On a suitable GitHub runner, sequence stages: index/describe, unload vision; wri
 2. An actual short Nano speech check could fit this workspace **only after** an isolated CPU dependency install and explicit disk preflight. Prefer the selective Nano runtime file set if implemented; otherwise budget ~3 GB of model downloads plus the venv and pip cache. Use `--no-cache-dir` or a controlled cache to avoid duplicate wheel storage, and preserve the original reference files.
 3. Generate one short complete sentence (~20–30 words) with the Warguy reference. Measure the real waveform, check non-silence/finite samples/word completion using existing faster-whisper, and record elapsed CPU time and model/code revisions. Do not infer voice likeness from those numerical checks; subjective audition remains separate.
 4. An original-Chatterbox validation requires its larger 3.19 GB weight set and may be tight alongside dependencies and this workspace's media/models. Use a larger runner if capacity checks fail.
-5. Run the complete default Gemma4 + Qwen + original-Chatterbox production path on a runner that actually fits it, with `pip check` and captured status/manifests. A small-model substitution tests API plumbing, not the configured model's output quality.
+5. Run the complete selected writer + Qwen3-VL + original-Chatterbox production path on a runner that actually fits it, with `pip check` and captured status/manifests. A small-model substitution tests API plumbing, not the configured model's output quality.
 
 No access credentials are required just to install these public packages and weights. Real download/inference can still fail and must be reported as such.

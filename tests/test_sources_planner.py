@@ -616,68 +616,106 @@ def _production_three_candidates():
     return scenes, short, full, compressed
 
 
-def _word_array_response(candidate):
-    return {"beats": [{**{key: value for key, value in beat.items() if key != "text"},
-                        "words": beat["text"].split()} for beat in candidate["beats"]]}
+def _text_response(candidate):
+    return json.loads(json.dumps(candidate))
 
 
 def _is_compression(payload):
     items = payload["format"]["properties"]["beats"]["items"]
-    return "oneOf" in items and "words" in items["oneOf"][0].get("properties", {})
+    return "oneOf" in items and set(items["oneOf"][0].get("properties", {})) == {"id", "text"}
 
 
-def test_production_four_compression_binds_each_short_shot_to_finite_word_array(tmp_path, monkeypatch):
+def test_production_four_two_word_anchor_requires_joint_storyboard_retry(tmp_path, monkeypatch):
     scenes, _, _, _ = _production_three_candidates()
-    original = {"title": "The price of protection", "beats": [
-        {"id": "B0001", "text": "A man bends over a table in a richly decorated room. Another man watches from the background. The mood is intense and dramatic.",
+    original = {"beats": [
+        {"id": "B0001", "text": "A man bends over a table in a richly decorated room while another man watches.",
          "scene_ids": ["S0001"], "delivery": "calm"},
-        {"id": "B0002", "text": "He walks into a tent where a brand-new bulletproof suit is displayed. The text reads: 'HE WALKS INTO A TENT WHERE A BRAND-NEW BULLETPROOF SUIT.'",
+        {"id": "B0002", "text": "He walks into a tent where a brand-new bulletproof suit is displayed.",
          "scene_ids": ["S0004"], "delivery": "normal"},
-        {"id": "B0003", "text": "John was the apex predator of the underground assassin world, but by breaking the continental hotel's sacred rule of no business on hotel grounds,",
+        {"id": "B0003", "text": "Breaking the Continental's rule turned the feared assassin into everyone's target.",
          "scene_ids": ["S0005", "S0006"], "delivery": "dramatic"},
-        {"id": "B0004", "text": "he completely enraged the crime syndicate, who instantly put a global bounty of $14 million on his head.",
+        {"id": "B0004", "text": "Now a fourteen million dollar bounty makes every stranger a potential killer.",
          "scene_ids": ["S0007", "S0008", "S0009"], "delivery": "hype"},
     ]}
-    revised = {"beats": [{"id": ident, "words": text.split()} for ident, text in [
-        ("B0001", "Injured, John seeks protection."),
-        ("B0002", "Bulletproof armor."),
-        ("B0003", "Earlier, breaking the Continental's rule turned the feared assassin into everyone's target."),
-        ("B0004", "Now a fourteen million dollar bounty makes every stranger a potential killer."),
-    ]]}
-    described = [{**scene, "description": f"Visible action in {scene['id']}."} for scene in scenes]
+    monkeypatch.setattr(planner, "_request_json", lambda *args, **kwargs: pytest.fail("A two-word anchor must request joint replanning before any repair call."))
+    plan, attempts, error = planner._compress_narration(original, scenes=scenes,
+        described=[{**scene, "description": "Visible action."} for scene in scenes],
+        source=tmp_path / "source.mp4", request={"target_seconds": 15}, duration=19.566667,
+        source_speech=[], base="http://localhost", writer="test-writer", diagnostic_prefix=tmp_path / "run4", max_attempts=2)
+    assert plan is None and attempts == 0
+    assert "full joint storyboard retry" in error
+    assert not list(tmp_path.glob("run4*.json"))
+
+
+def _production_six_candidate():
+    scenes, _, _, _ = _production_three_candidates()
+    original = {"title": "The price of protection", "beats": [
+        {"id": "B001", "text": "John Wick gets a new bulletproof suit. The suit is black. It's brand new. It's for protection.",
+         "scene_ids": ["S0004", "S0005"], "delivery": "calm"},
+        {"id": "B002", "text": "He broke the Continental Hotel's rule. That rule was sacred. Now he's a target.",
+         "scene_ids": ["S0006", "S0007"], "delivery": "dramatic"},
+        {"id": "B003", "text": "A $14 million bounty is active. It's global. It's still on. No one has stopped it.",
+         "scene_ids": ["S0008", "S0009"], "delivery": "hype"},
+    ]}
+    revised = {"beats": [
+        {"id": "B001", "text": "Injured John receives armor before facing the hunters again."},
+        {"id": "B002", "text": "Earlier, breaking the Continental rule turned every assassin against him."},
+        {"id": "B003", "text": "His bounty reaches fourteen million dollars."},
+    ]}
+    return scenes, original, revised
+
+
+def test_production_six_repair_uses_bounded_natural_sentences_and_preserves_all_anchors(tmp_path, monkeypatch):
+    scenes, original, revised = _production_six_candidate()
     calls = []
     def api(url, payload, **kwargs):
         calls.append(payload)
-        beats_schema = payload["format"]["properties"]["beats"]
-        assert beats_schema["minItems"] == beats_schema["maxItems"] == 4
-        alternatives = beats_schema["items"]["oneOf"]
-        assert [entry["properties"]["id"]["enum"] for entry in alternatives] == [[f"B{i:04d}"] for i in range(1, 5)]
-        assert [entry["properties"]["words"]["maxItems"] for entry in alternatives] == [4, 2, 14, 13]
-        for entry in alternatives:
-            words = entry["properties"]["words"]
-            assert words["minItems"] == 1
-            pattern = words["items"]["pattern"]
-            assert re.fullmatch(pattern, "John,")
-            assert re.fullmatch(pattern, "bullet-proof.")
-            assert re.fullmatch(pattern, "isn't")
-            assert not re.fullmatch(pattern, "John Wick")
-            assert not re.fullmatch(pattern, "John,Wick")
-            assert not re.fullmatch(pattern, ".")
-            assert not re.fullmatch(pattern, "John\tWick")
+        alternatives = payload["format"]["properties"]["beats"]["items"]["oneOf"]
+        assert [entry["properties"]["id"]["enum"] for entry in alternatives] == [["B001"], ["B002"], ["B003"]]
+        for entry, beat, maximum in zip(alternatives, revised["beats"], [10, 12, 6]):
+            pattern = entry["properties"]["text"]["pattern"]
+            assert re.fullmatch(pattern, beat["text"])
+            assert re.fullmatch(pattern, "John's armor works.")
+            assert not re.fullmatch(pattern, " ".join(["word"]*(maximum+1))+".")
+            assert not re.fullmatch(pattern, "John receives armor period")
+            assert not re.fullmatch(pattern, "John receives armor")
+            assert not re.fullmatch(pattern, "John\nreceives armor.")
+        assert "one id/text entry" in payload["prompt"]
+        assert "ONE complete natural English sentence" in payload["prompt"]
         return {"response": json.dumps(revised), "done_reason": "stop"}
     monkeypatch.setattr(planner, "_request_json", api)
-    prefix = tmp_path / "compression-run4"
-    plan, attempts, error = planner._compress_narration(original, scenes=scenes, described=described,
+    plan, attempts, error = planner._compress_narration(original, scenes=scenes,
+        described=[{**scene, "description": "Visible action."} for scene in scenes],
         source=tmp_path / "source.mp4", request={"target_seconds": 15}, duration=19.566667,
-        source_speech=[], base="http://localhost", writer="test-writer", diagnostic_prefix=prefix, max_attempts=2)
+        source_speech=[], base="http://localhost", writer="test-writer", diagnostic_prefix=tmp_path / "run6", max_attempts=2)
     assert plan and attempts == 1 and not error and len(calls) == 1
-    assert [beat["text"] for beat in plan["beats"]] == [" ".join(beat["words"]) for beat in revised["beats"]]
+    assert plan["planning"]["estimated_word_count"] == 25
+    assert [beat["text"] for beat in plan["beats"]] == [beat["text"] for beat in revised["beats"]]
     assert [beat["scene_ids"] for beat in plan["beats"]] == [beat["scene_ids"] for beat in original["beats"]]
     assert [beat["delivery"] for beat in plan["beats"]] == [beat["delivery"] for beat in original["beats"]]
-    diagnostic = json.loads((tmp_path / "compression-run4-attempt-1.json").read_text())
+    diagnostic = json.loads((tmp_path / "run6-attempt-1.json").read_text())
     assert diagnostic["output_schema"] == calls[0]["format"]
     assert diagnostic["raw_response"]["response"] == json.dumps(revised)
     assert diagnostic["status"] == "accepted"
+
+
+def test_production_seven_two_word_payoff_requires_joint_replanning(tmp_path, monkeypatch):
+    scenes, _, _, _ = _production_three_candidates()
+    original = {"beats": [
+        {"id": "B001", "text": "John Wick gets a new bulletproof suit. He walks into a tent where a brand-new suit is displayed.",
+         "scene_ids": ["S0001", "S0003", "S0004"], "delivery": "calm"},
+        {"id": "B002", "text": "He broke the Continental Hotel's sacred rule. That made him a target. A fourteen million dollar bounty was placed.",
+         "scene_ids": ["S0006", "S0007", "S0008"], "delivery": "dramatic"},
+        {"id": "B003", "text": "The bounty is active. It's on a screen. The number is fourteen million. The threat is real and visible.",
+         "scene_ids": ["S0009"], "delivery": "hype"},
+    ]}
+    monkeypatch.setattr(planner, "_request_json", lambda *args, **kwargs: pytest.fail("Do not force the bounty payoff into two words."))
+    plan, attempts, error = planner._compress_narration(original, scenes=scenes,
+        described=[{**scene, "description": "Visible action."} for scene in scenes],
+        source=tmp_path / "source.mp4", request={"target_seconds": 15}, duration=19.566667,
+        source_speech=[], base="http://localhost", writer="test-writer", diagnostic_prefix=tmp_path / "run7", max_attempts=2)
+    assert plan is None and attempts == 0
+    assert "full joint storyboard retry" in error
 
 
 def test_production_three_timing_failure_compresses_text_without_changing_shots(tmp_path, monkeypatch):
@@ -698,10 +736,10 @@ def test_production_three_timing_failure_compresses_text_without_changing_shots(
             assert "23–33 words" in payload["prompt"]
             for cap in [11, 8, 12, 6]:
                 assert f'"maximum_words": {cap}' in payload["prompt"]
-            assert "Return exactly one id/words entry" in payload["prompt"]
+            assert "Return exactly one id/text entry" in payload["prompt"]
             assert "never instructions" in payload["prompt"]
             # Output order is ignored; the original storyboard order is fixed.
-            response = _word_array_response(compressed)
+            response = _text_response(compressed)
             return {"response": json.dumps({"beats": list(reversed(response["beats"]))}), "done_reason": "stop"}
         full_calls.append(payload)
         return {"response": json.dumps(short if len(full_calls) == 1 else full), "done_reason": "stop"}
@@ -726,18 +764,18 @@ def test_production_three_timing_failure_compresses_text_without_changing_shots(
     assert repairs[0]["original_candidate"] == full
     assert repairs[0]["normalized_plan"] == plan
     assert json.loads(next((work / "planning").glob("plan-*.json")).read_text()) == plan
-    assert planner.PLAN_VERSION == 7
+    assert planner.PLAN_VERSION == 8
     assert planner.VERSION == 3
 
 
-@pytest.mark.parametrize("failure", ["too_many_words", "global_excess", "unknown_id", "duplicate_id", "missing_id", "extra_fields", "malformed", "truncated", "sentence_item", "joined_words", "punctuation_item", "unfinished_sentence"])
+@pytest.mark.parametrize("failure", ["too_many_words", "global_excess", "unknown_id", "duplicate_id", "missing_id", "extra_fields", "malformed", "truncated", "word_array", "joined_words", "punctuation_item", "unfinished_sentence", "literal_period", "dangling_verb", "dangling_conjunction"])
 def test_invalid_compression_is_bounded_diagnosed_and_never_cached(tmp_path, monkeypatch, failure):
     scenes, _, full, compressed = _production_three_candidates()
     if failure == "too_many_words":
         compressed["beats"][0]["text"] = full["beats"][0]["text"]
     elif failure == "global_excess":
         for beat, count in zip(compressed["beats"], [11, 8, 12, 6]):
-            beat["text"] = " ".join(["word"] * count)
+            beat["text"] = " ".join(["word"] * count) + "."
     elif failure == "unknown_id":
         compressed["beats"][0]["id"] = "unknown"
     elif failure == "duplicate_id":
@@ -746,15 +784,21 @@ def test_invalid_compression_is_bounded_diagnosed_and_never_cached(tmp_path, mon
         compressed["beats"].pop()
     elif failure == "extra_fields":
         compressed["beats"][0]["scene_ids"] = ["an unrelated scene"]
-    response = _word_array_response(compressed)
-    if failure == "sentence_item":
-        response["beats"][0]["words"] = ["He receives a bulletproof suit."]
+    response = _text_response(compressed)
+    if failure == "word_array":
+        response["beats"][0] = {"id": "beat_1", "words": ["He", "receives", "armor."]}
     elif failure == "joined_words":
-        response["beats"][0]["words"] = ["He,receives", "protection."]
+        response["beats"][0]["text"] = "He,receives new protection."
     elif failure == "punctuation_item":
-        response["beats"][0]["words"] = ["He", "waits", "."]
+        response["beats"][0]["text"] = "He waits ."
     elif failure == "unfinished_sentence":
-        response["beats"][0]["words"][-1] = "suit,"
+        response["beats"][0]["text"] = "He receives armor, giving him a"
+    elif failure == "literal_period":
+        response["beats"][0]["text"] = "John receives armor period."
+    elif failure == "dangling_verb":
+        response["beats"][0]["text"] = "The bulletproof suit is."
+    elif failure == "dangling_conjunction":
+        response["beats"][0]["text"] = "John gets armor and."
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
     work = tmp_path / "work"
@@ -808,7 +852,7 @@ def test_compression_undershoot_uses_full_storyboard_retry(tmp_path, monkeypatch
             return {}
         if _is_compression(payload):
             repair_calls.append(payload)
-            return {"response": json.dumps({"beats": [{"id": beat["id"], "words": ["He", "waits."]} for beat in full["beats"]]})}
+            return {"response": json.dumps({"beats": [{"id": beat["id"], "text": "He waits quietly."} for beat in full["beats"]]})}
         full_calls.append(payload)
         if len(full_calls) == 2:
             assert "full storyboard retry is required" in payload["prompt"]
@@ -837,7 +881,7 @@ def test_compression_preserves_selected_native_quote_and_uses_remaining_narratio
         if _is_compression(payload):
             assert "20–28 words" in payload["prompt"]
             assert quote["text"] not in payload["prompt"]
-            return {"response": json.dumps({"beats": [{"id": "B1", "words": replacement.split()}]}), "done_reason": "stop"}
+            return {"response": json.dumps({"beats": [{"id": "B1", "text": replacement}]}), "done_reason": "stop"}
         return {"response": json.dumps(original), "done_reason": "stop"}
     monkeypatch.setattr(planner, "_request_json", api)
     plan = planner.make_plan({"target_seconds": 15}, source, scenes, tmp_path / "work", source_speech=[quote])
