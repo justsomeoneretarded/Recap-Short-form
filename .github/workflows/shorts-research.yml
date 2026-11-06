@@ -19,6 +19,7 @@ on:
       - 'shorts_pipeline/compilations.py'
       - 'shorts_pipeline/arcs.py'
       - 'shorts_pipeline/writer.py'
+      - 'shorts_pipeline/narration.py'
       - '.github/workflows/shorts-research.yml'
 
 permissions:
@@ -198,8 +199,68 @@ jobs:
           path: output/write
           retention-days: 7
 
+  voice:
+    needs: [movies, write]
+    if: always() && needs.write.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        movie: ${{ fromJSON(needs.movies.outputs.list) }}
+    env:
+      HF_HOME: ${{ github.workspace }}/work/huggingface
+      TORCH_HOME: ${{ github.workspace }}/work/torch
+      SHORTS_CPU_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install FFmpeg, Chatterbox, Whisper and downloader
+        timeout-minutes: 20
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e '.[voice,source]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
+      - name: Start YouTube proof-of-origin token provider
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare WARP route
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/phase0/warp_proxy.sh
+      - name: Restore voice and alignment models
+        uses: actions/cache@v4
+        with:
+          path: |
+            work/huggingface
+            work/torch
+          key: shorts-voice-models-v1
+      - uses: actions/download-artifact@v4
+        with:
+          name: discover-${{ strategy.job-index }}
+          path: output/discover
+      - uses: actions/download-artifact@v4
+        with:
+          name: write-${{ strategy.job-index }}
+          path: output/write
+      - name: Voice the top story and make captions
+        run: python -u -m shorts_pipeline voice --discover output/discover --scripts output/write --output output/voice --max-arcs 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: voice-${{ strategy.job-index }}
+          path: output/voice
+          retention-days: 7
+
   summary:
-    needs: [research, discover, write]
+    needs: [research, discover, write, voice]
     if: always()
     runs-on: ubuntu-24.04
     steps:

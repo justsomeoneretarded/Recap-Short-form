@@ -190,6 +190,62 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 3,
          'seconds': r['seconds_to_write']} for r in results]}
 
 
+def _preview(voiceover: dict, target: Path) -> None:
+    """Voice-only listening file: every beat at its timeline position."""
+    beats = voiceover['beats']
+    if not beats:
+        return
+    args = ['ffmpeg','-y','-v','error']
+    for beat in beats:
+        args += ['-i', beat['audio_path']]
+    chains = [f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo,adelay={round(b['timeline_start']*1000)}|"
+              f"{round(b['timeline_start']*1000)}[a{i}]" for i, b in enumerate(beats)]
+    mix = ''.join(f'[a{i}]' for i in range(len(beats))) + f'amix=inputs={len(beats)}:normalize=0[out]'
+    import subprocess
+    subprocess.run(args + ['-filter_complex', ';'.join(chains + [mix]), '-map', '[out]', str(target)], check=True)
+
+
+def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, narrator: str = 'warguy',
+              model: str = 'original', max_arcs: int = 5) -> dict:
+    """Scripts → voiceover.json, preview.wav and captions (square + vertical) per story."""
+    from .discovery import YouTube
+    from .narration import synthesize_voiceover, write_short_captions
+    discover, scripts, output, workdir = (Path(p).resolve() for p in (discover, scripts, output, workdir))
+    arcs = {a['id']: a for a in json.loads((discover/'arcs.json').read_text())['arcs']}
+    screened = {r['id']: r for r in json.loads((discover/'screening.json').read_text())} \
+        if (discover/'screening.json').exists() else {}
+    youtube = YouTube()
+    rows = []
+    for result in json.loads((scripts/'scripts.json').read_text())[:max_arcs]:
+        arc = arcs[result['arc']]
+        footage = {}
+        for scene in arc['scenes']:
+            path = screened.get(scene['clip_id'], {}).get('path')
+            if not path or not Path(path).exists():
+                try:
+                    found = youtube.download(scene['clip_id'], workdir/'footage')
+                    path = str(found) if found else None
+                except RuntimeError as exc:
+                    print(f'Footage {scene["clip_id"]} unavailable: {str(exc)[:120]}', file=sys.stderr)
+                    path = None
+            if path:
+                footage[scene['clip_id']] = path
+        voiceover = synthesize_voiceover(result, footage, arc, narrator, workdir, model)
+        folder = output/result['arc']
+        folder.mkdir(parents=True, exist_ok=True)
+        write_json(folder/'voiceover.json', voiceover)
+        _preview(voiceover, folder/'preview.wav')
+        for aspect in ('square','vertical'):
+            write_short_captions(voiceover, folder/f'captions-{aspect}', aspect=aspect)
+        rows.append({'arc': result['arc'], 'title': result['script'].get('title'), 'seconds': voiceover['duration'],
+                     'wpm': voiceover['words_per_minute'], 'beats': len(voiceover['beats']),
+                     'movie_lines': sum(1 for b in voiceover['beats'] if b['kind'] == 'dialogue'),
+                     'tempo': [b.get('tempo') for b in voiceover['beats'] if b['kind'] == 'narration'],
+                     'timing': sorted({b.get('timing_provenance') or '' for b in voiceover['beats']})})
+    write_json(output/'summary.json', rows)
+    return {'voiced': rows}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Generate a standalone movie recap Short.')
     sub = parser.add_subparsers(dest='command',required=True)
@@ -215,6 +271,14 @@ def main(argv=None) -> int:
     pen.add_argument('--max-arcs',type=int,default=5)
     pen.add_argument('--drafts',type=int,default=3)
     pen.add_argument('--model',default=None,help='Ollama writer model (default qwen3:14b)')
+    speak = sub.add_parser('voice', help='Voice the written scripts and make captions.')
+    speak.add_argument('--discover',type=Path,default=Path('output/discover'))
+    speak.add_argument('--scripts',type=Path,default=Path('output/write'))
+    speak.add_argument('--output',type=Path,default=Path('output/voice'))
+    speak.add_argument('--workdir',type=Path,default=Path('work/shorts'))
+    speak.add_argument('--narrator',default='warguy',choices=['warguy','kit-laser','female'])
+    speak.add_argument('--tts-model',default='original',choices=['original','turbo','nano'])
+    speak.add_argument('--max-arcs',type=int,default=5)
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--ollama-url',default='http://127.0.0.1:11434')
     args = parser.parse_args(argv)
@@ -228,6 +292,10 @@ def main(argv=None) -> int:
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='write':
             summary=run_write(args.source,args.output,max_arcs=args.max_arcs,drafts=args.drafts,model=args.model)
+            print(json.dumps(summary,default=str,indent=2))
+        elif args.command=='voice':
+            summary=run_voice(args.discover,args.scripts,args.output,args.workdir,narrator=args.narrator,
+                              model=args.tts_model,max_arcs=args.max_arcs)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='generate':
             result=generate(json.loads(args.request.read_text()),args.workdir,args.output)

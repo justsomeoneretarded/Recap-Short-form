@@ -224,7 +224,10 @@ class _Synthesizer:
                 self.engine.prepare_conditionals(str(reference))
 
     def generate(self, text: str, path: Path, delivery: str, seed: int):
-        settings = {"normal": (.5,.5,.8), "calm": (.4,.55,.75), "dramatic": (.6,.45,.8), "hype": (.65,.45,.8)}
+        # (exaggeration, cfg_weight, temperature). Lower cfg_weight speaks faster (Chatterbox guidance);
+        # the "punchy" deliveries target recap-channel pacing (~195 words/minute before tempo matching).
+        settings = {"normal": (.5,.5,.8), "calm": (.4,.55,.75), "dramatic": (.6,.45,.8), "hype": (.65,.45,.8),
+                    "punchy": (.55,.3,.8), "punchy_hook": (.7,.3,.8)}
         pieces=[]
         for i, chunk in enumerate(_chunks(text)):
             self.torch.manual_seed(seed+i)

@@ -31,13 +31,13 @@ def _wrap(words: list[str]) -> str:
     return " ".join(words[:midpoint])+"\n"+" ".join(words[midpoint:])
 
 
-def _groups(words: list[dict]) -> list[list[dict]]:
+def _groups(words: list[dict], max_words: int = 7, max_chars: int = 48) -> list[list[dict]]:
     groups=[]
     current=[]
     for word in words:
         length=len(" ".join([w["word"] for w in current]+[word["word"]]))
         gap=float(word["start"])-float(current[-1]["end"]) if current else 0
-        if current and (len(current)>=7 or length>48 or gap>.35):
+        if current and (len(current)>=max_words or length>max_chars or gap>.35):
             groups.append(current)
             current=[]
         current.append(word)
@@ -82,7 +82,9 @@ def _word_fade_text(words: list[dict], text: str, cue_start: float, cue_end: flo
     return "".join(parts),True
 
 
-def write_captions(plan: dict, outdir: Path, width: int, height: int) -> dict:
+def write_captions(plan: dict, outdir: Path, width: int, height: int, *, max_words: int = 7,
+                   y: float = .60, size_ratio: float = .0296, font: str = "DejaVu Sans") -> dict:
+    """Burned-in ASS and plain SRT captions. Shorts v2 uses 1–3 large words per caption (max_words=3)."""
     if width<=0 or height<=0:
         raise ValueError("Caption canvas dimensions must be positive.")
     style=plan.get("caption_style","reference_word_fade")
@@ -100,14 +102,14 @@ def write_captions(plan: dict, outdir: Path, width: int, height: int) -> dict:
             raise ValueError("Caption timeline must have positive, ordered beat intervals.")
         words=validate_words(str(beat.get("text","")),beat.get("words",[]),duration)
         provenance.append({"beat_id":beat.get("id"),"timing":beat.get("timing_provenance","provided-word-timings")})
-        for group in _groups(words):
+        for group in _groups(words, max_words, 18 if max_words <= 3 else 48):
             cue_start=start+group[0]["start"]
             cue_end=min(start+duration,start+group[-1]["end"])
             cues.append((cue_start,cue_end,_wrap([w["word"] for w in group]),group,start,start+duration))
         previous_end=start+duration
     srt=outdir/"captions.srt"
     srt.write_text("\n\n".join(f"{i}\n{_srt_time(cue[0])} --> {_srt_time(cue[1])}\n{cue[2]}" for i,cue in enumerate(cues,1))+"\n",encoding="utf-8")
-    size=max(12,round(min(width,height)*.0296))
+    size=max(12,round(min(width,height)*size_ratio))
     header=f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -117,7 +119,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Recap,DejaVu Sans,{size},&H00FFFFFF,&H00FFFFFF,&H60000000,&H80000000,-1,-1,0,0,100,100,1,0,1,0.6,1.2,5,50,50,0,1
+Style: Recap,{font},{size},&H00FFFFFF,&H00FFFFFF,&H60000000,&H80000000,-1,-1,0,0,100,100,1,0,1,0.6,1.2,5,50,50,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -132,7 +134,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             short_static_cues+=not animated
         else:
             clean=_escape_ass(text)
-        position=f"{{\\an5\\pos({width//2},{round(height*.60)})}}"
+        position=f"{{\\an5\\pos({width//2},{round(height*y)})}}"
         lines.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Recap,,0,0,0,,{position}{clean}")
     ass=outdir/"captions.ass"
     ass.write_text(header+"\n".join(lines)+"\n",encoding="utf-8")

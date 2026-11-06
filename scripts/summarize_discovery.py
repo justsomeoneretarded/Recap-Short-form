@@ -35,6 +35,10 @@ for path in sorted(glob.glob(f"{root}/discover-*/summary.json")):
     notes = sorted({(c.get("caption_note") or "")[:90] for c in s["clips"] if c.get("caption_note")})
     if notes:
         rows += ["", "Caption notes: " + " · ".join(notes[:3])]
+for path in sorted(glob.glob(f"{root}/voice-*/summary.json")):
+    for v in json.load(open(path)):
+        rows.append(f"- 🎙 {v['arc']} \"{v['title']}\": {v['seconds']:.0f} s, {v['wpm']} wpm, {v['movie_lines']} movie lines, "
+                    f"tempo {v['tempo']}, timing {', '.join(v['timing'])}")
 for path in sorted(glob.glob(f"{root}/write-*/scripts.md")):
     rows += ["", "---", "", open(path, encoding="utf-8").read()]
 text = "\n".join(rows)
