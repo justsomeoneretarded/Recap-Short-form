@@ -278,7 +278,7 @@ class _Synthesizer:
         # (exaggeration, cfg_weight, temperature). Lower cfg_weight speaks faster (Chatterbox guidance);
         # the "punchy" deliveries target recap-channel pacing (~195 words/minute before tempo matching).
         settings = {"normal": (.5,.5,.8), "calm": (.4,.55,.75), "dramatic": (.6,.45,.8), "hype": (.65,.45,.8),
-                    "punchy": (.55,.45,.8), "punchy_hook": (.65,.45,.8)}  # cfg below ~.45 drops or slurs words
+                    "punchy": (.55,.3,.8), "punchy_hook": (.7,.3,.8)}  # fast, energetic; re-listen + 3 tries guard against slurred words
         pieces=[]
         for i, chunk in enumerate(_chunks(text)):
             self.torch.manual_seed(seed+i)
