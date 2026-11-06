@@ -1,7 +1,7 @@
 # Graph Report - Recap-Short-form  (2026-11-06)
 
 ## Corpus Check
-- 43 files · ~58,249 words
+- 43 files · ~58,362 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 1 file(s) not represented in the graph (top: (none) 1)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `e4b150a8`
+- Built from commit: `d0c29466`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -41,18 +41,18 @@
 7. `_compress_narration()` - 20 edges
 8. `resolve_source()` - 18 edges
 9. `synthesize_plan()` - 18 edges
-10. `_normalize_model_plan()` - 16 edges
+10. `api()` - 16 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `test_segments_cover_full_source_without_gaps()` --calls--> `_segments()`  [EXTRACTED]
-  tests/test_sources_planner.py → shorts_pipeline/sources.py
+- `_normalize_speech()` --calls--> `_normalize_model_plan()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/planner.py
 - `test_bad_segment_limits_rejected()` --calls--> `_segments()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/sources.py
-- `test_remote_sources_require_https_without_embedded_credentials()` --calls--> `resolve_source()`  [EXTRACTED]
-  tests/test_sources_planner.py → shorts_pipeline/sources.py
+- `test_compression_preserves_selected_native_quote_and_uses_remaining_narration_budget()` --calls--> `make_plan()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/planner.py
+- `test_compression_undershoot_exhausts_text_attempts_before_full_storyboard_retry()` --calls--> `make_plan()`  [EXTRACTED]
+  tests/test_sources_planner.py → shorts_pipeline/planner.py
 - `test_failed_download_is_not_cached()` --calls--> `resolve_source()`  [EXTRACTED]
-  tests/test_sources_planner.py → shorts_pipeline/sources.py
-- `test_ffmpeg_detector_debounces_adjacent_frame_triggers()` --calls--> `_ffmpeg_boundaries()`  [EXTRACTED]
   tests/test_sources_planner.py → shorts_pipeline/sources.py
 
 ## Import Cycles
@@ -113,7 +113,7 @@ Cohesion: 0.11
 Nodes (23): compress(), main(), prepare_model(), run_probe(), write_json(), _compress_narration(), _compression_schema(), _describe() (+15 more)
 
 ## Knowledge Gaps
-- **106 isolated node(s):** `default`, `description`, `options`, `type`, `description` (+101 more)
+- **106 isolated node(s):** `name`, `on`, `contents`, `runs-on`, `timeout-minutes` (+101 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 192 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **10 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -122,7 +122,7 @@ _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `make_plan()` connect `json` to `test_sources_planner.py`, `sources.py`, `array / copy`?**
   _High betweenness centrality (0.002) - this node is a cross-community bridge._
-- **What connects `default`, `description`, `options` to the rest of the system?**
+- **What connects `name`, `on`, `contents` to the rest of the system?**
   _106 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `test_sources_planner.py` be split into smaller, more focused modules?**
   _Cohesion score 0.06573426573426573 - nodes in this community are weakly interconnected._
