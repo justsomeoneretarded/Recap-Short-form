@@ -153,6 +153,43 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     return summary
 
 
+def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 3, model: str | None = None) -> dict:
+    """discover folder (research.json, arcs.json, movie.srt, plot.txt) → scripts.json + scripts.md."""
+    from .locate import MovieTranscript
+    from .writer import Ollama, WRITER_MODEL, write_short
+    source, output = Path(source).resolve(), Path(output).resolve()
+    research = json.loads((source/'research.json').read_text())
+    stories = json.loads((source/'arcs.json').read_text())
+    srt, plot = source/'movie.srt', source/'plot.txt'
+    transcript = MovieTranscript.from_subtitles(srt.read_text(errors='ignore')) if srt.exists() else None
+    llm = Ollama(model or WRITER_MODEL)
+    output.mkdir(parents=True, exist_ok=True)
+    results, lines = [], [f"# {research['movie']['title']} ({research['movie']['year']}) — scripts", '']
+    for arc in stories['arcs'][:max_arcs]:
+        started = time.time()
+        result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '', drafts=drafts)
+        result['seconds_to_write'] = round(time.time()-started, 1)
+        results.append(result)
+        write_json(output/'scripts.json', results)
+        script, check = result['script'], result['check']
+        lines += [f"## {arc['id']}: {script.get('title')}", '',
+                  f"Movie {arc['movie_start']/60:.1f}–{arc['movie_end']/60:.1f} min · {check['total_words']}/{check['target_words']} words · "
+                  f"score {check['score']} · issues: {'; '.join(check['issues']) or 'none'} · {result['seconds_to_write']} s", '',
+                  f"**Hook:** {script.get('hook')}", '']
+        for beat in script.get('beats', []):
+            if beat.get('kind') == 'dialogue':
+                line = result['dialogue_lines'].get(beat.get('line'), {})
+                lines.append(f"> 🎬 *movie line:* \"{line.get('text', beat.get('line'))}\"")
+            else:
+                lines.append(beat.get('text', ''))
+        lines += ['', f"*Ending: {script.get('ending')}*", '']
+        (output/'scripts.md').write_text('\n'.join(lines))
+    return {'movie': research['movie']['title'], 'scripts': [
+        {'arc': r['arc'], 'title': r['script'].get('title'), 'words': r['check']['total_words'],
+         'target': r['check']['target_words'], 'score': r['check']['score'], 'issues': r['check']['issues'],
+         'seconds': r['seconds_to_write']} for r in results]}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Generate a standalone movie recap Short.')
     sub = parser.add_subparsers(dest='command',required=True)
@@ -172,6 +209,12 @@ def main(argv=None) -> int:
     scout.add_argument('--no-whisper',action='store_true',help='Skip audio transcription for clips without captions')
     scout.add_argument('--screen',type=int,default=0,help='Download and screen this many top clips (0 = skip)')
     scout.add_argument('--length',type=float,default=150,help='Target Short length in seconds, used to group stories')
+    pen = sub.add_parser('write', help='Write scripts for the stories found by discover.')
+    pen.add_argument('--from',dest='source',type=Path,default=Path('output/discover'),help='discover output folder')
+    pen.add_argument('--output',type=Path,default=Path('output/write'))
+    pen.add_argument('--max-arcs',type=int,default=5)
+    pen.add_argument('--drafts',type=int,default=3)
+    pen.add_argument('--model',default=None,help='Ollama writer model (default qwen3:14b)')
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--ollama-url',default='http://127.0.0.1:11434')
     args = parser.parse_args(argv)
@@ -182,6 +225,9 @@ def main(argv=None) -> int:
         elif args.command=='discover':
             summary=run_discover(args.movie,args.workdir,args.output,top=args.top,use_whisper=not args.no_whisper,
                                  screen=args.screen,length=args.length)
+            print(json.dumps(summary,default=str,indent=2))
+        elif args.command=='write':
+            summary=run_write(args.source,args.output,max_arcs=args.max_arcs,drafts=args.drafts,model=args.model)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='generate':
             result=generate(json.loads(args.request.read_text()),args.workdir,args.output)

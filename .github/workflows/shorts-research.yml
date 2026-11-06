@@ -18,6 +18,7 @@ on:
       - 'shorts_pipeline/screening.py'
       - 'shorts_pipeline/compilations.py'
       - 'shorts_pipeline/arcs.py'
+      - 'shorts_pipeline/writer.py'
       - '.github/workflows/shorts-research.yml'
 
 permissions:
@@ -151,10 +152,54 @@ jobs:
             output/discover/research.json
             output/discover/screening.json
             output/discover/arcs.json
+            output/discover/plot.txt
+            output/discover/movie.srt
+          retention-days: 7
+
+  write:
+    needs: [movies, discover]
+    if: always() && needs.discover.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        movie: ${{ fromJSON(needs.movies.outputs.list) }}
+    env:
+      SCRIPT_MODEL: qwen3:14b
+      SHORTS_WRITER_MODEL: qwen3:14b
+      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install pipeline and Ollama runtime
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends zstd
+          python -m pip install -e .
+          python scripts/install_ollama.py
+          "$RUNNER_TEMP/shorts-ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:11434/api/version > /dev/null && break; sleep 1; done
+          "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull qwen3:14b > /dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: discover-${{ strategy.job-index }}
+          path: output/discover
+      - name: Write scripts for the top stories
+        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 2 --drafts 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: write-${{ strategy.job-index }}
+          path: output/write
           retention-days: 7
 
   summary:
-    needs: [research, discover]
+    needs: [research, discover, write]
     if: always()
     runs-on: ubuntu-24.04
     steps:

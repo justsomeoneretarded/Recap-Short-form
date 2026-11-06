@@ -35,6 +35,8 @@ for path in sorted(glob.glob(f"{root}/discover-*/summary.json")):
     notes = sorted({(c.get("caption_note") or "")[:90] for c in s["clips"] if c.get("caption_note")})
     if notes:
         rows += ["", "Caption notes: " + " · ".join(notes[:3])]
+for path in sorted(glob.glob(f"{root}/write-*/scripts.md")):
+    rows += ["", "---", "", open(path, encoding="utf-8").read()]
 text = "\n".join(rows)
 print("SUMMARY\n" + text)
 if os.environ.get("GITHUB_STEP_SUMMARY"):

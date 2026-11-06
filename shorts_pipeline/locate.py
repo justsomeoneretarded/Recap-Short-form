@@ -40,18 +40,30 @@ class Cue:
 
 
 def parse_cues(text: str) -> list[Cue]:
-    """SRT or WebVTT → cues. Very short cues (YouTube's 10 ms hand-over cues) are dropped."""
+    """SRT or WebVTT → cues. Works with or without blank lines between cues.
+
+    Very short cues (YouTube's 10 ms hand-over cues) are dropped.
+    """
     cues: list[Cue] = []
-    for block in re.split(r"\n\s*\n", text.replace("\r", "").replace("﻿", "")):
-        lines = block.strip().split("\n")
-        for i, line in enumerate(lines):
-            if "-->" in line:
-                times = list(_TIME.finditer(line))
-                if len(times) >= 2:
-                    start, end = _seconds(times[0]), _seconds(times[1])
-                    if end - start >= 0.05:
-                        cues.append(Cue(start, end, "\n".join(lines[i + 1:]).strip()))
-                break
+    lines = text.replace("\r", "").replace("\ufeff", "").split("\n")
+    current: tuple[float, float] | None = None
+    body: list[str] = []
+
+    def flush() -> None:
+        if current and current[1] - current[0] >= 0.05:
+            cues.append(Cue(current[0], current[1], "\n".join(body).strip()))
+
+    for i, line in enumerate(lines):
+        if "-->" in line:
+            times = list(_TIME.finditer(line))
+            if len(times) >= 2:
+                flush()
+                current, body = (_seconds(times[0]), _seconds(times[1])), []
+                continue
+        is_index = line.strip().isdigit() and i + 1 < len(lines) and "-->" in lines[i + 1]
+        if current is not None and line.strip() and not is_index:
+            body.append(line.strip())
+    flush()
     return cues
 
 
@@ -72,8 +84,9 @@ def timed_words(cues: list[Cue]) -> list[tuple[float, str]]:
 class MovieTranscript:
     """The movie's subtitles, indexed by 4-word phrase for fast clip placement."""
 
-    def __init__(self, words: list[tuple[float, str]]):
+    def __init__(self, words: list[tuple[float, str]], cues: list[Cue] | None = None):
         self.words = words
+        self.cues = cues or []
         self.index: dict[tuple[str, ...], list[float]] = {}
         for i in range(len(words) - GRAM + 1):
             key = tuple(w for _, w in words[i:i + GRAM])
@@ -81,7 +94,18 @@ class MovieTranscript:
 
     @classmethod
     def from_subtitles(cls, text: str) -> "MovieTranscript":
-        return cls(timed_words(parse_cues(text)))
+        cues = parse_cues(text)
+        return cls(timed_words(cues), cues)
+
+    def lines_between(self, start: float, end: float) -> list[dict]:
+        """Subtitle lines fully inside [start, end] with clean text (sound tags and speaker labels removed)."""
+        rows = []
+        for cue in self.cues:
+            if cue.start >= start and cue.end <= end:
+                text = " ".join(_SPEAKER.sub(" ", _SOUNDS.sub(" ", _TAGS.sub(" ", cue.text))).split()).strip(" -")
+                if len(tokens(text)) >= 2:
+                    rows.append({"start": cue.start, "end": cue.end, "text": text})
+        return rows
 
     def dialogue_between(self, start: float, end: float) -> str:
         return " ".join(w for t, w in self.words if start <= t <= end)
