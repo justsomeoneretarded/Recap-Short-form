@@ -43,8 +43,8 @@ def test_voice_beats_merge_scene_narration_and_keep_lines():
 
 
 def test_tempo_speeds_up_slow_takes_only_and_is_capped():
-    assert n.tempo_for(30, 12) == 1.12   # 150 wpm → capped at 1.12
-    assert n.tempo_for(30, 9.5) == pytest.approx(1.029, abs=0.01)
+    assert n.tempo_for(30, 12) == n.MAX_TEMPO   # 150 wpm → capped
+    assert n.tempo_for(30, 9.5) == pytest.approx(n.TARGET_WPM / (30 * 60 / 9.5), abs=0.01)  # 189 wpm → 205
     assert n.tempo_for(40, 10) == 1.0    # already 240 wpm: never slowed down
 
 
@@ -56,7 +56,7 @@ def test_voiceover_timeline_and_captions(tmp_path, monkeypatch):
     report = n.synthesize_voiceover(RESULT, {"clipA": str(clip)}, ARC, "warguy", tmp_path, synthesize=fake_synthesize)
     beats = report["beats"]
     assert [b["kind"] for b in beats] == ["narration", "narration", "dialogue", "narration"]
-    assert beats[0]["tempo"] == 1.12 and beats[0]["duration"] < len(beats[0]["text"].split()) * 0.4
+    assert beats[0]["tempo"] == n.MAX_TEMPO and beats[0]["duration"] < len(beats[0]["text"].split()) * 0.4
     assert beats[2]["duration"] == pytest.approx(1.8, abs=0.1) and beats[2]["clip_id"] == "clipA"
     starts = [b["timeline_start"] for b in beats]
     assert starts == sorted(starts) and report["words_per_minute"] > 150
@@ -126,3 +126,22 @@ def test_script_is_written_the_way_it_is_spoken():
     beats = voice_beats({"script": {"hook": "3 men. 1 bag.", "beats": [
         {"scene": 0, "kind": "narration", "text": "Mr. Wick waits until 5:30 p.m."}]}})
     assert [b["text"] for b in beats] == ["Three men. One bag.", "Mister Wick waits until five thirty P M."]
+
+
+def test_long_pauses_are_shortened_and_the_voice_is_untouched(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    from shorts_pipeline.narration import KEEP_PAUSE, shift_times, tighten_pauses
+    rate = 24000
+    tone = lambda s: (0.3 * np.sin(2 * np.pi * 220 * np.arange(int(s * rate)) / rate)).astype(np.float32)
+    quiet = lambda s: np.zeros(int(s * rate), dtype=np.float32)
+    # 0.4 s lead-in, word, 0.7 s pause (long), word, 0.15 s pause (natural, kept), word, 0.5 s tail
+    take = np.concatenate([quiet(.4), tone(.5), quiet(.7), tone(.6), quiet(.15), tone(.4), quiet(.5)])
+    sf.write(tmp_path / "take.wav", take, rate)
+    out, removed = tighten_pauses(tmp_path / "take.wav", tmp_path / "tight.wav")
+    tight, _ = sf.read(out)
+    voiced = lambda x: int((np.abs(x) > 0.05).sum())
+    assert abs(voiced(tight) - voiced(take)) < 0.01 * rate  # all of the voice is still there
+    assert abs(len(tight) / rate - (0.05 + .5 + KEEP_PAUSE + .6 + .15 + .4 + 0.05)) < 0.05
+    # word times follow: the third word started at 2.35 s in the take
+    assert abs(shift_times(2.35, removed) - (0.05 + .5 + KEEP_PAUSE + .6 + .15)) < 0.05

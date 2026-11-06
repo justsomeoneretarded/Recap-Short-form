@@ -17,8 +17,11 @@ import re
 import subprocess
 from pathlib import Path
 
-TARGET_WPM = 195.0
-MAX_TEMPO = 1.12
+TARGET_WPM = 205.0   # low end of the reference recap Shorts (206–231 incl. dialogue)
+MAX_TEMPO = 1.15     # atempo (WSOLA) stays clean on speech at this size; most extra pace comes from pauses
+MAX_PAUSE = 0.30     # silences longer than this inside a take are shortened ...
+KEEP_PAUSE = 0.16    # ... to a natural breath (the voice itself is never stretched or cut)
+EDGE_PAUSE = 0.05
 DIALOGUE_PAD = 0.15
 GAP_SECONDS = 0.12
 
@@ -125,6 +128,75 @@ def tempo_for(words: int, seconds: float) -> float:
     return round(min(MAX_TEMPO, max(1.0, TARGET_WPM / wpm)), 3)
 
 
+def tighten_pauses(audio: Path, target: Path) -> tuple[Path, list[tuple[float, float]]]:
+    """Shorten long silences inside a narration take; never touch the voice.
+
+    Chatterbox leaves 0.3–0.7 s gaps between sentences, which makes fast-cut Shorts drag. Every
+    silent stretch longer than MAX_PAUSE (40 dB under the take's peak) is cut down to KEEP_PAUSE,
+    with a few milliseconds of fade at each splice so no click is heard; leading and trailing
+    silence is trimmed to EDGE_PAUSE. Returns the new file and the removed (start, length) spans,
+    so word times can be moved to match.
+    """
+    try:
+        import numpy as np
+        import soundfile as sf
+        data, rate = sf.read(str(audio), dtype="float32", always_2d=True)
+    except Exception:  # noqa: BLE001 - unreadable here: keep the take as it is
+        return audio, []
+    hop = max(1, rate // 100)  # 10 ms frames
+    frames = len(data) // hop
+    if frames < 5:
+        return audio, []
+    level = np.sqrt((data[: frames * hop].reshape(frames, hop, -1) ** 2).mean(axis=(1, 2))) + 1e-9
+    loud = 20 * np.log10(level) > 20 * np.log10(level.max()) - 40
+    if not loud.any():
+        return audio, []
+    first, last = int(np.argmax(loud)), int(frames - np.argmax(loud[::-1]))
+    cuts: list[tuple[int, int]] = []  # sample ranges to remove
+    edge = int(EDGE_PAUSE * rate)
+    if first * hop > edge:
+        cuts.append((0, first * hop - edge))
+    run = None
+    for i in range(first, last):
+        if not loud[i] and run is None:
+            run = i
+        elif loud[i] and run is not None:
+            length = (i - run) * hop
+            if length > MAX_PAUSE * rate:
+                keep = int(KEEP_PAUSE * rate)
+                cuts.append((run * hop + keep // 2, i * hop - keep // 2))
+            run = None
+    if (frames - last) * hop > edge:
+        cuts.append((last * hop + edge, len(data)))
+    if not cuts:
+        return audio, []
+    fade = max(1, int(0.006 * rate))
+    pieces, position = [], 0
+    for start, end in cuts:
+        piece = data[position:start].copy()
+        if len(piece) > 2 * fade:
+            if position:  # fade in after a splice
+                piece[:fade] *= np.linspace(0, 1, fade)[:, None]
+            if start < len(data):  # fade out before a splice
+                piece[-fade:] *= np.linspace(1, 0, fade)[:, None]
+        pieces.append(piece)
+        position = end
+    pieces.append(data[position:])
+    sf.write(str(target), np.concatenate(pieces), rate, subtype="PCM_16")
+    return target, [(start / rate, (end - start) / rate) for start, end in cuts]
+
+
+def shift_times(seconds: float, removed: list[tuple[float, float]]) -> float:
+    """A time in the original take → the same moment after pauses were shortened."""
+    shift = 0.0
+    for start, length in removed:
+        if seconds >= start + length:
+            shift += length
+        elif seconds > start:
+            shift += seconds - start
+    return max(0.0, seconds - shift)
+
+
 def apply_tempo(audio: Path, factor: float, target: Path) -> Path:
     if factor <= 1.001:
         return audio
@@ -226,18 +298,19 @@ def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narra
     for beat in beats:
         if beat["kind"] == "narration":
             take = spoken_by_id[beat["id"]]
-            audio = Path(take["audio_path"])
-            factor = tempo_for(len(beat["text"].split()), float(take["duration"]))
+            audio, removed = tighten_pauses(Path(take["audio_path"]), folder / f"{beat['id']}-tight.wav")
+            factor = tempo_for(len(beat["text"].split()), _duration(audio))
             paced = apply_tempo(audio, factor, folder / f"{beat['id']}-x{factor}.wav")
             duration = _duration(paced)
             words = forced_align(paced, beat["text"])
             provenance = "forced-alignment-mms" if words else take.get("timing_provenance")
             if not words:
-                words = [{**w, "start": round(w["start"] / factor, 3), "end": round(w["end"] / factor, 3)}
-                         for w in take["words"]]
+                words = [{**w, "start": round(shift_times(w["start"], removed) / factor, 3),
+                          "end": round(shift_times(w["end"], removed) / factor, 3)} for w in take["words"]]
             if take.get("warning"):
                 skipped.append({"beat": beat["id"], "reason": take["warning"]})
             item = {**beat, "audio_path": str(paced), "duration": duration, "tempo": factor,
+                    "pauses_removed": round(sum(length for _, length in removed), 2),
                     "verified": take.get("timing_provenance") != "unverified-take",
                     "words": tidy_words(words, duration),
                     "timing_provenance": provenance,

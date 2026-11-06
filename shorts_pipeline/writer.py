@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from .locate import MovieTranscript
 
 WRITER_MODEL = os.environ.get("SHORTS_WRITER_MODEL", "qwen3:14b")
-WORDS_PER_SECOND = 3.25          # ≈195 narrator words/minute (references: 206–231 incl. dialogue)
+WORDS_PER_SECOND = 3.4           # ≈205 narrator words/minute (references: 206–231 incl. dialogue)
 MAX_DIALOGUE_BEATS = 3
 PLOT_CHARS = 3000                # background only; scene detail comes from the dialogue
 LINES_PER_SCENE = 30
