@@ -23,7 +23,7 @@ recap-shorts = "shorts_pipeline.cli:main"
 include = ["shorts_pipeline*"]
 
 [tool.setuptools.package-data]
-shorts_pipeline = ["assets/voices/*.ogg"]
+shorts_pipeline = ["assets/voices/*.ogg", "assets/fonts/*.ttf", "assets/fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

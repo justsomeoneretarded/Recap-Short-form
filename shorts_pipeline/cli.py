@@ -292,6 +292,52 @@ def run_render(discover: Path, voice: Path, output: Path, workdir: Path, *,
     return {'rendered': rows}
 
 
+def run_package(discover: Path, scripts: Path, voice: Path, render: Path, output: Path, *, length: float = 150) -> dict:
+    """Everything needed to upload each Short, in one folder per story."""
+    import shutil
+    from .covers import contact_sheet, make_covers
+    from .publish import write_package
+    discover, scripts, voice, render, output = (Path(p).resolve() for p in (discover, scripts, voice, render, output))
+    research = json.loads((discover/'research.json').read_text())
+    arcs = {a['id']: a for a in json.loads((discover/'arcs.json').read_text())['arcs']}
+    clips = {c['id']: c for c in json.loads((discover/'clips.json').read_text())['placed']['clips']} \
+        if (discover/'clips.json').exists() else {}
+    results = {r['arc']: r for r in json.loads((scripts/'scripts.json').read_text())}
+    try:
+        from .screening import read_text as text_reader
+    except Exception:  # noqa: BLE001 - OCR is optional for cover scoring
+        text_reader = None
+    try:
+        from .reframe import faces as face_finder
+    except Exception:  # noqa: BLE001
+        face_finder = None
+    rows = []
+    for render_json in sorted(render.glob('*/render.json')):
+        arc_id = render_json.parent.name
+        rendered = json.loads(render_json.read_text())
+        outputs, edl = rendered['outputs'], rendered['edl']
+        voiceover = json.loads((voice/arc_id/'voiceover.json').read_text())
+        folder = output/arc_id
+        folder.mkdir(parents=True, exist_ok=True)
+        for aspect, info in outputs.items():
+            shutil.copyfile(info['path'] if Path(info['path']).exists() else render_json.parent/f'final-{aspect}.mp4',
+                            folder/f'final-{aspect}.mp4')
+            srt = voice/arc_id/f'captions-{aspect}'/'captions.srt'
+            if srt.exists():
+                shutil.copyfile(srt, folder/f'captions-{aspect}.srt')
+        main_video = folder/('final-vertical.mp4' if (folder/'final-vertical.mp4').exists() else 'final-square.mp4')
+        made = make_covers(main_video, edl, results[arc_id]['script'].get('title', ''), folder,
+                           aspects=tuple(outputs), text_reader=text_reader, face_finder=face_finder)
+        sheet = contact_sheet(main_video, edl['duration'], folder/'contact-sheet.jpg')
+        pack = write_package(folder, result=results[arc_id], research=research, arc=arcs[arc_id], clips=clips,
+                             voiceover=voiceover, edl=edl, render=outputs, covers=made, sheet=str(sheet),
+                             target_seconds=length)
+        rows.append({'arc': arc_id, 'title': pack['titles'][0] if pack['titles'] else None, 'verdict': pack['verdict'],
+                     'warnings': [f"{c['check']}: {c['detail']}" for c in pack['checks'] if c['status'] != 'pass']})
+    write_json(output/'summary.json', rows)
+    return {'packages': rows}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Generate a standalone movie recap Short.')
     sub = parser.add_subparsers(dest='command',required=True)
@@ -332,6 +378,13 @@ def main(argv=None) -> int:
     cut.add_argument('--workdir',type=Path,default=Path('work/shorts'))
     cut.add_argument('--aspects',default='square,vertical')
     cut.add_argument('--interpolation',default='auto',choices=['auto','rife','blend'])
+    box = sub.add_parser('package', help='Covers, titles, description, tags and a quality review per Short.')
+    box.add_argument('--discover',type=Path,default=Path('output/discover'))
+    box.add_argument('--scripts',type=Path,default=Path('output/write'))
+    box.add_argument('--voice',type=Path,default=Path('output/voice'))
+    box.add_argument('--render',type=Path,default=Path('output/render'))
+    box.add_argument('--output',type=Path,default=Path('output/shorts'))
+    box.add_argument('--length',type=float,default=150)
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--ollama-url',default='http://127.0.0.1:11434')
     args = parser.parse_args(argv)
@@ -354,6 +407,9 @@ def main(argv=None) -> int:
             summary=run_render(args.discover,args.voice,args.output,args.workdir,
                                aspects=tuple(a.strip() for a in args.aspects.split(',') if a.strip()),
                                interpolation=args.interpolation)
+            print(json.dumps(summary,default=str,indent=2))
+        elif args.command=='package':
+            summary=run_package(args.discover,args.scripts,args.voice,args.render,args.output,length=args.length)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='generate':
             result=generate(json.loads(args.request.read_text()),args.workdir,args.output)
