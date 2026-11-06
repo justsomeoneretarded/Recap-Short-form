@@ -340,6 +340,99 @@ def run_package(discover: Path, scripts: Path, voice: Path, render: Path, output
     return {'packages': rows}
 
 
+def _footage(clip_ids, screened: dict, workdir: Path) -> dict[str, str]:
+    from .discovery import YouTube
+    youtube, footage = None, {}
+    for clip_id in dict.fromkeys(clip_ids):
+        path = screened.get(clip_id, {}).get('path')
+        if not path or not Path(path).exists():
+            youtube = youtube or YouTube()
+            found = youtube.download(clip_id, Path(workdir)/'footage')
+            path = str(found) if found else None
+        if not path:
+            raise RuntimeError(f'Footage {clip_id} could not be downloaded')
+        footage[clip_id] = path
+    return footage
+
+
+def chunk_indexes(edit: dict, chunks: int, chunk: int) -> list[int]:
+    """Contiguous runs of shots (few clips to download per machine) with balanced work.
+
+    Moving shots (RIFE) weigh ~30x a calm shot (blend), so chunks split by expected cost, not count.
+    """
+    from .render_short import CALM_MOTION
+    shots = edit['edl']['shots']
+    cost = [s['duration'] * (30 if edit['plans'][str(i)].get('motion', 99) >= CALM_MOTION else 1)
+            for i, s in enumerate(shots)]
+    total, bounds, running = sum(cost) or 1.0, [0], 0.0
+    for i, c in enumerate(cost):
+        running += c
+        if len(bounds) < chunks and running >= total * len(bounds) / chunks:
+            bounds.append(i + 1)
+    bounds += [len(shots)] * (chunks + 1 - len(bounds))
+    return list(range(bounds[chunk], bounds[chunk + 1]))
+
+
+def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> dict:
+    from .edit import build_edl, shot_changes
+    from .render_short import plan_shots
+    discover, voice, output, workdir = (Path(p).resolve() for p in (discover, voice, output, workdir))
+    arcs = {a['id']: a for a in json.loads((discover/'arcs.json').read_text())['arcs']}
+    screened = {r['id']: r for r in json.loads((discover/'screening.json').read_text())} \
+        if (discover/'screening.json').exists() else {}
+    rows = []
+    for path in sorted(voice.glob('*/voiceover.json')):
+        voiceover = json.loads(path.read_text())
+        arc = arcs[voiceover['arc']]
+        footage = _footage([s['clip_id'] for s in arc['scenes']], screened, workdir)
+        cuts = {s['clip_id']: shot_changes(Path(footage[s['clip_id']]), s['clip_start'], s['clip_end']) for s in arc['scenes']}
+        edl = build_edl(arc, voiceover, footage, cuts)
+        plans = plan_shots(edl, screened)
+        for shot in edl['shots']:
+            shot.pop('source', None)  # machine-specific; each render machine downloads its own copy
+        write_json(output/voiceover['arc']/'edit.json', {'arc': voiceover['arc'], 'edl': edl, 'plans': plans})
+        rows.append({'arc': voiceover['arc'], 'shots': edl['shot_count'],
+                     'moving_shots': sum(1 for p in plans.values() if p['motion'] >= 2.5)})
+    return {'planned': rows}
+
+
+def run_render_part(edit_dir: Path, arc: str, aspect: str, chunk: int, chunks: int, output: Path, workdir: Path) -> dict:
+    from .render_short import render_parts
+    edit = json.loads((Path(edit_dir)/arc/'edit.json').read_text())
+    indexes = chunk_indexes(edit, chunks, chunk)
+    footage = _footage([edit['edl']['shots'][i]['clip_id'] for i in indexes], {}, Path(workdir).resolve())
+    for i in indexes:
+        edit['edl']['shots'][i]['source'] = footage[edit['edl']['shots'][i]['clip_id']]
+    folder = Path(output).resolve()/arc
+    rows = render_parts(edit['edl'], edit['plans'], aspect, indexes, folder)
+    write_json(folder/f'{aspect}-chunk-{chunk}.json', rows)
+    return {'arc': arc, 'aspect': aspect, 'chunk': chunk, 'shots': len(indexes),
+            'rife': sum(1 for r in rows if r['interpolation'] == 'rife')}
+
+
+def run_finish(edit_dir: Path, voice: Path, parts: Path, arc: str, output: Path) -> dict:
+    from .render_short import SIZES, finish_aspect
+    edit = json.loads((Path(edit_dir)/arc/'edit.json').read_text())
+    folder = Path(voice).resolve()/arc
+    voiceover = json.loads((folder/'voiceover.json').read_text())
+    for beat in voiceover['beats']:
+        beat['audio_path'] = str((folder/beat['audio_path']).resolve())
+    parts_folder = Path(parts).resolve()/arc
+    out = Path(output).resolve()/arc
+    out.mkdir(parents=True, exist_ok=True)
+    reports = {}
+    for aspect in SIZES:
+        rows = [r for p in sorted(parts_folder.glob(f'{aspect}-chunk-*.json')) for r in json.loads(p.read_text())]
+        if not rows:
+            continue
+        captions = folder/f'captions-{aspect}'/'captions.ass'
+        reports[aspect] = finish_aspect(edit['edl'], voiceover, aspect, parts_folder,
+                                        captions if captions.exists() else None, out, rows)
+    write_json(out/'render.json', {'edl': edit['edl'], 'outputs': reports, 'plans': edit['plans']})
+    return {'arc': arc, 'outputs': {a: {k: r[k] for k in ('duration', 'fps', 'duplicate_frames', 'integrated_lufs',
+                                                          'interpolation_reasons')} for a, r in reports.items()}}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Generate a standalone movie recap Short.')
     sub = parser.add_subparsers(dest='command',required=True)
@@ -388,6 +481,25 @@ def main(argv=None) -> int:
     box.add_argument('--render',type=Path,default=Path('output/render'))
     box.add_argument('--output',type=Path,default=Path('output/shorts'))
     box.add_argument('--length',type=float,default=150)
+    planp = sub.add_parser('edit-plan', help='Edit decisions + framing plans for parallel rendering.')
+    planp.add_argument('--discover',type=Path,default=Path('output/discover'))
+    planp.add_argument('--voice',type=Path,default=Path('output/voice'))
+    planp.add_argument('--output',type=Path,default=Path('output/edit'))
+    planp.add_argument('--workdir',type=Path,default=Path('work/shorts'))
+    partp = sub.add_parser('render-part', help='Render one chunk of one aspect of one story.')
+    partp.add_argument('--edit',type=Path,default=Path('output/edit'))
+    partp.add_argument('--arc',required=True)
+    partp.add_argument('--aspect',required=True,choices=['square','vertical'])
+    partp.add_argument('--chunk',type=int,required=True)
+    partp.add_argument('--chunks',type=int,required=True)
+    partp.add_argument('--output',type=Path,default=Path('output/parts'))
+    partp.add_argument('--workdir',type=Path,default=Path('work/shorts'))
+    finp = sub.add_parser('finish', help='Join rendered chunks into final videos for one story.')
+    finp.add_argument('--edit',type=Path,default=Path('output/edit'))
+    finp.add_argument('--voice',type=Path,default=Path('output/voice'))
+    finp.add_argument('--parts',type=Path,default=Path('output/parts'))
+    finp.add_argument('--arc',required=True)
+    finp.add_argument('--output',type=Path,default=Path('output/render'))
     doctor = sub.add_parser('doctor')
     doctor.add_argument('--ollama-url',default='http://127.0.0.1:11434')
     args = parser.parse_args(argv)
@@ -414,6 +526,13 @@ def main(argv=None) -> int:
         elif args.command=='package':
             summary=run_package(args.discover,args.scripts,args.voice,args.render,args.output,length=args.length)
             print(json.dumps(summary,default=str,indent=2))
+        elif args.command=='edit-plan':
+            print(json.dumps(run_edit_plan(args.discover,args.voice,args.output,args.workdir),default=str,indent=2))
+        elif args.command=='render-part':
+            print(json.dumps(run_render_part(args.edit,args.arc,args.aspect,args.chunk,args.chunks,args.output,
+                                             args.workdir),default=str,indent=2))
+        elif args.command=='finish':
+            print(json.dumps(run_finish(args.edit,args.voice,args.parts,args.arc,args.output),default=str,indent=2))
         elif args.command=='generate':
             result=generate(json.loads(args.request.read_text()),args.workdir,args.output)
             print(json.dumps(result,default=str,indent=2))

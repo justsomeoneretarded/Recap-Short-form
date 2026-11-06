@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 from .media import probe
-from .reframe import filter_graph, plan_shot, sample
+from .reframe import filter_graph, native_size, plan_shot, sample
 
 FPS = 60
 SIZES = {"square": (1080, 1080), "vertical": (1080, 1920)}
@@ -34,27 +34,47 @@ def rife_available() -> bool:
     return bool(binary and Path(binary).exists() and os.environ.get("SHORTS_RIFE_MODEL"))
 
 
-def _rife(video: Path, target: Path, frames_out: int) -> None:
-    """Interpolate a short shot with rife-ncnn-vulkan (CPU), keeping its audio."""
+def _rife(video: Path, target: Path, frames_out: int, size: tuple[int, int]) -> None:
+    """Interpolate one shot with rife-ncnn-vulkan on the CPU, then scale to the output size.
+
+    JPEG frames (quality 95) are several times faster to write/read than PNG at no visible cost;
+    all cores are used for processing.
+    """
+    threads = os.environ.get("SHORTS_RIFE_THREADS", f"2:{max(2, os.cpu_count() or 4)}:2")
     with tempfile.TemporaryDirectory(dir=target.parent) as temp:
         src, dst = Path(temp) / "in", Path(temp) / "out"
         src.mkdir()
         dst.mkdir()
-        _run(["ffmpeg", "-y", "-v", "error", "-i", str(video), str(src / "%06d.png")])
+        _run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-q:v", "2", str(src / "%06d.jpg")])
         _run([os.environ["SHORTS_RIFE_BIN"], "-i", str(src), "-o", str(dst), "-m", os.environ["SHORTS_RIFE_MODEL"],
-              "-n", str(frames_out), "-g", os.environ.get("SHORTS_RIFE_GPU", "-1"), "-j", "1:2:2"])
-        _run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(dst / "%08d.png"), "-i", str(video),
-              "-map", "0:v", "-map", "1:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
-              "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest", str(target)])
+              "-n", str(frames_out), "-g", os.environ.get("SHORTS_RIFE_GPU", "-1"), "-j", threads, "-f", "jpg"])
+        _run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(dst / "%08d.jpg"), "-i", str(video),
+              "-map", "0:v", "-map", "1:a?", "-vf", f"scale={size[0]}:{size[1]}:flags=lanczos,format=yuv420p",
+              "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-c:a", "copy", "-shortest", str(target)])
+
+
+def motion(source: Path, start: float, span: float) -> float:
+    """Average frame-to-frame change (0–255) of a shot at low resolution. Under ~3: calm shot."""
+    log = subprocess.run(["ffmpeg", "-v", "info", "-ss", f"{start:.3f}", "-t", f"{min(span, 4):.3f}", "-i", str(source),
+                          "-vf", "scale=160:-2,format=gray,tblend=all_mode=difference,signalstats,"
+                          "metadata=print:key=lavfi.signalstats.YAVG", "-an", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    values = [float(v) for v in re.findall(r"lavfi\.signalstats\.YAVG=([\d.]+)", log)]
+    return round(sum(values) / len(values), 2) if values else 99.0
+
+
+CALM_MOTION = float(os.environ.get("SHORTS_CALM_MOTION", "2.5"))
 
 
 def render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], target: Path, *,
-                interpolation: str = "auto") -> dict:
+                interpolation: str = "auto", use_rife: bool | None = None) -> dict:
     out_w, out_h = size
     info = probe(Path(shot["source"]))
     span = shot["end"] - shot["start"]
-    graph = filter_graph(plan, info["width"], info["height"], active, out_w, out_h, span, "0:v", "framed")
-    use_rife = interpolation == "rife" or (interpolation == "auto" and rife_available())
+    if use_rife is None:
+        use_rife = interpolation == "rife" or (interpolation == "auto" and rife_available())
+    work_w, work_h = native_size(plan, info["width"], info["height"], active, out_w, out_h) if use_rife else size
+    graph = filter_graph(plan, info["width"], info["height"], active, work_w, work_h, span, "0:v", "framed")
     timing = f"[framed]setpts=(PTS-STARTPTS)/{shot['speed']:.6f}"
     if use_rife:
         timing += f",fps={info.get('fps') or 24:.3f},format=yuv420p[v]"
@@ -72,14 +92,15 @@ def render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], ta
           "-t", f"{shot['duration']:.4f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
           "-c:a", "pcm_s16le", str(first)])
     if use_rife:
-        _rife(first, target, max(2, round(shot["duration"] * FPS)))
+        _rife(first, target, max(2, round(shot["duration"] * FPS)), size)
         first.unlink(missing_ok=True)
-    return {"interpolation": "rife" if use_rife else "blend", "mode": plan["mode"]}
+    return {"interpolation": "rife" if use_rife else "blend", "mode": plan["mode"],
+            "work_size": [work_w, work_h]}
 
 
 def _concat(parts: list[Path], target: Path) -> None:
     manifest = target.with_suffix(".txt")
-    manifest.write_text("".join(f"file '{p.name}'\n" for p in parts))
+    manifest.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))  # parts may live in another folder
     _run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(manifest),
           "-c:v", "copy", "-c:a", "pcm_s16le", str(target)])
 
@@ -136,39 +157,80 @@ def duplicate_frame_ratio(video: Path) -> float:
     return round(1 - int(kept[-1]) / total, 3) if total and kept else 0.0
 
 
+def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertical")) -> dict:
+    """Framing plan and motion per shot, computed once (also shipped to parallel render machines)."""
+    plans = {}
+    for i, shot in enumerate(edl["shots"]):
+        active = tuple((screening.get(shot["clip_id"]) or {}).get("active", {}).get("box") or (0, 0, 1, 1))
+        frames = sample(Path(shot["source"]), shot["start"], max(shot["start"] + 0.2, shot["end"]), 5)
+        entry = {"active": active, "motion": motion(Path(shot["source"]), shot["start"], shot["end"] - shot["start"])}
+        for aspect in aspects:
+            size = SIZES[aspect]
+            entry[aspect] = plan_shot(frames, active, size[0] / size[1])
+        plans[str(i)] = entry
+    return plans
+
+
+def render_parts(edl: dict, plans: dict, aspect: str, indexes: list[int], folder: Path, *,
+                 interpolation: str = "auto", budget: float | None = None) -> list[dict]:
+    """Render some shots of one aspect. RIFE only where it shows (moving shots) and while time allows."""
+    import time
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    budget = budget if budget is not None else float(os.environ.get("SHORTS_RIFE_BUDGET", "7200"))
+    started = time.monotonic()
+    rife_ok = interpolation == "rife" or (interpolation == "auto" and rife_available())
+    rows = []
+    for i in indexes:
+        shot, plan = edl["shots"][i], plans[str(i)]
+        moving = plan.get("motion", 99.0) >= CALM_MOTION
+        in_time = time.monotonic() - started < budget
+        use_rife = rife_ok and moving and in_time
+        part = folder / f"{aspect}-shot-{i:04d}.mkv"
+        row = render_shot(shot, plan[aspect], tuple(plan["active"]), SIZES[aspect], part, use_rife=use_rife)
+        row.update(index=i, motion=plan.get("motion"),
+                   why="rife" if use_rife else "calm shot" if rife_ok and not moving else
+                   "time budget" if rife_ok and not in_time else "rife unavailable")
+        rows.append(row)
+    return rows
+
+
+def finish_aspect(edl: dict, voiceover: dict, aspect: str, parts_folder: Path, captions: Path | None,
+                  outdir: Path, rows: list[dict]) -> dict:
+    """Join every shot of one aspect, add the narrator, master, burn captions → final-<aspect>.mp4."""
+    parts = [Path(parts_folder) / f"{aspect}-shot-{i:04d}.mkv" for i in range(len(edl["shots"]))]
+    missing = [p.name for p in parts if not p.exists()]
+    if missing:
+        raise RuntimeError(f"Missing rendered shots for {aspect}: {missing[:5]}")
+    work = Path(tempfile.mkdtemp(prefix=f"finish-{aspect}-", dir=outdir))
+    joined, mixed = work / "joined.mkv", work / "mixed.mkv"
+    _concat(parts, joined)
+    _narration_mix(joined, voiceover, mixed)
+    final = Path(outdir) / f"final-{aspect}.mp4"
+    audio = finish(mixed, captions, final)
+    info = probe(final)
+    shutil.rmtree(work, ignore_errors=True)
+    reasons = {}
+    for row in rows:
+        reasons[row["why"]] = reasons.get(row["why"], 0) + 1
+    return {"path": str(final), "duration": info["duration"], "width": info["width"], "height": info["height"],
+            "fps": info["fps"], **audio, "duplicate_frames": duplicate_frame_ratio(final),
+            "modes": {m: sum(1 for x in rows if x["mode"] == m) for m in ("track", "fit")},
+            "interpolation": sorted({x["interpolation"] for x in rows}), "interpolation_reasons": reasons}
+
+
 def render_short(edl: dict, voiceover: dict, screening: dict[str, dict], captions: dict[str, Path], outdir: Path,
                  *, aspects: tuple[str, ...] = ("square", "vertical"), interpolation: str = "auto") -> dict:
+    """Single-machine render (local use and small jobs); the workflow splits the same steps across machines."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    plans: dict[int, dict] = {}
+    plans = plan_shots(edl, screening, aspects)
     reports = {}
+    parts = outdir / "parts"
     for aspect in aspects:
-        size = SIZES[aspect]
-        work = Path(tempfile.mkdtemp(prefix=f"render-{aspect}-", dir=outdir))
-        parts, modes = [], []
-        for i, shot in enumerate(edl["shots"]):
-            active = tuple((screening.get(shot["clip_id"]) or {}).get("active", {}).get("box") or (0, 0, 1, 1))
-            key = (i, aspect)
-            if key not in plans:
-                frames = sample(Path(shot["source"]), shot["start"], max(shot["start"] + 0.2, shot["end"]), 5)
-                plans[key] = plan_shot(frames, active, size[0] / size[1])
-            part = work / f"shot-{i:04d}.mkv"
-            modes.append(render_shot(shot, plans[key], active, size, part, interpolation=interpolation))
-            parts.append(part)
-        joined = work / "joined.mkv"
-        _concat(parts, joined)
-        mixed = work / "mixed.mkv"
-        _narration_mix(joined, voiceover, mixed)
-        final = outdir / f"final-{aspect}.mp4"
-        audio = finish(mixed, captions.get(aspect), final)
-        info = probe(final)
-        reports[aspect] = {"path": str(final), "duration": info["duration"], "width": info["width"],
-                           "height": info["height"], "fps": info["fps"], **audio,
-                           "duplicate_frames": duplicate_frame_ratio(final),
-                           "modes": {m: sum(1 for x in modes if x["mode"] == m) for m in ("track", "fit")},
-                           "interpolation": sorted({x["interpolation"] for x in modes})}
-        shutil.rmtree(work, ignore_errors=True)
-    (outdir / "render.json").write_text(json.dumps({"edl": edl, "outputs": reports,
-                                                    "plans": {f"{k[0]}-{k[1]}": v for k, v in plans.items()}},
+        rows = render_parts(edl, plans, aspect, list(range(len(edl["shots"]))), parts, interpolation=interpolation)
+        reports[aspect] = finish_aspect(edl, voiceover, aspect, parts, captions.get(aspect), outdir, rows)
+    shutil.rmtree(parts, ignore_errors=True)
+    (outdir / "render.json").write_text(json.dumps({"edl": edl, "outputs": reports, "plans": plans},
                                                    indent=1, default=str))
     return reports

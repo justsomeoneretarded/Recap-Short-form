@@ -31,7 +31,12 @@ def test_user_text_never_reaches_shell_code_directly():
 def test_pipeline_order_and_per_story_matrix():
     jobs=_load('generate-shorts.yml')['jobs']
     assert jobs['discover']['needs']=='validate'
-    assert jobs['make']['strategy']['matrix']['arc']=='${{ fromJSON(needs.write.outputs.arcs) }}'
-    runs=' '.join(s.get('run','') for s in jobs['make']['steps'])
-    assert runs.index('shorts_pipeline voice')<runs.index('shorts_pipeline render')<runs.index('shorts_pipeline package')
-    assert 'secrets.YOUTUBE_COOKIES' in str(jobs['make']) and 'setup-node' in str(jobs['discover'])
+    assert jobs['voice']['strategy']['matrix']['arc']=='${{ fromJSON(needs.write.outputs.arcs) }}'
+    render=jobs['render']['strategy']['matrix']
+    assert render['aspect']==['square','vertical'] and render['chunk']==['0','1','2','3']
+    voice_runs=' '.join(s.get('run','') for s in jobs['voice']['steps'])
+    assert voice_runs.index('shorts_pipeline voice')<voice_runs.index('shorts_pipeline edit-plan')
+    assert '--chunks 4' in ' '.join(s.get('run','') for s in jobs['render']['steps'])
+    finish_runs=' '.join(s.get('run','') for s in jobs['finish']['steps'])
+    assert finish_runs.index('shorts_pipeline finish')<finish_runs.index('shorts_pipeline package')
+    assert 'secrets.YOUTUBE_COOKIES' in str(jobs['render']) and 'setup-node' in str(jobs['discover'])

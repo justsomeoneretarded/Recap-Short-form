@@ -165,3 +165,18 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
     x = f"max(0\\,min({aw - cw}\\,{left0:.2f}+({left1 - left0:.2f})*min(1\\,t/{d:.3f})))"
     return (f"{base},crop={cw}:{ch}:x='{x}':y={(ah - ch) // 2},"
             f"scale={out_w}:{out_h}:flags=lanczos,setsar=1[{label_out}]")
+
+
+def native_size(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, out_h: int) -> tuple[int, int]:
+    """Pixels the shot really has before upscaling: the crop window at source resolution (track mode).
+
+    Interpolating at this size and enlarging afterwards costs far less than interpolating the
+    upscaled frame (vertical from 1080p: 608×1080 instead of 1080×1920) and looks the same.
+    """
+    if plan["mode"] != "track":
+        return out_w, out_h
+    aw = int((active[2] - active[0]) * src_w) // 2 * 2
+    ah = int((active[3] - active[1]) * src_h) // 2 * 2
+    cw = min(aw, int(round(ah * out_w / out_h / 2)) * 2)
+    ch = min(ah, int(round(cw * out_h / out_w / 2)) * 2)
+    return (cw, ch) if cw < out_w else (out_w, out_h)

@@ -155,10 +155,10 @@ jobs:
           path: output/write
           retention-days: 7
 
-  make:
+  voice:
     needs: [validate, write]
     runs-on: ubuntu-24.04
-    timeout-minutes: 340
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       max-parallel: 5
@@ -172,7 +172,6 @@ jobs:
       ARC: ${{ matrix.arc }}
       NARRATOR: ${{ needs.validate.outputs.narrator }}
       SPEECH_MODEL: ${{ needs.validate.outputs.speech_model }}
-      LENGTH: ${{ needs.validate.outputs.length }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -182,19 +181,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install FFmpeg, Chatterbox, Whisper, OpenCV and RIFE
+      - name: Install FFmpeg, Chatterbox, Whisper and OpenCV
         timeout-minutes: 25
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq unzip libvulkan1 mesa-vulkan-drivers libgomp1
+          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq
           python -m pip install --upgrade pip
           python -m pip install torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e '.[voice,source,screening]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
           mkdir -p work/models
           curl -fsSL --retry 3 -o "$SHORTS_YUNET_MODEL" https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx || echo "::warning::YuNet face model unavailable; framing uses motion only"
-          bash scripts/install_rife.sh || echo "::warning::RIFE unavailable; 60 fps uses motion-blended interpolation"
       - name: Prepare optional YouTube cookies
         env:
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
@@ -224,8 +220,120 @@ jobs:
           path: output/write
       - name: Voice the script and make captions
         run: python -u -m shorts_pipeline voice --discover output/discover --scripts output/write --output output/voice --arc "$ARC" --narrator "$NARRATOR" --tts-model "$SPEECH_MODEL"
-      - name: Edit and render square + vertical at 60 fps
-        run: python -u -m shorts_pipeline render --discover output/discover --voice output/voice --output output/render
+      - name: Plan the edit and the framing of every shot
+        run: python -u -m shorts_pipeline edit-plan --discover output/discover --voice output/voice --output output/edit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-${{ matrix.arc }}
+          path: |
+            output/voice
+            output/edit
+          retention-days: 7
+
+  render:
+    # Every story × shape is split into 4 chunks rendered on separate machines at the same time.
+    needs: [write, voice]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        arc: ${{ fromJSON(needs.write.outputs.arcs) }}
+        aspect: [square, vertical]
+        chunk: [0, 1, 2, 3]
+    env:
+      ARC: ${{ matrix.arc }}
+      ASPECT: ${{ matrix.aspect }}
+      CHUNK: ${{ matrix.chunk }}
+      SHORTS_RIFE_BUDGET: '9000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install FFmpeg, downloader and RIFE
+        timeout-minutes: 10
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg jq unzip libvulkan1 mesa-vulkan-drivers libgomp1
+          python -m pip install -e '.[source]' 'bgutil-ytdlp-pot-provider>=2.0'
+          bash scripts/install_rife.sh || echo "::warning::RIFE unavailable; 60 fps uses motion-blended interpolation"
+      - name: Prepare optional YouTube cookies
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: python scripts/prepare_youtube_cookies.py
+      - name: Start YouTube proof-of-origin token provider
+        continue-on-error: true
+        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+      - name: Prepare WARP fallback route
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/phase0/warp_proxy.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: voice-${{ matrix.arc }}
+          path: output
+      - name: Render this chunk (RIFE on moving shots, blending on calm ones)
+        run: python -u -m shorts_pipeline render-part --edit output/edit --arc "$ARC" --aspect "$ASPECT" --chunk "$CHUNK" --chunks 4 --output output/parts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parts-${{ matrix.arc }}-${{ matrix.aspect }}-${{ matrix.chunk }}
+          path: output/parts
+          retention-days: 2
+
+  finish:
+    needs: [validate, write, render]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arc: ${{ fromJSON(needs.write.outputs.arcs) }}
+    env:
+      ARC: ${{ matrix.arc }}
+      LENGTH: ${{ needs.validate.outputs.length }}
+      SHORTS_YUNET_MODEL: ${{ github.workspace }}/work/models/face_detection_yunet_2023mar.onnx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install FFmpeg, OCR and fonts
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          python -m pip install -e '.[screening]'
+          mkdir -p work/models
+          curl -fsSL --retry 3 -o "$SHORTS_YUNET_MODEL" https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx || true
+      - uses: actions/download-artifact@v4
+        with:
+          name: discover
+          path: output/discover
+      - uses: actions/download-artifact@v4
+        with:
+          name: write
+          path: output/write
+      - uses: actions/download-artifact@v4
+        with:
+          name: voice-${{ matrix.arc }}
+          path: output
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: parts-${{ matrix.arc }}-*
+          path: output/parts
+          merge-multiple: true
+      - name: Join the chunks, add the narrator, master and burn captions
+        run: python -u -m shorts_pipeline finish --edit output/edit --voice output/voice --parts output/parts --arc "$ARC" --output output/render
       - name: Covers, titles, description, tags and quality review
         run: |
           python -u -m shorts_pipeline package --discover output/discover --scripts output/write --voice output/voice --render output/render --output output/shorts --length "$LENGTH"
@@ -238,7 +346,7 @@ jobs:
           retention-days: 14
 
   collect:
-    needs: [validate, make]
+    needs: [validate, finish]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:

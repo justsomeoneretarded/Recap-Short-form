@@ -34,3 +34,33 @@ def test_render_end_to_end_true_60fps_both_aspects(tmp_path, monkeypatch):
         assert abs(r["duration"] - edl["duration"]) < 0.25
         assert r["duplicate_frames"] < 0.2  # blended interpolation, not frame copies
         assert -16.5 < r["integrated_lufs"] < -11.5 and r["true_peak_db"] <= -0.5
+
+
+def test_rife_only_on_moving_shots_within_budget_and_at_native_size(tmp_path, monkeypatch):
+    still, moving = tmp_path / "still.mp4", tmp_path / "moving.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:size=640x360:rate=24",
+                    "-f", "lavfi", "-i", "sine", "-t", "4", "-shortest", "-pix_fmt", "yuv420p", str(still)], check=True)
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24",
+                    "-f", "lavfi", "-i", "sine", "-t", "4", "-shortest", "-pix_fmt", "yuv420p", str(moving)], check=True)
+    assert rs.motion(still, 0, 2) < rs.CALM_MOTION < rs.motion(moving, 0, 2)
+    calls = []
+
+    def fake_rife(video, target, frames_out, size):
+        calls.append(rs.probe(video)["width"])
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"fps=60,scale={size[0]}:{size[1]}",
+                        "-c:a", "copy", str(target)], check=True)
+
+    monkeypatch.setattr(rs, "rife_available", lambda: True)
+    monkeypatch.setattr(rs, "_rife", fake_rife)
+    monkeypatch.setattr(rs, "SIZES", {"square": (240, 240), "vertical": (360, 640)})
+    shots = [{"clip_id": c, "source": str(p), "start": 0.0, "end": 1.5, "speed": 1.0, "timeline_start": i * 1.5,
+              "duration": 1.5, "audio": "duck"} for i, (c, p) in enumerate([("s", still), ("m", moving), ("m", moving)])]
+    edl = {"shots": shots}
+    plans = rs.plan_shots(edl, {}, ("vertical",))
+    rows = rs.render_parts(edl, plans, "vertical", [0, 1], tmp_path / "parts")
+    assert [r["why"] for r in rows] == ["calm shot", "rife"]
+    if plans["1"]["vertical"]["mode"] == "track":
+        assert calls == [202]  # 640x360 source → 202x360 crop interpolated, then enlarged to 360x640
+    late = rs.render_parts(edl, plans, "vertical", [2], tmp_path / "parts", budget=-1)
+    assert late[0]["why"] == "time budget" and late[0]["interpolation"] == "blend"
+    assert rs.probe(tmp_path / "parts" / "vertical-shot-0001.mkv")["width"] == 360
