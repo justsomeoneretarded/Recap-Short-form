@@ -3,7 +3,7 @@ import math
 
 DEFAULTS = {'brief': '', 'story_notes': '', 'narrator': 'warguy', 'tts_model': 'original',
             'target_seconds': 150, 'aspect': 'square', 'fps': 60,
-            'script_model': 'qwen3:4b-instruct-2507-q4_K_M', 'vision_model': 'qwen3-vl:2b-instruct-q4_K_M',
+            'script_model': 'gemma4:12b', 'vision_model': 'qwen3-vl:2b-instruct-q4_K_M',
             'ollama_url': 'http://127.0.0.1:11434', 'max_scenes': 120,
             'auto_source_speech': True, 'caption_style': 'reference_word_fade'}
 

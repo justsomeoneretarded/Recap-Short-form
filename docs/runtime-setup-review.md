@@ -1,6 +1,6 @@
 # Runtime setup verification
 
-This is the historical preflight inspection. Subsequent inference, render results and the current model defaults are recorded in [validation](validation.md); Qwen3 4B is now the default writer and Gemma4 12B is optional.
+This is the historical preflight inspection. Subsequent inference, render results and the current model defaults are recorded in [validation](validation.md); Gemma4 12B is the current writing baseline; the compact writers are evaluated separately with saved-case probes.
 
 Read-only upstream inspection and HTTP metadata checks. No speech packages or model weights were installed by this review; no inference was run. Existing reference-transcription weights were not modified.
 

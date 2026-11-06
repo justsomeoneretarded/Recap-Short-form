@@ -39,10 +39,10 @@ on:
         options: [original, turbo, nano]
         default: original
       writer_model:
-        description: Writer model (Qwen is smaller; Gemma is a larger option)
+        description: Writer model (Gemma is the writing baseline; Qwen is a smaller legacy option)
         type: choice
-        options: ['qwen3:4b-instruct-2507-q4_K_M', 'gemma4:12b']
-        default: 'qwen3:4b-instruct-2507-q4_K_M'
+        options: ['gemma4:12b', 'qwen3:4b-instruct-2507-q4_K_M']
+        default: 'gemma4:12b'
       source_window:
         description: Optional source excerpt start,end in seconds (for example 51,73)
         type: string
@@ -67,7 +67,7 @@ jobs:
       OLLAMA_MAX_LOADED_MODELS: '1'
       SHORTS_CPU_THREADS: '4'
       SHORTS_WHISPER_MODEL: base.en
-      SCRIPT_MODEL: ${{ inputs.writer_model || 'qwen3:4b-instruct-2507-q4_K_M' }}
+      SCRIPT_MODEL: ${{ inputs.writer_model || 'gemma4:12b' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

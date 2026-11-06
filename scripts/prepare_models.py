@@ -2,6 +2,7 @@
 import os
 import time
 import requests
+from shorts_pipeline.config import DEFAULTS
 
 url = os.environ.get('OLLAMA_URL','http://127.0.0.1:11434').rstrip('/')
 deadline = time.monotonic()+60
@@ -14,7 +15,7 @@ while True:
         if time.monotonic()>=deadline:
             raise RuntimeError('Ollama did not start; inspect the uploaded model logs.')
         time.sleep(1)
-for model in [os.environ.get('SCRIPT_MODEL','qwen3:4b-instruct-2507-q4_K_M'),os.environ.get('SCENE_MODEL','qwen3-vl:2b-instruct-q4_K_M')]:
+for model in [os.environ.get('SCRIPT_MODEL',DEFAULTS['script_model']),os.environ.get('SCENE_MODEL',DEFAULTS['vision_model'])]:
     print(f'Preparing {model}',flush=True)
     with requests.post(url+'/api/pull',json={'model':model,'stream':True},stream=True,timeout=(10,1800)) as response:
         response.raise_for_status()

@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
+from .config import DEFAULTS
 from .sources import _video_info, _write_json, file_digest
 
 VERSION = 3
@@ -26,8 +27,8 @@ MAX_PLANNED_WORDS_PER_SECOND = 2.5
 MAX_SOURCE_SPEECH_SECONDS = 8.0
 MAX_SOURCE_SPEECH_FRACTION = .25
 COMPRESSION_WORDS_PER_SECOND = 2.2
-DEFAULT_VISION_MODEL = "qwen3-vl:2b-instruct-q4_K_M"
-DEFAULT_SCRIPT_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
+DEFAULT_VISION_MODEL = DEFAULTS["vision_model"]
+DEFAULT_SCRIPT_MODEL = DEFAULTS["script_model"]
 VISION_PROMPT = (
     "Describe only the visible contents of this movie frame for an editor. "
     "Use at most 45 words. Mention people, visible actions, objects, location, "
@@ -542,6 +543,7 @@ def make_plan(request: dict, source: Path, scenes: list[dict], workdir: Path, *,
                          if quote["end"] - quote["start"] <= target * MAX_SOURCE_SPEECH_FRACTION + 1e-6]
     schema = SOURCE_SPEECH_PLAN_SCHEMA if prompt_candidates else PLAN_SCHEMA
     identity = _key({"version": PLAN_VERSION, "source_sha256": file_digest(source),
+        "script_model": writer, "vision_model": vision,
         "request": request, "source_speech": candidates,
         "scene_ids": [{k: s[k] for k in ("id", "start", "end")} for s in scenes]})
     cache_dir = workdir / "planning"

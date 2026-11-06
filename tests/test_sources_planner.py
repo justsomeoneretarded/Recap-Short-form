@@ -168,6 +168,33 @@ def test_plan_cache_binds_source_and_models_and_preserves_review_status(tmp_path
     assert len(calls) == call_count
 
 
+@pytest.mark.parametrize("model_default", ["DEFAULT_SCRIPT_MODEL", "DEFAULT_VISION_MODEL"])
+def test_plan_cache_changes_when_an_omitted_model_default_changes(tmp_path, monkeypatch, model_default):
+    source=tmp_path/'source.mp4'
+    source.write_bytes(b'fixed-source')
+    scenes=[{'id':'S1','start':0,'end':20}]
+    monkeypatch.setattr(planner,'_video_info',lambda *args: {'duration':20})
+    monkeypatch.setattr(planner,'_require_models',lambda *args: None)
+    monkeypatch.setattr(planner,'_describe',lambda *args: 'A man closes a door as a shadow approaches.')
+    calls=[]
+    def api(url,payload,**kwargs):
+        if 'prompt' not in payload:
+            return {}
+        calls.append(payload)
+        return {'response':json.dumps({'beats':[{'id':'B1','scene_ids':['S1'],
+            'text':'He quietly closes the heavy door as footsteps approach outside. He checks the lock and waits. Another shadow crosses the window while the handle begins to turn.'}]})}
+    monkeypatch.setattr(planner,'_request_json',api)
+    request={'target_seconds':15}
+    first=planner.make_plan(request,source,scenes,tmp_path/'work')
+    monkeypatch.setattr(planner,model_default,'replacement-default-model')
+    second=planner.make_plan(request,source,scenes,tmp_path/'work')
+    assert len(calls)==2
+    field='script_model' if model_default=='DEFAULT_SCRIPT_MODEL' else 'vision_model'
+    assert first['planning'][field]!=second['planning'][field]
+    assert second['planning'][field]=='replacement-default-model'
+    assert len(list((tmp_path/'work'/'planning').glob('plan-*.json')))==2
+
+
 @pytest.mark.parametrize("first_text", ["", "A partial description"])
 def test_vision_empty_length_response_retries_without_using_thinking(tmp_path, monkeypatch, first_text):
     frame = tmp_path / "frame.jpg"
