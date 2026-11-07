@@ -11,20 +11,7 @@ on:
   push:
     branches: ['claude/**']
     paths:
-      - 'shorts_pipeline/research.py'
-      - 'shorts_pipeline/locate.py'
-      - 'shorts_pipeline/discovery.py'
-      - 'shorts_pipeline/placement.py'
-      - 'shorts_pipeline/screening.py'
-      - 'shorts_pipeline/compilations.py'
-      - 'shorts_pipeline/arcs.py'
-      - 'shorts_pipeline/writer.py'
-      - 'shorts_pipeline/narration.py'
-      - 'shorts_pipeline/edit.py'
-      - 'shorts_pipeline/reframe.py'
-      - 'shorts_pipeline/render_short.py'
-      - 'shorts_pipeline/voice.py'
-      - 'shorts_pipeline/covers.py'
+      - 'shorts_pipeline/**'
       - 'scripts/phase0/films.json'
       - '.github/workflows/shorts-research.yml'
 
