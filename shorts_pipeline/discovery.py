@@ -50,16 +50,14 @@ def build_queries(movie: dict, scene_hints: list[str] | None = None, limit: int 
     title, year = movie["title"], movie.get("year") or ""
     stem = f"{title} {year}".strip()
     queries = [f"{stem} scene", f"{stem} best scenes", f"{stem} clip"]
-    # The scenes people talk about most (Gemini + Google Search) come before the generic queries.
-    for hint in (scene_hints or [])[:5]:
-        queries.append(f"{title} {hint} scene")
+    # Planned story beats / the scenes people talk about most come before the generic queries.
+    for hint in scene_hints or []:
+        queries.append(hint if fold(title) in fold(hint) else f"{title} {hint} scene")
     for clip in movie.get("clips", [])[:6]:
         name = re.sub(r"(?i)\b(clip|official|hd|4k|movieclips|\(\d{4}\))\b", " ", clip.get("name", ""))
         name = " ".join(name.replace("|", " ").replace("-", " ").split())
         if name and fold(name) != fold(title):
             queries.append(f"{title} {name}" if fold(title) not in fold(name) else name)
-    for hint in (scene_hints or [])[5:]:
-        queries.append(f"{title} {hint} scene")
     for genre in movie.get("genres", []):
         for concept in SCENE_CONCEPTS.get(genre, ()):
             queries.append(f"{stem} {concept}")
@@ -304,7 +302,8 @@ def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None 
     """Search, filter and rank candidates. Returns kept candidates (best first) and every rejection."""
     movie = research["movie"]
     official = {c["key"] for c in movie.get("clips", [])}
-    queries = build_queries(movie, scene_hints)
+    queries = build_queries(movie, scene_hints, limit=12 + len(scene_hints or []))
+    max_full += 2 * len(scene_hints or [])
     found: dict[str, dict] = {}
     rejected: list[dict] = []
     errors: list[dict] = []
@@ -359,4 +358,10 @@ def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None 
         kept.append(item)
     # Audience signals decide the order; a studio upload only gets a small trust bonus.
     kept.sort(key=lambda c: c.score["total"] + (0.08 if c.official else 0.0), reverse=True)
+    if scene_hints:  # every planned beat's best two finds go first, so they are placed and screened
+        first: list[Candidate] = []
+        for hint in scene_hints:
+            wanted = {hint, f"{movie['title']} {hint} scene"}
+            first += [c for c in kept if wanted & set(c.queries) and c.id not in {f.id for f in first}][:2]
+        kept = first + [c for c in kept if c.id not in {f.id for f in first}]
     return {"queries": queries, "candidates": [c.as_dict() for c in kept], "rejected": rejected, "errors": errors}

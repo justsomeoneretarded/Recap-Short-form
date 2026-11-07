@@ -135,7 +135,7 @@ def test_parallel_lookups_give_the_same_result_as_one_at_a_time(monkeypatch):
                 self.active -= 1
             return super().info(vid)
 
-    monkeypatch.setattr(d, "build_queries", lambda movie, hints=None: list(results))
+    monkeypatch.setattr(d, "build_queries", lambda movie, hints=None, limit=12: list(results))
     monkeypatch.setenv("SHORTS_YOUTUBE_WORKERS", "1")
     serial = d.discover({"movie": MOVIE}, FakeYouTube(results, infos))
     monkeypatch.setenv("SHORTS_YOUTUBE_WORKERS", "3")

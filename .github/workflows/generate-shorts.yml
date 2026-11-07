@@ -84,6 +84,7 @@ jobs:
       SHORTS_CPU_THREADS: '4'
       MOVIE: ${{ needs.validate.outputs.movie }}
       LENGTH: ${{ needs.validate.outputs.length }}
+      MAX_STORIES: ${{ needs.validate.outputs.stories }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

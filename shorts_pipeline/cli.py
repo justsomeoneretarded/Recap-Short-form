@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -123,8 +124,25 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     lap('research')
     youtube = YouTube()
     from . import gemini as gem
-    google, hints = gem.client(), None
-    if google is not None:  # the scenes people talk about most → better search words
+    from .locate import MovieTranscript
+    subtitles = research.get('subtitles', {}).get('path')
+    transcript = MovieTranscript.from_subtitles(Path(subtitles).read_text(errors='ignore')) if subtitles else None
+    plot_file = Path(research.get('folder') or output)/'plot.txt'
+    plot = plot_file.read_text() if plot_file.exists() else ''
+    google, hints, planned = gem.client(), None, []
+    if google is not None and transcript is not None:
+        # Story first: plan the spine across the whole movie, then search footage for every beat.
+        from .story import beat_searches, plan_stories
+        wanted = max(1, min(5, int(os.environ.get('MAX_STORIES') or 5)))
+        try:
+            planned = plan_stories(google, research, transcript, plot, length, count=wanted + 1)
+            hints = beat_searches(planned) or None
+            for story in planned:
+                print(f"[discover] story: {story['title']} — " + " → ".join(b['name'] for b in story['beats']),
+                      file=sys.stderr, flush=True)
+        except gem.GeminiUnavailable as exc:
+            print(f"[discover] no story plan (scene-by-scene stories instead): {str(exc)[:160]}", file=sys.stderr, flush=True)
+    if google is not None and not hints:  # the scenes people talk about most → better search words
         try:
             hints = gem.scene_hints(google, research['movie']) or None
             print(f"[discover] Gemini scene hints: {hints}", file=sys.stderr, flush=True)
@@ -132,22 +150,33 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
             print(f"[discover] no Gemini scene hints: {str(exc)[:160]}", file=sys.stderr, flush=True)
     found = discover(research, youtube, **({'scene_hints': hints} if hints else {}))
     lap('search_and_rank')
+    if planned:  # each beat's best two finds are placed, plus the usual top clips
+        top = max(top, min(30, 2 * sum(len(st['beats']) for st in planned)))
     placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
     lap('download_and_place')
     screened = {}
     if screen:
         from .screening import screen_candidates
-        screened = {r['id']: r for r in screen_candidates(placed, youtube, Path(workdir).resolve(), top=screen,
+        screened = {r['id']: r for r in screen_candidates(placed, youtube, Path(workdir).resolve(),
+                                                          top=max(screen, top if planned else 0),
                                                           movie=research['movie'], gemini=google)}
     lap('screen')
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     write_json(output/'screening.json', list(screened.values()))
-    from .arcs import build_arcs
-    from .locate import MovieTranscript
-    subtitles = research.get('subtitles', {}).get('path')
-    transcript = MovieTranscript.from_subtitles(Path(subtitles).read_text(errors='ignore')) if subtitles else None
-    stories = build_arcs(placed['clips'], screened, length, transcript)
+    from .arcs import attach_dialogue, build_arcs, units_from
+    stories = None
+    if planned:
+        from .story import stories_to_arcs
+        arcs = stories_to_arcs(planned, units_from(placed['clips'], screened), length)
+        if arcs:
+            if transcript is not None:
+                attach_dialogue(arcs, transcript)
+            stories = {'target_seconds': length, 'planned': planned, 'arcs': arcs}
+        print(f"[discover] planned stories with footage for enough beats: {len(arcs)} of {len(planned)}",
+              file=sys.stderr, flush=True)
+    if stories is None:
+        stories = build_arcs(placed['clips'], screened, length, transcript)
     write_json(output/'arcs.json', stories)
     write_json(output/'clips.json', {'movie': research['movie']['title'], 'queries': found['queries'],
                                      'placed': placed, 'rejected': found['rejected'], 'errors': found['errors'],
@@ -172,7 +201,7 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
                          'shorter': a['shorter_than_requested']} for a in stories['arcs']],
                'clips': rows, 'timings_seconds': timings,
                'gemini': google.usage() if google is not None else 'off (no GEMINI_API_KEY)',
-               'scene_hints': hints or []}
+               'scene_hints': hints or [], 'planned_stories': planned}
     write_json(output/'summary.json', summary)
     return summary
 
