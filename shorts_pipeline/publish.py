@@ -85,7 +85,7 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
         modes = out.get("modes", {})
         fit_share = modes.get("fit", 0) / max(1, sum(modes.values()))
         add(f"{aspect}: framing", "pass" if fit_share <= 0.35 else "warn",
-            f"{modes.get('track', 0)} tracked, {modes.get('fit', 0)} fit-over-blur shots")
+            f"{modes.get('track', 0)} tracked, {modes.get('stack', 0)} stacked, {modes.get('fit', 0)} fit-over-blur shots")
     duration = edl["duration"]
     add("length", "pass" if 0.6 * target_seconds <= duration <= target_seconds + 5 else "warn",
         f"{duration:.0f} s (requested {target_seconds:.0f} s)")

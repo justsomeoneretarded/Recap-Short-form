@@ -325,7 +325,7 @@ def finish_aspect(edl: dict, voiceover: dict, aspect: str, parts_folder: Path, c
     return {"path": str(final), "duration": info["duration"], "width": info["width"], "height": info["height"],
             "fps": info["fps"], **audio, "duplicate_frames": duplicate_frame_ratio(final),
             "streaked_shots": streaked_shots(final, edl),
-            "modes": {m: sum(1 for x in rows if x["mode"] == m) for m in ("track", "fit")},
+            "modes": {m: sum(1 for x in rows if x["mode"] == m) for m in ("track", "fit", "stack")},
             "interpolation": sorted({x["interpolation"] for x in rows}), "interpolation_reasons": reasons,
             "shot_rows": [{"index": x.get("index"), "fallback": x["fallback"]} for x in rows if x.get("fallback")]}
 
