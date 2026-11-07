@@ -45,10 +45,11 @@ def test_rife_only_on_moving_shots_within_budget_and_at_native_size(tmp_path, mo
     assert rs.motion(still, 0, 2) < rs.CALM_MOTION < rs.motion(moving, 0, 2)
     calls = []
 
-    def fake_rife(frames, audio, target, frames_out, size):
+    def fake_rife(frames, audio, target, frames_out, size, real_size=None):
         from PIL import Image
         first = sorted(frames.glob("*.png"))
-        calls.append(Image.open(first[0]).width)  # frames go to RIFE at native crop size
+        calls.append(real_size[0])  # frames go to RIFE at native crop size (padded to a multiple of 32)
+        assert Image.open(first[0]).width % 32 == 0
         assert len(first) >= 30 and audio.exists()
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-framerate", "24", "-i", str(frames / "%06d.png"), "-i", str(audio),
                         "-vf", f"fps=60,scale={size[0]}:{size[1]}", "-c:a", "pcm_s16le", "-shortest", str(target)], check=True)
@@ -101,3 +102,20 @@ def test_a_failed_rife_shot_falls_back_to_blending(tmp_path, monkeypatch):
     row = rs.render_shot(shot, {"mode": "track", "x_start": 0.5, "x_end": 0.5}, (0, 0, 1, 1), (180, 320),
                          tmp_path / "shot.mkv", use_rife=True)
     assert row["interpolation"] == "blend" and "rejected" in row["fallback"]
+
+
+def test_dark_garbage_frames_are_rejected_too():
+    import numpy as np
+    from PIL import Image
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        src, bad = Path(tmp) / "in", Path(tmp) / "bad"
+        src.mkdir(); bad.mkdir()
+        rng = np.random.default_rng(1)
+        base = (rng.integers(0, 40, (90, 160, 3))).astype(np.uint8)  # a dark scene
+        for i in range(4):
+            Image.fromarray(np.roll(base, i, axis=1)).save(src / f"{i + 1:06d}.png")
+        for k in range(10):  # every output frame smeared into rows, like run 16's Conjuring shot
+            Image.fromarray(np.repeat(base[k % 90:k % 90 + 1], 90, axis=0)).save(bad / f"{k + 1:08d}.png")
+        assert not rs.rife_frames_ok(src, bad)[0]

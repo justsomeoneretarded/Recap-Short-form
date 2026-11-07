@@ -54,3 +54,11 @@ def test_long_narration_before_an_early_movie_line_uses_more_footage_not_a_freez
         assert shot["duration"] <= (shot["end"] - shot["start"]) / e.MIN_SPEED + 0.06
     for prev, nxt in zip(shots, shots[1:]):
         assert nxt["timeline_start"] == pytest.approx(prev["timeline_start"] + prev["duration"], abs=0.02)
+
+
+def test_text_cards_in_the_footage_are_never_used():
+    arc = {"scenes": [{"clip_id": "A", "clip_start": 0.0, "clip_end": 60.0, "peaks": [], "avoid": [[20.0, 32.0]]}]}
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 40.0}]}
+    edl = e.build_edl(arc, voice, {"A": "a.mp4"}, cuts={"A": [5, 10, 15, 25, 35, 45, 50]})
+    assert all(s["end"] <= 20.0 + 1e-6 or s["start"] >= 32.0 - 1e-6 for s in edl["shots"])
+    assert edl["duration"] == pytest.approx(40.0, abs=0.05)

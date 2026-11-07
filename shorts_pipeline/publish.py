@@ -79,6 +79,9 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
         lufs, peak = out["integrated_lufs"], out["true_peak_db"]
         add(f"{aspect}: loudness", "pass" if abs(lufs + 14) <= 1 and peak <= -0.8 else "warn",
             f"{lufs:.1f} LUFS, {peak:.1f} dBTP (target −14 / −1)")
+        streaks = out.get("streaked_shots") or []
+        add(f"{aspect}: clean picture", "pass" if not streaks else "fail",
+            "no damaged frames" if not streaks else f"shots {streaks[:8]} look smeared or corrupted")
         modes = out.get("modes", {})
         fit_share = modes.get("fit", 0) / max(1, sum(modes.values()))
         add(f"{aspect}: framing", "pass" if fit_share <= 0.35 else "warn",

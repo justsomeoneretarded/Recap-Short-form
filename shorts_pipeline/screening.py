@@ -101,10 +101,15 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     subtitle_frames, subtitle_texts, inside_picture = 0, set(), 0
     corner: Counter = Counter()
     logos: Counter = Counter()
-    promo_frames, promo_times = 0, []
+    promo_frames, promo_times, card_times = 0, [], []
     ax0, ay0, ax1, ay1 = active
     for when, rows, frame in samples:
         has_sub = False
+        # A frame full of text (an opening title crawl, a letter, a news screen) is a text card:
+        # 4+ text lines, or text covering a large part of the picture.
+        area = sum((b[2] - b[0]) * (b[3] - b[1]) for b in (_norm(r["box"], frame) for r in rows))
+        if len(rows) >= 4 or area > 0.06:
+            card_times.append(round(when, 1))
         for row in rows:
             x0, y0, x1, y1 = _norm(row["box"], frame)
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
@@ -132,6 +137,7 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     return {"frames": len(samples), "subtitle_frames": subtitle_frames, "subtitle_share": round(subtitle_frames / n, 3),
             "distinct_subtitle_lines": len(subtitle_texts), "subtitle_boxes_inside_picture": inside_picture,
             "watermarks": watermarks, "inner_watermarks": inner_marks, "promo_frames": promo_frames,
+            "text_card_times": sorted(set(card_times)),
             "promo_times": sorted(set(promo_times))}
 
 
@@ -211,7 +217,10 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
         reasons.append(f"low resolution ({info.get('height')}p; needs {MIN_HEIGHT}p+)")
     for mark in text.get("inner_watermarks", []):
         reasons.append(f"channel watermark inside the picture: '{mark['text']}'")
+    if text.get("text_card_times"):
+        notes.append(f"text cards at {text['text_card_times'][:6]} s — never used in a Short")
     return {"accept": not reasons, "reasons": reasons, "notes": notes, "usable": usable, "active": active, "text": text,
+            "avoid": [[max(0.0, t - every), t + every] for t in text.get("text_card_times", [])],
             "mirror_check": flip, "cutting": cutting, "width": info.get("width"), "height": info.get("height"),
             "fps": info.get("fps"), "duration": info.get("duration")}
 

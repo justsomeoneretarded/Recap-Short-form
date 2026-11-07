@@ -37,6 +37,7 @@ class Unit:
     alternates: list[str] = field(default_factory=list)
     clip_seconds: float = 0.0
     intensity: float = 0.5   # 0 calm talk … 1 fast action (from the clip's cutting rate)
+    avoid: list = field(default_factory=list)  # clip-time ranges never to show (text cards)
 
     @property
     def seconds(self) -> float:
@@ -83,7 +84,8 @@ def units_from(clips: list[dict], screening: dict[str, dict]) -> list[Unit]:
                 s, e = start + k * step, start + (k + 1) * step
                 units.append(Unit(clip["id"], clip.get("title", ""), s, e, max(0.0, piece["offset"] + s),
                                   piece["offset"] + e, score, height, [p for p in peaks if s <= p <= e],
-                                  clip_seconds=clip_seconds, intensity=intensity))
+                                  clip_seconds=clip_seconds, intensity=intensity,
+                                  avoid=[r for r in (report or {}).get("avoid") or [] if r[1] > s and r[0] < e]))
     return units
 
 
@@ -158,6 +160,7 @@ def describe(arc: list[Unit], target: float, number: int, movie: MovieTranscript
         "scenes": [{"clip_id": u.clip_id, "clip_title": u.clip_title, "clip_start": round(u.clip_start, 2),
                     "clip_end": round(u.clip_end, 2), "movie_start": round(u.movie_start, 1),
                     "movie_end": round(u.movie_end, 1), "peaks": sorted(set(round(p, 1) for p in u.peaks)),
+                    "avoid": u.avoid,
                     "alternates": u.alternates} for u in arc],
     }
 

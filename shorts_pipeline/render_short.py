@@ -65,10 +65,32 @@ def rife_frames_ok(src: Path, dst: Path, samples: int = 16) -> tuple[bool, str]:
         nearest = min(float(abs(go - ga).mean()), float(abs(go - gb).mean()))
         if nearest > 2.5 * between + 12:
             return False, f"frame {k} does not match its neighbours ({nearest:.0f} vs {between:.0f})"
+        # Structure, not brightness: in a dark scene garbage is close in brightness but not in shape.
+        likeness = max(_correlation(go, ga), _correlation(go, gb))
+        if likeness < min(_correlation(ga, gb), 0.9) - 0.25:
+            return False, f"frame {k} has a different picture structure (likeness {likeness:.2f})"
+        if _streakiness(go) > 2.0 * max(_streakiness(ga), _streakiness(gb), 1.0):
+            return False, f"frame {k} is smeared into horizontal streaks"
     return True, "ok"
 
 
-def _rife(frames: Path, audio: Path, target: Path, frames_out: int, size: tuple[int, int]) -> None:
+def _correlation(a, b) -> float:
+    import numpy as np
+    a, b = a - a.mean(), b - b.mean()
+    scale = float(np.sqrt((a * a).sum() * (b * b).sum()))
+    return float((a * b).sum() / scale) if scale > 1e-6 else 1.0
+
+
+def _streakiness(gray) -> float:
+    """Vertical over horizontal detail: about 1 for real pictures, far higher for row-smeared frames."""
+    import numpy as np
+    horizontal = float(np.abs(np.diff(gray, axis=1)).mean())
+    vertical = float(np.abs(np.diff(gray, axis=0)).mean())
+    return vertical / max(0.5, horizontal)
+
+
+def _rife(frames: Path, audio: Path, target: Path, frames_out: int, size: tuple[int, int],
+          real_size: tuple[int, int] | None = None) -> None:
     """Interpolate one shot's frames with rife-ncnn-vulkan on the CPU, check them, then scale and encode.
 
     PNG in and out: the JPEG round trip used for speed produced streaked, corrupted frames.
@@ -76,6 +98,11 @@ def _rife(frames: Path, audio: Path, target: Path, frames_out: int, size: tuple[
     renders the shot with motion blending instead.
     """
     threads = os.environ.get("SHORTS_RIFE_THREADS", f"2:{max(2, os.cpu_count() or 4)}:2")
+    if real_size is None:
+        from PIL import Image
+        with Image.open(next(iter(sorted(frames.glob("*.png"))))) as first:
+            real_size = first.size
+    real_w, real_h = real_size  # frames arrive padded to a multiple of 32; the padding is cut off below
     dst = frames.parent / "out"
     dst.mkdir(exist_ok=True)
     _run([os.environ["SHORTS_RIFE_BIN"], "-i", str(frames), "-o", str(dst), "-m", os.environ["SHORTS_RIFE_MODEL"],
@@ -84,7 +111,8 @@ def _rife(frames: Path, audio: Path, target: Path, frames_out: int, size: tuple[
     if not ok:
         raise RuntimeError(f"RIFE output rejected: {why}")
     _run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(dst / "%08d.png"), "-i", str(audio),
-          "-map", "0:v", "-map", "1:a", "-vf", f"scale={size[0]}:{size[1]}:flags=lanczos,format=yuv420p",
+          "-map", "0:v", "-map", "1:a",
+          "-vf", f"crop={real_w}:{real_h}:0:0,scale={size[0]}:{size[1]}:flags=lanczos,format=yuv420p",
           "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-c:a", "pcm_s16le", "-shortest", str(target)])
 
 
@@ -128,8 +156,8 @@ def _render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], t
     work_w, work_h = native_size(plan, info["width"], info["height"], active, out_w, out_h) if use_rife else size
     graph = filter_graph(plan, info["width"], info["height"], active, work_w, work_h, span, "0:v", "framed")
     timing = f"[framed]setpts=(PTS-STARTPTS)/{shot['speed']:.6f}"
-    if use_rife:
-        timing += f",fps={info.get('fps') or 24:.3f},format=yuv420p[v]"
+    if use_rife:  # padded to a multiple of 32 (RIFE's working grid); cropped back after interpolation
+        timing += f",fps={info.get('fps') or 24:.3f},pad=ceil(iw/32)*32:ceil(ih/32)*32:0:0,format=yuv420p[v]"
     elif how == "blend":
         # Motion-blended interpolation: every output frame is new (no duplicated frames).
         timing += f",framerate=fps={FPS}:interp_start=0:interp_end=255:scene=8,format=yuv420p[v]"
@@ -148,7 +176,7 @@ def _render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], t
             frames.mkdir()
             _run(cut + ["-map", "[v]", "-t", f"{shot['duration']:.4f}", str(frames / "%06d.png"),
                         "-map", "[a]", "-t", f"{shot['duration']:.4f}", "-c:a", "pcm_s16le", str(sound)])
-            _rife(frames, sound, target, max(2, round(shot["duration"] * FPS)), size)
+            _rife(frames, sound, target, max(2, round(shot["duration"] * FPS)), size, real_size=(work_w, work_h))
     else:
         _run(cut + ["-map", "[v]", "-map", "[a]", "-t", f"{shot['duration']:.4f}", "-c:v", "libx264",
                     "-preset", "veryfast", "-crf", "14", "-c:a", "pcm_s16le", str(target)])
@@ -254,6 +282,24 @@ def render_parts(edl: dict, plans: dict, aspect: str, indexes: list[int], folder
     return rows
 
 
+def streaked_shots(video: Path, edl: dict) -> list[int]:
+    """Shots whose middle frame in the finished video is smeared into horizontal streaks."""
+    import numpy as np
+    bad = []
+    for i, shot in enumerate(edl["shots"]):
+        t = shot["timeline_start"] + shot["duration"] / 2
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", str(video), "-frames:v", "1",
+                              "-vf", "scale=160:-2,format=gray", "-f", "rawvideo", "-"], capture_output=True).stdout
+        if not raw:
+            continue
+        info_w = 160
+        frame = np.frombuffer(raw, np.uint8).astype(np.float32)
+        frame = frame[: frame.size // info_w * info_w].reshape(-1, info_w)
+        if _streakiness(frame) > 4.0:
+            bad.append(i)
+    return bad
+
+
 def finish_aspect(edl: dict, voiceover: dict, aspect: str, parts_folder: Path, captions: Path | None,
                   outdir: Path, rows: list[dict]) -> dict:
     """Join every shot of one aspect, add the narrator, master, burn captions → final-<aspect>.mp4."""
@@ -274,6 +320,7 @@ def finish_aspect(edl: dict, voiceover: dict, aspect: str, parts_folder: Path, c
         reasons[row["why"]] = reasons.get(row["why"], 0) + 1
     return {"path": str(final), "duration": info["duration"], "width": info["width"], "height": info["height"],
             "fps": info["fps"], **audio, "duplicate_frames": duplicate_frame_ratio(final),
+            "streaked_shots": streaked_shots(final, edl),
             "modes": {m: sum(1 for x in rows if x["mode"] == m) for m in ("track", "fit")},
             "interpolation": sorted({x["interpolation"] for x in rows}), "interpolation_reasons": reasons,
             "shot_rows": [{"index": x.get("index"), "fallback": x["fallback"]} for x in rows if x.get("fallback")]}

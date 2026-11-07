@@ -27,8 +27,20 @@ def shot_changes(video: Path, start: float, end: float, threshold: float = 12.0)
     return sorted(t for t in times if start < t < end)
 
 
-def _pieces(a: float, b: float, cuts: list[float]) -> list[tuple[float, float]]:
-    """Split [a, b] at shot changes, then into pieces no longer than MAX_SHOT."""
+def _pieces(a: float, b: float, cuts: list[float], avoid: list | None = None) -> list[tuple[float, float]]:
+    """Split [a, b] at shot changes, then into pieces no longer than MAX_SHOT; skip `avoid` ranges."""
+    if avoid:
+        pieces = []
+        start = a
+        for lo, hi in sorted(avoid):
+            if hi <= start or lo >= b:
+                continue
+            if lo - start >= 0.5:
+                pieces += _pieces(start, lo, cuts)
+            start = max(start, hi)
+        if b - start >= 0.5:
+            pieces += _pieces(start, b, cuts)
+        return pieces
     edges = [a] + [c for c in cuts if a + 0.3 < c < b - 0.3] + [b]
     pieces = []
     for s, e in zip(edges, edges[1:]):
@@ -105,7 +117,7 @@ def _extra_footage(arc: dict, scene_index: int, footage: dict, cuts: dict, used:
             windows = [(scene["clip_start"], scene["clip_end"])] if allow_repeat else \
                 _free(scene["clip_start"], scene["clip_end"], used.get(scene["clip_id"], []))
             for a, b in windows:
-                for s, e in _pieces(a, b, cuts.get(scene["clip_id"], [])):
+                for s, e in _pieces(a, b, cuts.get(scene["clip_id"], []), scene.get("avoid")):
                     take = min(e - s, MAX_SHOT, need)
                     if take < 0.5 and need > 0.5:
                         continue
@@ -150,7 +162,7 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
         if b - a < gap / (1 / MIN_SPEED):  # not enough fresh footage: reuse the scene from its start
             a = scene["clip_start"]
         clip_cuts = cuts.get(clip_id, [])
-        pieces = _pieces(a, max(a + 0.5, b), clip_cuts)
+        pieces = _pieces(a, max(a + 0.5, b), clip_cuts, scene.get("avoid"))
         available = sum(e - s for s, e in pieces)
         speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
         need = gap * speed
