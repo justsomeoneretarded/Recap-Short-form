@@ -135,8 +135,11 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
         from .story import beat_searches, plan_stories
         wanted = max(1, min(5, int(os.environ.get('MAX_STORIES') or 5)))
         try:
-            planned = plan_stories(google, research, transcript, plot, length, count=wanted + 1)
-            hints = beat_searches(planned) or None
+            planned, broad = plan_stories(google, research, transcript, plot, length, count=wanted + 1, with_searches=True)
+            # General searches (action, fights, compilations …) find most real clips; the right seconds are
+            # cut out of long uploads later. Then each beat's own search.
+            hints = list(dict.fromkeys(broad + beat_searches(planned))) or None
+            print(f"[discover] searches from Gemini: {hints}", file=sys.stderr, flush=True)
             for story in planned:
                 print(f"[discover] story: {story['title']} — " + " → ".join(b['name'] for b in story['beats']),
                       file=sys.stderr, flush=True)

@@ -38,8 +38,9 @@ STORY_SCHEMA = {"type": "object", "properties": {"stories": {"type": "array", "i
         "search": {"type": "string"},
         "key_moment": {"type": "string"}},
         "required": ["name", "role", "what_we_see", "start", "end", "search"]}}},
-    "required": ["title", "spine", "hook_idea", "ending_idea", "beats"]}}},
-    "required": ["stories"]}
+    "required": ["title", "spine", "hook_idea", "ending_idea", "beats"]}},
+    "broad_searches": {"type": "array", "items": {"type": "string"}}},
+    "required": ["stories", "broad_searches"]}
 
 PLANNER = """You plan viral movie-recap YouTube Shorts (about {seconds} seconds each) for {movie}.
 A great Short tells ONE gripping story told across several scenes of the movie, not one scene described.
@@ -73,6 +74,10 @@ Rules for each story:
 - ending_mode and ending_idea: how it ends (see above) and the last line idea, ideally looping to the opening.
 - Different stories must not share beats.
 Plan up to {count} different stories, best first.
+Also give broad_searches: 6-10 short, general searches people type to find ANY footage of this movie on YouTube,
+fitted to this movie's genre (for an action film things like action, fights, kills, best action, shootout; for a horror
+film scariest moments, jump scares; compilations, "all ... scenes", best moments). Movie title + 1-3 words; most of them
+WITHOUT the word "scene". Long compilations are welcome: the right seconds are cut out of them later.
 
 PLOT:
 {plot}
@@ -143,15 +148,28 @@ def clean_stories(raw: dict, runtime: float) -> list[dict]:
     return stories
 
 
+def broad_searches(raw: dict, title: str, limit: int = 10) -> list[str]:
+    """Gemini's general searches for the movie, cleaned: each names the movie, 2-8 words, no repeats."""
+    out: list[str] = []
+    for q in (raw or {}).get("broad_searches") or []:
+        q = re.sub(r"\s+", " ", str(q)).strip(" .\"'")
+        if title.lower() not in q.lower():
+            q = f"{title} {q}"
+        if 2 <= len(q.split()) <= 8 and q.lower() not in (x.lower() for x in out):
+            out.append(q)
+    return out[:limit]
+
+
 def plan_stories(gemini, research: dict, transcript: MovieTranscript, plot: str, seconds: float,
-                 count: int = 5) -> list[dict]:
+                 count: int = 5, *, with_searches: bool = False):
     movie = research["movie"]
     runtime = float(movie.get("runtime_minutes") or 0) * 60 or (transcript.cues[-1].end if transcript.cues else 0)
     prompt = PLANNER.format(seconds=round(seconds), movie=f"{movie['title']} ({movie.get('year')})",
                             min_beats=MIN_BEATS, max_beats=MAX_BEATS, min_s=MIN_BEAT_SECONDS, max_s=MAX_BEAT_SECONDS,
                             count=count, plot=plot[:20000] or "(no plot)", timeline=timeline(transcript))
     raw = gemini.generate("smart", [{"text": prompt}], schema=STORY_SCHEMA, temperature=0.5)
-    return clean_stories(raw, runtime)[:count]
+    stories = clean_stories(raw, runtime)[:count]
+    return (stories, broad_searches(raw, movie["title"])) if with_searches else stories
 
 
 def beat_searches(stories: list[dict]) -> list[str]:

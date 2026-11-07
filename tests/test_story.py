@@ -156,3 +156,23 @@ def test_scene_clips_found_by_generic_searches_are_matched_by_title():
     g = FakeGemini([{"beats": [{"beat": 1, "uploads": [0]}, {"beat": 9, "uploads": [1]}]}])
     ranked = st.likely_uploads(g, story, found, {"title": "John Wick", "year": 2014})
     assert ranked[1][0] == "club" and ranked[0] == ["gas"]
+
+
+def test_broad_searches_name_the_movie_and_are_not_hardcoded():
+    raw = {"broad_searches": ["action", "Havoc fight scenes", "Havoc best action", "havoc fight scenes", "x" * 3,
+                              "a very long search with far too many words in it to be useful"]}
+    assert st.broad_searches(raw, "Havoc") == ["Havoc action", "Havoc fight scenes", "Havoc best action", "Havoc xxx"]
+
+
+def test_plan_can_return_the_general_searches_too():
+    transcript = MovieTranscript.from_subtitles(SRT)
+
+    class Fake:
+        def generate(self, role, parts, **kw):
+            return {"broad_searches": ["kills", "Havoc shootout"],
+                    "stories": [{"title": "T", "spine": "", "hook_idea": "", "ending_idea": "",
+                                 "beats": [beat("a", "01:00", "01:30"), beat("b", "10:00", "10:30"),
+                                           beat("c", "20:00", "20:30")]}]}
+    stories, searches = st.plan_stories(Fake(), {"movie": {"title": "Havoc", "year": 2025, "runtime_minutes": 100}},
+                                        transcript, "", 150, with_searches=True)
+    assert len(stories) == 1 and searches == ["Havoc kills", "Havoc shootout"]
