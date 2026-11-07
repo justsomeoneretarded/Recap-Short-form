@@ -12,7 +12,7 @@ def test_generate_shorts_has_only_the_four_inputs():
     workflow=_load('generate-shorts.yml')
     assert workflow['name']=='Generate Shorts'
     inputs=workflow['on']['workflow_dispatch']['inputs']
-    assert set(inputs)=={'movie','narrator','length','speech_model'}
+    assert set(inputs)=={'movie','narrator','length','speech_model','max_stories'}
     assert inputs['narrator']['options']==['warguy','kit-laser','female']
     assert inputs['speech_model']['options']==['original','turbo','nano']
     assert 'pull_request' not in workflow['on'] and 'push' not in workflow['on']
