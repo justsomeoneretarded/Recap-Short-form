@@ -227,3 +227,19 @@ def test_writer_brief_shows_what_is_on_screen_and_asks_for_extras():
         extras = True
     assert "cover_words" in w.schema_for(Strong())["properties"] and "pinned_comment" in w.system_for(Strong())
     assert "cover_words" not in w.schema_for(object())["properties"]
+
+
+def test_zero_or_daily_limits_are_never_retried_and_minute_limits_cool_down():
+    zero = Reply(429, text='{"error": {"message": "Quota exceeded for metric: generate_content_free_tier_requests, limit: 0", '
+                          '"details": [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}, '
+                          '{"retryDelay": "40s"}]}}')
+    minute = Reply(429, text='{"error": {"details": [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", '
+                            '"quotaValue": "10"}]}, {"retryDelay": "40s"}]}}')
+    waits = []
+    c = g.Client("k", session=Session({"gemini-3.5-flash": [zero], "gemini-2.5-flash": [minute],
+                                       "gemini-3.5-flash-lite": [answer({"ok": 1})]}), sleep=waits.append)
+    assert c.generate("smart", [{"text": "x"}], schema={"type": "object"}) == {"ok": 1}
+    assert "gemini-3.5-flash" in c.exhausted and "gemini-2.5-flash" not in c.exhausted
+    assert c.cooldown["gemini-2.5-flash"] > 0 and waits == []  # no long waits: next model straight away
+    assert c.chain("smart")[0] == "gemini-3.5-flash-lite"      # the model that answered is tried first
+    assert "limit is 0" in c.usage()["errors"]["gemini-3.5-flash"]

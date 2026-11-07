@@ -33,7 +33,8 @@ EXCLUDE = re.compile(r"tts|image|live|audio|native|embedding|robotics|computer|l
 SAFETY = [{"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in (
     "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT",
     "HARM_CATEGORY_DANGEROUS_CONTENT")]  # movie violence is described, not promoted
-MAX_WAIT = 70.0        # longest per-minute rate-limit wait before giving up on a model
+MAX_WAIT = 65.0        # longest per-minute rate-limit wait before giving up on Gemini for a request
+MAX_MODELS_PER_REQUEST = 6
 MAX_VIDEO_SECONDS = 20 * 60
 
 
@@ -91,7 +92,9 @@ class Client:
         self.sleep = sleep
         self.max_calls = max_calls if max_calls is not None else int(os.environ.get("SHORTS_GEMINI_MAX_CALLS", "80"))
         self.calls: list[dict] = []
-        self.exhausted: set[str] = set()
+        self.exhausted: set[str] = set()      # no quota left today (or not available) for this key
+        self.cooldown: dict[str, float] = {}   # per-minute limit hit: usable again after this time
+        self.good: dict[str, str] = {}         # the model that last answered, per role: tried first
         self._models: dict[str, list[str]] | None = None
 
     # ------------------------------------------------------------------ plumbing
@@ -129,7 +132,10 @@ class Client:
             names += models.get("light", [])
         elif role == "light":
             names += models.get("smart", [])
-        return [n for n in dict.fromkeys(names) if n not in self.exhausted]
+        if self.good.get(role) in names:
+            names.insert(0, self.good[role])
+        now = time.time()
+        return [n for n in dict.fromkeys(names) if n not in self.exhausted and self.cooldown.get(n, 0) <= now]
 
     def _post(self, model: str, method: str, body: dict) -> dict:
         """One request with retries. Daily quota → model marked exhausted; per-minute → wait."""
@@ -145,14 +151,18 @@ class Client:
                 usage = data.get("usageMetadata") or {}
                 row.update(prompt_tokens=usage.get("promptTokenCount", 0), output_tokens=usage.get("candidatesTokenCount", 0))
                 return data
-            text = reply.text[:2000]
+            text = reply.text[:4000]
             if reply.status_code == 429:
-                wait = _retry_delay(text)
-                if "PerDay" in text or "per day" in text.lower() or wait is None or wait > MAX_WAIT or attempt == 3:
+                wait, daily, why = quota_problem(text)
+                row["error"] = why
+                if daily:  # nothing left today for this key on this model: never ask it again
                     self.exhausted.add(model)
-                    raise _Exhausted(f"{model}: quota used up ({text[:160]})")
-                self.sleep(wait + 1)
-                continue
+                    raise _Exhausted(f"{model}: {why}")
+                self.cooldown[model] = time.time() + wait
+                if attempt == 0 and wait <= 15:  # a short per-minute pause: wait once, same model
+                    self.sleep(wait + 1)
+                    continue
+                raise _Exhausted(f"{model}: {why}")
             if reply.status_code in (500, 502, 503, 504) and attempt < 3:
                 self.sleep(4 * 2 ** attempt)
                 continue
@@ -167,8 +177,21 @@ class Client:
                  temperature: float = 0.4, seed: int | None = None, tools: list | None = None,
                  low_media: bool = False) -> dict | str:
         """Text (or parsed JSON when `schema` is given) from the best model still available."""
+        for round_ in range(2):
+            try:
+                return self._generate(role, parts, system=system, schema=schema, temperature=temperature, seed=seed,
+                                      tools=tools, low_media=low_media)
+            except GeminiUnavailable:
+                # Every model is only pausing for its per-minute limit: wait for the first one, once.
+                waiting = [t for m, t in self.cooldown.items() if m not in self.exhausted and t > time.time()]
+                if round_ or not waiting or min(waiting) - time.time() > MAX_WAIT or self.chain(role):
+                    raise
+                self.sleep(min(waiting) - time.time() + 1)
+        raise GeminiUnavailable("no Gemini model answered")
+
+    def _generate(self, role, parts, *, system, schema, temperature, seed, tools, low_media):
         errors = []
-        for model in self.chain(role):
+        for model in self.chain(role)[:MAX_MODELS_PER_REQUEST]:
             config: dict = {"temperature": temperature}
             if seed is not None:
                 config["seed"] = seed
@@ -196,6 +219,7 @@ class Client:
                         raise
                 text = _text(data)
                 self.calls[-1]["role"] = role
+                self.good[role] = model
                 return _parse_json(text) if schema is not None else text
             except (_Exhausted, _BadRequest) as exc:
                 errors.append(str(exc)[:200])
@@ -251,7 +275,11 @@ class Client:
         for call in self.calls:
             models[call["model"]] = models.get(call["model"], 0) + 1
         chosen = {role: (names[:2] if names else []) for role, names in (self._models or {}).items()}
-        return {"requests": len(self.calls), "by_model": models, "exhausted": sorted(self.exhausted),
+        errors = {}
+        for call in self.calls:
+            if call.get("error"):
+                errors.setdefault(call["model"], call["error"])
+        return {"requests": len(self.calls), "by_model": models, "exhausted": sorted(self.exhausted), "errors": errors,
                 "seconds": round(sum(c["seconds"] for c in self.calls), 1), "models": chosen}
 
 
@@ -282,6 +310,17 @@ def client() -> Client | None:
 def _retry_delay(text: str) -> float | None:
     found = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', text)
     return float(found.group(1)) if found else 30.0
+
+
+def quota_problem(text: str) -> tuple[float, bool, str]:
+    """(seconds to wait, is it a daily / zero limit, short reason) from a 429 answer."""
+    ids = re.findall(r'"quotaId":\s*"([^"]+)"', text)
+    values = re.findall(r'"quotaValue":\s*"?(\d+)', text) + re.findall(r"limit:\s*(\d+)", text)
+    daily = "PerDay" in text or "per day" in text.lower() or any(v == "0" for v in values)
+    wait = _retry_delay(text) or 30.0
+    reason = ("free limit is 0 for this model" if any(v == "0" for v in values) else
+              "daily free limit used up" if daily else f"per-minute limit, retry in {wait:.0f}s")
+    return wait, daily, reason + (f" [{', '.join(sorted(set(ids)))[:160]}]" if ids else "")
 
 
 def _text(data: dict) -> str:
@@ -373,7 +412,7 @@ class FallbackWriter:
                 return reply
             except GeminiUnavailable as exc:
                 self.notes.append(f"Gemini unavailable, local writer used: {str(exc)[:160]}")
-                if "quota" in str(exc) or "budget" in str(exc) or "no Gemini model" in str(exc) or "network" in str(exc):
+                if any(k in str(exc) for k in ("daily", "limit is 0", "budget", "no Gemini model", "network")):
                     self._primary_ok = False
             except ValueError as exc:
                 self.notes.append(f"Gemini answer unusable, local writer used once: {str(exc)[:120]}")
