@@ -166,7 +166,22 @@ def _extra_footage(arc: dict, scene_index: int, footage: dict, cuts: dict, used:
                         return
 
 
-def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | None = None, similar=None) -> dict:
+def in_order(pieces: list[tuple[float, float]], need: float) -> list[tuple[float, float]]:
+    """The director's pieces in its order, until `need` seconds are covered (the last one trimmed)."""
+    out, total = [], 0.0
+    for s, e in pieces:
+        if total >= need - 0.05:
+            break
+        take = min(e - s, need - total)
+        if take < 0.5 and out:
+            break
+        out.append((s, s + take))
+        total += take
+    return out
+
+
+def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | None = None, similar=None,
+              director: dict | None = None) -> dict:
     """Shots on the output timeline: {clip_id, source, start, end, speed, timeline_start, duration, audio}."""
     cuts = cuts if cuts is not None else {}
     shots: list[dict] = []
@@ -204,11 +219,22 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
         pieces = _pieces(a, max(a + 0.5, b), clip_cuts, scene.get("avoid"))
         if not pieces:  # everything here is marked to avoid: the scene's own footage beats no picture
             pieces = _pieces(a, max(a + 0.5, b), clip_cuts)
-        available = sum(e - s for s, e in pieces)
-        speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
-        need = gap * speed
-        picked = choose(pieces, need, scene.get("peaks", []), moments=scene.get("moments"), text=beat.get("text", ""),
-                        similar=similar)
+        chosen_by_director = []
+        for lo, hi in (director or {}).get(beat["id"], []):  # the moments that show what this sentence says
+            lo, hi = max(lo, scene["clip_start"]), min(hi, scene["clip_end"])
+            if hi - lo >= 0.5 and not borrowed:
+                chosen_by_director += _pieces(lo, hi, clip_cuts, scene.get("avoid"))
+        if sum(e - s for s, e in chosen_by_director) >= 0.6 * gap:
+            available = sum(e - s for s, e in chosen_by_director)
+            speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
+            need = gap * speed
+            picked = in_order(chosen_by_director, need)
+        else:
+            available = sum(e - s for s, e in pieces)
+            speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
+            need = gap * speed
+            picked = choose(pieces, need, scene.get("peaks", []), moments=scene.get("moments"), text=beat.get("text", ""),
+                            similar=similar)
         cursor = start_t
         for s, e in picked:
             length = (e - s) / speed

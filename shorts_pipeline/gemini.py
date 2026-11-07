@@ -788,3 +788,48 @@ def picture_check(gemini: Client, brief: dict, script: dict) -> list[str]:
     reply = gemini.generate("light", [{"text": prompt}], schema=PICTURE_SCHEMA, temperature=0.1)
     return [f'not on screen: "{p["sentence"][:140]}" ({p.get("why", "")[:100]})'
             for p in (reply.get("problems") or [])[:6] if p.get("sentence")]
+
+
+# ======================================================================== director: which moments under which sentence
+
+SHOTS_SCHEMA = {"type": "object", "properties": {"shots": {"type": "array", "items": {"type": "object", "properties": {
+    "beat": {"type": "string"}, "moments": {"type": "array", "items": {"type": "integer"}}},
+    "required": ["beat", "moments"]}}}, "required": ["shots"]}
+
+
+def shot_list(gemini: Client, arc: dict, voiceover: dict) -> dict[str, list[tuple[float, float]]]:
+    """For every narration sentence, the moments of its scene that show what it says, in order (clip
+    seconds). The edit plays these first, so the picture matches the words."""
+    scenes, keyed = [], {}
+    for i, scene in enumerate(arc.get("scenes") or []):
+        rows = []
+        for m in scene.get("moments") or []:
+            s, e = max(m["start"], scene["clip_start"]), min(m["end"], scene["clip_end"])
+            if e - s >= 0.8:
+                key = len(keyed)
+                keyed[key] = (i, s, e)
+                rows.append({"k": key, "seconds": round(e - s, 1), "what": m["what"][:140]})
+        scenes.append({"scene": i, "moments": rows})
+    if not keyed:
+        return {}
+    beats = [{"beat": b["id"], "scene": b["scene"], "seconds": round(b.get("duration") or 0, 1), "says": b.get("text", "")[:300]}
+             for b in voiceover.get("beats") or [] if b.get("kind") == "narration"]
+    prompt = ("You are the editor of a movie-recap Short. For every narration beat, choose the moments of ITS OWN scene "
+              "to show while it is spoken, in the order to show them, adding up to about its seconds. The picture must "
+              "show what the narration says at that point (the person, the action, the object). Prefer strong moments; "
+              "never use a moment twice; skip moments where nothing happens.\nSCENES:\n" +
+              json.dumps(scenes, ensure_ascii=False) + "\nNARRATION BEATS:\n" + json.dumps(beats, ensure_ascii=False))
+    reply = gemini.generate("light", [{"text": prompt}], schema=SHOTS_SCHEMA, temperature=0.2)
+    scene_of = {b["id"]: b["scene"] for b in voiceover.get("beats") or []}
+    out: dict[str, list[tuple[float, float]]] = {}
+    used: set[int] = set()
+    for row in reply.get("shots") or []:
+        beat = str(row.get("beat"))
+        ranges = []
+        for k in row.get("moments") or []:
+            if k in keyed and k not in used and keyed[k][0] == scene_of.get(beat):
+                used.add(k)
+                ranges.append((keyed[k][1], keyed[k][2]))
+        if ranges:
+            out[beat] = ranges
+    return out

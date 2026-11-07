@@ -339,3 +339,15 @@ def test_picture_check_names_sentences_that_are_not_on_screen():
     notes = g.picture_check(c, brief, script)
     assert notes and notes[0].startswith('not on screen: "Lorraine plunges')
     assert g.picture_check(c, {"scenes": [{"scene": 0}]}, script) == []  # nothing watched: nothing to check
+
+
+def test_shot_list_maps_sentences_to_their_own_scenes_moments():
+    arc = {"scenes": [{"clip_start": 10, "clip_end": 40, "moments": [
+        {"start": 12, "end": 16, "what": "a man walks"}, {"start": 30, "end": 35, "what": "he smashes the floor"}]},
+        {"clip_start": 0, "clip_end": 20, "moments": [{"start": 2, "end": 6, "what": "a car"}]}]}
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "duration": 6, "text": "He smashes the floor."},
+                       {"id": "b1", "kind": "narration", "scene": 1, "duration": 4, "text": "A car waits."}]}
+    c = client({"gemini-3.5-flash-lite": [answer({"shots": [{"beat": "b0", "moments": [1, 2]},
+                                                             {"beat": "b1", "moments": [2]}]})]})
+    shots = g.shot_list(c, arc, voice)
+    assert shots == {"b0": [(30, 35)], "b1": [(2, 6)]}  # a moment from another scene is never used for b0

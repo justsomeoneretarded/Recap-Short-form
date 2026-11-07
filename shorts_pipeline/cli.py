@@ -518,7 +518,9 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         arc = arcs[voiceover['arc']]
         footage = _footage([s['clip_id'] for s in arc['scenes']], screened, workdir)
         cuts = {s['clip_id']: shot_changes(Path(footage[s['clip_id']]), s['clip_start'], s['clip_end']) for s in arc['scenes']}
-        edl = build_edl(arc, voiceover, footage, cuts, similar=_similarity(arc, voiceover))
+        director = _director(arc, voiceover)
+        edl = build_edl(arc, voiceover, footage, cuts, similar=_similarity(arc, voiceover), director=director)
+        edl['director'] = {k: [list(r) for r in v] for k, v in director.items()}
         plans = plan_shots(edl, screened)
         for shot in edl['shots']:
             shot.pop('source', None)  # machine-specific; each render machine downloads its own copy
@@ -526,6 +528,19 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         rows.append({'arc': voiceover['arc'], 'shots': edl['shot_count'],
                      'moving_shots': sum(1 for p in plans.values() if p['motion'] >= 2.5)})
     return {'planned': rows}
+
+
+def _director(arc: dict, voiceover: dict) -> dict:
+    """Gemini's shot list (which watched moments go under which sentence); {} without Gemini."""
+    from . import gemini as gem
+    google = gem.client()
+    if google is None or not any(s.get('moments') for s in arc['scenes']):
+        return {}
+    try:
+        return gem.shot_list(google, arc, voiceover)
+    except gem.GeminiUnavailable as exc:
+        print(f'No director pass (edit picks shots itself): {str(exc)[:120]}', file=sys.stderr)
+        return {}
 
 
 def _similarity(arc: dict, voiceover: dict):

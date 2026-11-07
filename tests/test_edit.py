@@ -72,3 +72,12 @@ def test_narration_gets_footage_even_when_the_whole_clip_is_marked_to_avoid():
                         "text": "x"}]}
     edl = build_edl(arc, voice, {"c": "/c.mp4"}, {})
     assert abs(sum(s["duration"] for s in edl["shots"]) - 20.0) < 0.1
+
+
+def test_director_moments_play_in_its_order_under_their_sentence():
+    from shorts_pipeline.edit import build_edl
+    arc = {"id": "a", "scenes": [{"clip_id": "c", "clip_start": 0.0, "clip_end": 60.0, "peaks": [], "avoid": []}]}
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 4.0,
+                        "text": "He smashes the floor."}]}
+    edl = build_edl(arc, voice, {"c": "/c.mp4"}, {}, director={"b0": [(40.0, 42.0), (10.0, 12.0)]})
+    assert [(s["start"], s["end"]) for s in edl["shots"]] == [(40.0, 42.0), (10.0, 12.0)]
