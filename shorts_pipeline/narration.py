@@ -348,11 +348,18 @@ def synthesize_voiceover(result: dict, footage: dict[str, str], arc: dict, narra
     return report
 
 
+def _mask(word: str) -> str:
+    """Swear words in captions keep their first letter: f***ing (the audio is the movie's own)."""
+    from .writer import PROFANITY
+    return PROFANITY.sub(lambda m: m.group(0)[0] + "*" * (len(m.group(0)) - 1), word)
+
+
 def write_short_captions(voiceover: dict, outdir: Path, *, aspect: str = "square") -> dict:
     """Reference-style captions: 1–3 bold words, lower-middle of the frame."""
     from .captions import write_captions
     width, height = (1080, 1080) if aspect == "square" else (1080, 1920)
-    plan = {"beats": [{"id": b["id"], "text": b["text"], "words": b["words"], "duration": b["duration"],
+    plan = {"beats": [{"id": b["id"], "text": " ".join(_mask(w) for w in b["text"].split()),
+                       "words": [{**w, "word": _mask(w["word"])} for w in b["words"]], "duration": b["duration"],
                        "timeline_start": b["timeline_start"], "timing_provenance": b.get("timing_provenance")}
                       for b in voiceover["beats"]]}
     return write_captions(plan, outdir, width, height, max_words=3, y=0.62 if aspect == "square" else 0.72,  # 9:16: under faces

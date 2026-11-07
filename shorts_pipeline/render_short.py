@@ -97,7 +97,8 @@ def _rife(frames: Path, audio: Path, target: Path, frames_out: int, size: tuple[
     Every result is checked against the real frames; a bad result raises, and the caller
     renders the shot with motion blending instead.
     """
-    threads = os.environ.get("SHORTS_RIFE_THREADS", f"2:{max(2, os.cpu_count() or 4)}:2")
+    # 2 processing threads, as in the Phase 0 test: more parallel CPU workers produced corrupted frames.
+    threads = os.environ.get("SHORTS_RIFE_THREADS", "1:2:2")
     if real_size is None:
         from PIL import Image
         with Image.open(next(iter(sorted(frames.glob("*.png"))))) as first:
@@ -251,9 +252,12 @@ def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertic
         active = tuple((screening.get(shot["clip_id"]) or {}).get("active", {}).get("box") or (0, 0, 1, 1))
         frames = sample(Path(shot["source"]), shot["start"], max(shot["start"] + 0.2, shot["end"]), 5)
         entry = {"active": active, "motion": motion(Path(shot["source"]), shot["start"], shot["end"] - shot["start"])}
+        logo = bool(((screening.get(shot["clip_id"]) or {}).get("text") or {}).get("watermarks"))
         for aspect in aspects:
             size = SIZES[aspect]
             entry[aspect] = plan_shot(frames, active, size[0] / size[1])
+            if logo and entry[aspect]["mode"] == "fit":
+                entry[aspect]["trim"] = 0.08  # corner logo: fit shots lose 8 % at every edge
         plans[str(i)] = entry
     return plans
 

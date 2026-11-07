@@ -196,3 +196,12 @@ def test_possessives_and_apostrophes_are_not_false_alarms():
     issues = w.check(script, b)["issues"]
     assert not any("names not in the brief" in i for i in issues)
     assert not any("quotes dialogue" in i for i in issues)
+
+
+def test_swearing_lines_cliches_and_camera_talk_are_handled():
+    assert not w.playable("You wanna start a war? You're a fucking spook!")
+    b = brief()
+    script = {"title": "Kate's Raid", "hook": "Agents storm a house.", "beats": [
+        {"scene": 0, "kind": "narration", "text": "Every second counts. The camera lingers on her face. Her jaw tightens."}]}
+    assert any("cliches" in i for i in w.check(script, b)["issues"])
+    assert "camera" not in " ".join(x.get("text", "") for x in w.cleanup(script, b)["beats"])

@@ -162,6 +162,11 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
     ah = int((active[3] - active[1]) * src_h) // 2 * 2
     base = f"[{label_in}]crop={aw}:{ah}:{ax}:{ay},setsar=1"
     if plan["mode"] == "fit":
+        trim = float(plan.get("trim") or 0.0)
+        if trim:  # cut off the edges where a channel logo sits
+            tw, th = int(aw * (1 - 2 * trim)) // 2 * 2, int(ah * (1 - 2 * trim)) // 2 * 2
+            base += f",crop={tw}:{th}:{(aw - tw) // 2}:{(ah - th) // 2}"
+            aw, ah = tw, th
         frac = float(plan.get("fit_window") or 1.0)
         if frac < 0.999:  # the wider window around the action, not the whole frame
             fw = max(2, int(aw * frac) // 2 * 2)

@@ -68,7 +68,8 @@ Rules:
 4. Present tense, third person, short spoken sentences, concrete nouns and verbs. Cause and effect: but, so, then.
 5. Use ONLY facts from the brief. Never invent names, numbers, objects or events. If unsure, describe the action plainly.
 6. Never quote or read out dialogue in narration (no quotation marks, no first person, never "X says ... Y asks ...").
-   Tell what happens and why it matters. Never repeat a sentence. Do not invent facial expressions or gestures. To let a real line play, add a beat
+   Tell what happens and why it matters. Never repeat a sentence. Do not invent facial expressions or gestures,
+   never mention the camera, and no padding phrases ("every second counts", "the tension builds"). To let a real line play, add a beat
    {"kind": "dialogue", "line": "<line id>"} using an id from playable_lines. Exactly 3, the most dramatic ones.
 7. Each scene's narration should be close to its word budget. Not shorter, not much longer.
 8. No filler: never say "in this movie", "little did he know", "meanwhile", "our hero", "stay tuned", "subscribe".
@@ -188,10 +189,18 @@ def plot_window(plot: str, start: float, end: float, runtime: float) -> tuple[st
     return so_far, _trim(" ".join(during), THIS_PART_CHARS)
 
 
+PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|motherfuck\w*|bitch\w*|cunt\w*|asshole\w*)\b", re.I)
+CLICHES = re.compile(r"\b(every (second|step|moment) counts|the tension (builds|rises|mounts)|the (room|air) falls silent|"
+                     r"laid bare|carr(y|ies) a weight|a mix of \w+ and \w+|danger is everywhere|"
+                     r"(face|eyes) (goes |go |turns? )?(pale|glisten\w*|narrow\w*)|jaw (tight\w*|clench\w*)|"
+                     r"voice (low|steady|trembl\w*)|the camera|cuts to|the screen|the scene shifts)\b", re.I)
+
+
 def playable(text: str) -> bool:
-    """A movie line worth hearing on its own: one speaker, a complete thought, 4–18 words."""
+    """A movie line worth hearing on its own: one speaker, a complete thought, 4–18 words, no swearing
+    (profanity in a Short's audio limits monetisation and reach)."""
     words = text.split()
-    return (4 <= len(words) <= 18 and not re.search(r"(^|\s)-\s|\[|\(|♪", text)
+    return (4 <= len(words) <= 18 and not re.search(r"(^|\s)-\s|\[|\(|♪", text) and not PROFANITY.search(text)
             and text.strip()[:1].isupper() and text.strip()[-1:] in ".!?")
 
 
@@ -302,6 +311,9 @@ def check(script: dict, brief: Brief) -> dict:
     says = len(re.findall(r"\b(?:says|asks|tells (?:him|her|them)|replies|admits)\b", full, re.I))
     if says > max(2, len(sentences) // 6):
         issues.append(f"retells the dialogue ({says}x says/asks) instead of the action")
+    cliches = sorted({m.group(0).lower() for m in CLICHES.finditer(full)})
+    if cliches:
+        issues.append(f"cliches or invented gestures: {', '.join(cliches[:5])}")
     off = {s: (words.get(s, 0), b) for s, b in brief.budgets.items() if abs(words.get(s, 0) - b) > 0.25 * b}
     total = sum(words.values())
     target = sum(brief.budgets.values())
@@ -380,6 +392,8 @@ def cleanup(script: dict, brief: Brief) -> dict:
                 key = sentence.lower()
                 if key in seen or (title and key.rstrip(".!") == title) or copies_dialogue(sentence, brief.lines):
                     continue
+                if re.search(r"\bthe camera\b|\bcuts to\b|\bthe scene shifts\b", sentence, re.I):
+                    continue  # describes the film, not the story
                 seen.add(key)
                 kept.append(sentence)
             if not kept:
@@ -422,7 +436,8 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
         fixed_check = check(fixed, brief)
         if fixed_check["score"] >= final_check["score"]:
             final, final_check = fixed, fixed_check
-    serious = [i for i in final_check["issues"] if i.startswith(("names not in the brief", "generic template"))]
+    serious = [i for i in final_check["issues"]
+               if i.startswith(("names not in the brief", "generic template", "retells the dialogue", "repeated"))]
     rejected = bool(serious) or final_check["score"] < 0.25
     return {"arc": arc["id"], "script": final, "check": final_check, "brief": brief.data,
             "rejected": rejected, "rejected_because": serious or (["low script score"] if rejected else []),

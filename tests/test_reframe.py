@@ -59,3 +59,10 @@ def test_filter_graph_renders_requested_size(tmp_path, mode):
     dims = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
                            "-of", "csv=p=0", str(out)], capture_output=True, text=True).stdout.strip()
     assert dims == "540,960"
+
+
+def test_fit_shots_trim_the_edges_when_the_clip_has_a_corner_logo():
+    from shorts_pipeline.reframe import filter_graph
+    plain = filter_graph({"mode": "fit"}, 1920, 1080, (0, 0, 1, 1), 1080, 1920, 2.0)
+    trimmed = filter_graph({"mode": "fit", "trim": 0.08}, 1920, 1080, (0, 0, 1, 1), 1080, 1920, 2.0)
+    assert "crop=1612:906" in trimmed and "crop=1612" not in plain
