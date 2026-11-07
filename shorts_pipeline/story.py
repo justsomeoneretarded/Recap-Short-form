@@ -56,6 +56,9 @@ Rules for each story:
 - A spine of {min_beats}-{max_beats} beats in movie order, each one CAUSING the next: e.g. a want or offer,
   a refusal, the consequence, the escalation, the realisation of who they messed with, the turn or return.
 - The beats may be far apart in the movie. Pick each beat for what it does in the story, never just for action.
+- The turning-point ACTIONS of the story must be beats themselves (the attack, the theft, the kill, the escape,
+  the discovery, the weapon dug up), not only the conversations about them: the viewer must SEE what the story
+  turns on. A story told only through people talking about events is a bad Short.
 - Each beat is a short stretch of the movie ({min_s:.0f}-{max_s:.0f} s) with clear visible action that a viewer
   understands with one sentence of narration. Give its start and end as mm:ss movie times taken from the
   subtitle timeline below (the dialogue of that stretch must be in it). Beats with no dialogue: estimate from
