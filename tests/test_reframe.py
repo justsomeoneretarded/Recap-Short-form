@@ -105,3 +105,16 @@ def test_side_by_side_filter_renders_a_square(tmp_path):
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=24", "-t", "1",
                     "-filter_complex", g, "-map", "[v]", "-frames:v", "1", str(out)], check=True)
     assert Image.open(out).size == (1080, 1080)
+
+
+
+def test_one_big_face_is_never_stacked_twice(monkeypatch):
+    import numpy as np
+    from shorts_pipeline import reframe as r
+    frames = [np.zeros((360, 640, 3), np.uint8) for _ in range(6)]
+    # A close-up wider than the 9:16 window, a stray second detection in one frame only.
+    boxes = [[(150, 40, 490, 330)]] * 5 + [[(150, 40, 490, 330), (20, 100, 60, 140)]]
+    calls = iter(boxes)
+    monkeypatch.setattr(r, "faces", lambda frame: next(calls))
+    plan = r.plan_shot(frames, (0.0, 0.0, 1.0, 1.0), 1080 / 1920)
+    assert plan["mode"] == "track"

@@ -62,3 +62,13 @@ def test_text_cards_in_the_footage_are_never_used():
     edl = e.build_edl(arc, voice, {"A": "a.mp4"}, cuts={"A": [5, 10, 15, 25, 35, 45, 50]})
     assert all(s["end"] <= 20.0 + 1e-6 or s["start"] >= 32.0 - 1e-6 for s in edl["shots"])
     assert edl["duration"] == pytest.approx(40.0, abs=0.05)
+
+
+def test_narration_gets_footage_even_when_the_whole_clip_is_marked_to_avoid():
+    from shorts_pipeline.edit import build_edl
+    arc = {"id": "a", "scenes": [{"clip_id": "c", "clip_start": 0.0, "clip_end": 60.0, "peaks": [],
+                                  "avoid": [[0.0, 61.0]]}]}
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 20.0,
+                        "text": "x"}]}
+    edl = build_edl(arc, voice, {"c": "/c.mp4"}, {})
+    assert abs(sum(s["duration"] for s in edl["shots"]) - 20.0) < 0.1

@@ -75,6 +75,10 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
         checks.append({"check": name, "status": status, "detail": detail})
 
     for aspect, out in render.items():
+        if out.get("duration") is not None:
+            short = edl["duration"] - float(out["duration"])
+            add(f"{aspect}: full length", "pass" if abs(short) <= 1.5 else "fail",
+                f"video {float(out['duration']):.1f} s for a {edl['duration']:.1f} s edit")
         fps_ok = abs(out["fps"] - 60) < 0.5
         add(f"{aspect}: 60 fps", "pass" if fps_ok else "fail", f"{out['fps']:.2f} fps")
         dup = out.get("duplicate_frames", 0)

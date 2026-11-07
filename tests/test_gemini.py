@@ -314,3 +314,18 @@ def test_worst_case_every_model_busy_stops_waiting_within_budget():
     with pytest.raises(g.GeminiUnavailable):
         c.generate("light", [{"text": "x"}], schema={"type": "object"})
     assert sum(waits) <= g.REQUEST_WAIT + g.MAX_WAIT  # minutes, not a quarter hour: then the local fallback runs
+
+
+def test_corner_logo_through_the_whole_clip_never_blocks_its_footage():
+    base = {"accept": True, "reasons": [], "notes": [], "avoid": [], "duration": 200}
+    logo = [{"start": a, "end": a + 20, "what": 'Watermark "CLIP KINGS"', "type": "channel_logo", "size": "small_corner"}
+            for a in range(0, 200, 20)]
+    seen = g.clean_watch({"right_movie": True, "confidence": 1, "kind": "movie_scene", "overlays": logo, "moments": []}, 200)
+    report = g.apply_watch(base, seen)
+    assert report["avoid"] == [] and report["accept"]
+    big = [{"start": 0, "end": 150, "what": "text", "type": "text_over_picture", "size": "large"}]
+    seen = g.clean_watch({"right_movie": True, "confidence": 1, "kind": "movie_scene", "overlays": big, "moments": []}, 200)
+    assert g.apply_watch(base, seen)["avoid"] == []  # most of the clip: not skipped
+    card = [{"start": 190, "end": 199, "what": "Available now", "type": "title_card", "size": "large"}]
+    seen = g.clean_watch({"right_movie": True, "confidence": 1, "kind": "movie_scene", "overlays": card, "moments": []}, 200)
+    assert g.apply_watch(base, seen)["avoid"] == [[189.5, 199.5]]

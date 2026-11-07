@@ -146,7 +146,8 @@ def _extra_footage(arc: dict, scene_index: int, footage: dict, cuts: dict, used:
     """Unused footage to cover `need` seconds: same scene first, then the story's other scenes,
     then (only if everything was used) a second pass that may repeat footage."""
     order = [scene_index] + [i for i in range(len(arc["scenes"])) if i != scene_index]
-    for allow_repeat in (False, True):
+    # Last resort: ranges marked to avoid (text cards, overlays) rather than a Short with no picture.
+    for allow_repeat, honour_avoid in ((False, True), (True, True), (True, False)):
         for i in order:
             scene = arc["scenes"][i]
             source = footage.get(scene["clip_id"])
@@ -155,7 +156,7 @@ def _extra_footage(arc: dict, scene_index: int, footage: dict, cuts: dict, used:
             windows = [(scene["clip_start"], scene["clip_end"])] if allow_repeat else \
                 _free(scene["clip_start"], scene["clip_end"], used.get(scene["clip_id"], []))
             for a, b in windows:
-                for s, e in _pieces(a, b, cuts.get(scene["clip_id"], []), scene.get("avoid")):
+                for s, e in _pieces(a, b, cuts.get(scene["clip_id"], []), scene.get("avoid") if honour_avoid else None):
                     take = min(e - s, MAX_SHOT, need)
                     if take < 0.5 and need > 0.5:
                         continue
@@ -201,6 +202,8 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
             a = scene["clip_start"]
         clip_cuts = cuts.get(clip_id, [])
         pieces = _pieces(a, max(a + 0.5, b), clip_cuts, scene.get("avoid"))
+        if not pieces:  # everything here is marked to avoid: the scene's own footage beats no picture
+            pieces = _pieces(a, max(a + 0.5, b), clip_cuts)
         available = sum(e - s for s, e in pieces)
         speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
         need = gap * speed
@@ -237,5 +240,8 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
                 last["speed"] = round(max(MIN_SPEED, (last["end"] - last["start"]) / last["duration"]), 3)
     total = shots[-1]["timeline_start"] + shots[-1]["duration"] if shots else 0.0
     lengths = [s["duration"] for s in shots]
+    missing = total - sum(lengths)
+    if missing > 0.5:  # never ship a Short whose picture is shorter than its voice
+        raise ValueError(f"Edit for {arc.get('id')} leaves {missing:.1f} s of the {total:.1f} s timeline without footage")
     return {"shots": shots, "duration": round(total, 3), "shot_count": len(shots),
             "median_shot": round(sorted(lengths)[len(lengths) // 2], 2) if lengths else 0.0}

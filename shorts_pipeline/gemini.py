@@ -507,6 +507,12 @@ def wait_for_ollama(base: str = "http://127.0.0.1:11434", model: str = "", timeo
 
 # ======================================================================== clip watching
 
+OVERLAY_TYPES = ["title_card", "text_over_picture", "subtitles", "channel_logo", "subscribe_button", "border",
+                 "picture_in_picture", "other"]
+# Kept out of the Short when they cover part of the picture. Small corner logos and subtitles are not:
+# the crop and our own text checks deal with those, and they often run through the whole upload.
+AVOID_OVERLAYS = {"title_card", "text_over_picture", "subscribe_button", "picture_in_picture", "other"}
+MAX_AVOID_SHARE = 0.4   # an "overlay" over more of the clip than this is part of the upload, not a moment to skip
 KINDS = ["movie_scene", "trailer", "recap_or_review", "reaction", "fan_edit", "compilation", "behind_the_scenes",
          "interview", "other"]
 WATCH_SCHEMA = {
@@ -517,8 +523,10 @@ WATCH_SCHEMA = {
         "kind": {"type": "string", "enum": KINDS},
         "narrator_over_picture": {"type": "boolean"},
         "overlays": {"type": "array", "items": {"type": "object", "properties": {
-            "start": {"type": "number"}, "end": {"type": "number"}, "what": {"type": "string"}},
-            "required": ["start", "end", "what"]}},
+            "start": {"type": "number"}, "end": {"type": "number"}, "what": {"type": "string"},
+            "type": {"type": "string", "enum": OVERLAY_TYPES},
+            "size": {"type": "string", "enum": ["small_corner", "large"]}},
+            "required": ["start", "end", "what", "type", "size"]}},
         "moments": {"type": "array", "items": {"type": "object", "properties": {
             "start": {"type": "number"}, "end": {"type": "number"}, "what": {"type": "string"},
             "intensity": {"type": "integer"}, "story": {"type": "integer"},
@@ -538,7 +546,9 @@ Answer in JSON:
   behind_the_scenes, interview or other.
 - narrator_over_picture: true if someone talks over the film who is not a character (commentary, narration).
 - overlays: every stretch with text, logos, channel names, subscribe buttons, borders, picture-in-picture or
-  title cards over the picture (start/end in seconds). Ordinary subtitles count too.
+  title cards over the picture (start/end in seconds). Ordinary subtitles count too. For each give type
+  (title_card, text_over_picture, subtitles, channel_logo, subscribe_button, border, picture_in_picture, other)
+  and size: small_corner (a small logo or bug in a corner) or large (covers part of the picture).
 - moments: the whole upload as consecutive moments of 2-8 seconds each, in order, covering it end to end.
   For each: start/end in seconds from the start of the video (numbers, not mm:ss), what (one short factual
   sentence of what is visible: who does what, objects, place; call people by appearance unless their name is
@@ -597,7 +607,9 @@ def clean_watch(result: dict, duration: float | None, source: str = "") -> dict:
     for row in result.get("overlays") or []:
         times = span(row)
         if times:
-            overlays.append({"start": round(times[0], 1), "end": round(times[1], 1), "what": str(row.get("what", ""))[:80]})
+            overlays.append({"start": round(times[0], 1), "end": round(times[1], 1), "what": str(row.get("what", ""))[:80],
+                             "type": row.get("type") if row.get("type") in OVERLAY_TYPES else "other",
+                             "size": "small_corner" if row.get("size") == "small_corner" else "large"})
     best = result.get("best_moment") or {}
     best_span = span(best) if best else None
     return {"source": source, "right_movie": bool(result.get("right_movie", True)),
@@ -627,12 +639,31 @@ def apply_watch(report: dict, watch: dict) -> dict:
     if watch["narrator_over_picture"]:
         reasons.append("Gemini: someone talks over the film (commentary or narration)")
     avoid = [list(r) for r in report.get("avoid") or []]
-    for row in watch["overlays"]:
-        avoid.append([max(0.0, row["start"] - 0.5), row["end"] + 0.5])
-    if watch["overlays"]:
-        notes.append(f"Gemini: {len(watch['overlays'])} overlay stretches kept out of the Short")
+    skip = [[max(0.0, r["start"] - 0.5), r["end"] + 0.5] for r in watch["overlays"]
+            if r.get("type", "other") in AVOID_OVERLAYS and r.get("size", "large") == "large"]
+    length = float(report.get("duration") or 0) or max([r[1] for r in skip] + [1.0])
+    covered = sum(e - s for s, e in _merge(skip))
+    if skip and covered > MAX_AVOID_SHARE * length:
+        # Text over most of the upload is part of the upload: skipping it would leave nothing to show.
+        notes.append(f"Gemini: overlays over {covered / length:.0%} of the clip; not skipped (the crop and text checks decide)")
+    elif skip:
+        avoid += skip
+        notes.append(f"Gemini: {len(skip)} overlay stretches kept out of the Short")
+    corner = [r for r in watch["overlays"] if r.get("size") == "small_corner"]
+    if corner:
+        notes.append(f"Gemini: small corner logo ({corner[0]['what'][:40]}) — kept out by the crop")
     report.update(reasons=reasons, notes=notes, avoid=avoid, accept=not reasons)
     return report
+
+
+def _merge(spans: list[list[float]]) -> list[list[float]]:
+    merged: list[list[float]] = []
+    for s, e in sorted(spans):
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return merged
 
 
 # ======================================================================== scene hints

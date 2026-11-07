@@ -29,6 +29,7 @@ FIT_ASPECT_VERTICAL = 1.0      # a 9:16 Short shows a square window when it cann
 FIT_ASPECT_SQUARE = 4 / 3      # a 1:1 Short shows a 4:3 window
 STACK_TILE_ASPECT = 1080 / 960  # 9:16 two-person shots: two 1080x960 crops stacked
 SIDE_TILE_ASPECT = 540 / 1080   # 1:1 two-person shots: two 540x1080 crops side by side
+MIN_PEOPLE_GAP = 0.3   # two face centres at least this far apart (share of the width) to be two people
 
 
 def sample(video: Path, start: float, end: float, count: int = 6) -> list[np.ndarray]:
@@ -129,11 +130,18 @@ def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> 
                 centre = min(1 - win / 2, max(win / 2, centre))
                 return {"mode": "track", "x_start": round(centre, 4), "x_end": round(centre, 4), "window": round(win, 4),
                         "reason": "follows the main face"}
-            left = float(np.median([p[0][0] for p in people]))
-            right = float(np.median([p[-1][0] for p in people]))
             rows = output_aspect < 0.8
             frac = window_fraction(active_aspect, STACK_TILE_ASPECT if rows else SIDE_TILE_ASPECT)
             clamp = lambda c: round(min(1 - frac / 2, max(frac / 2, c)), 4)  # noqa: E731
+            pairs = [p for p in people if len(p) >= 2]
+            left = float(np.median([p[0][0] for p in pairs])) if pairs else 0.5
+            right = float(np.median([p[-1][0] for p in pairs])) if pairs else 0.5
+            # Two crops only for two different people: seen together in most frames, and far enough apart
+            # that the crops do not show the same face twice. Otherwise follow the biggest face.
+            if len(pairs) < 0.6 * len(people) or right - left < MIN_PEOPLE_GAP:
+                centre = min(1 - win / 2, max(win / 2, float(np.median(biggest))))
+                return {"mode": "track", "x_start": round(centre, 4), "x_end": round(centre, 4), "window": round(win, 4),
+                        "reason": "follows the main face (one person, or two too close for separate crops)"}
             return {"mode": "stack", "layout": "rows" if rows else "columns", "x_top": clamp(left),
                     "x_bottom": clamp(right), "stack_window": round(frac, 4), "window": round(win, 4),
                     "reason": "two people far apart: " + ("stacked" if rows else "side by side")}
