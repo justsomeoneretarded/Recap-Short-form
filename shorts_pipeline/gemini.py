@@ -761,3 +761,30 @@ def critique(gemini: Client, video: Path, title: str, script_text: str) -> dict:
             "age_restriction_risk": reply.get("age_restriction_risk") if reply.get("age_restriction_risk") in
             ("low", "medium", "high") else "low",
             "age_reason": str(reply.get("age_reason", ""))[:200], "best_part": str(reply.get("best_part", ""))[:200]}
+
+
+# ======================================================================== picture check for scripts
+
+PICTURE_SCHEMA = {"type": "object", "properties": {"problems": {"type": "array", "items": {"type": "object", "properties": {
+    "sentence": {"type": "string"}, "why": {"type": "string"}}, "required": ["sentence", "why"]}}}, "required": ["problems"]}
+
+
+def picture_check(gemini: Client, brief: dict, script: dict) -> list[str]:
+    """Narration sentences that describe something the scene's footage does not show. Explaining
+    who someone is or why something matters is fine; claiming a visible action that is not there
+    is not (the viewer would hear one thing and see another)."""
+    scenes = [{"scene": x["scene"], "on_screen": x.get("on_screen") or [], "role": x.get("role", ""),
+               "dialogue": x.get("dialogue", [])[:12]} for x in brief.get("scenes", [])]
+    if not any(x["on_screen"] for x in scenes):
+        return []
+    narration = [{"scene": b.get("scene"), "text": b.get("text")} for b in script.get("beats", [])
+                 if b.get("kind") == "narration" and b.get("text")]
+    prompt = ("Each scene below lists what its footage shows (on_screen, seconds from the scene start) and its "
+              "dialogue. For the narration, list every sentence that claims a VISIBLE action or object that this "
+              "scene's footage does not show (the viewer would hear it while seeing something else). Context "
+              "(who someone is, why it matters, what happened earlier in one short clause) is allowed. "
+              "Quote each problem sentence exactly.\nSCENES:\n" + json.dumps(scenes, ensure_ascii=False) +
+              "\nNARRATION:\n" + json.dumps(narration, ensure_ascii=False))
+    reply = gemini.generate("light", [{"text": prompt}], schema=PICTURE_SCHEMA, temperature=0.1)
+    return [f'not on screen: "{p["sentence"][:140]}" ({p.get("why", "")[:100]})'
+            for p in (reply.get("problems") or [])[:6] if p.get("sentence")]

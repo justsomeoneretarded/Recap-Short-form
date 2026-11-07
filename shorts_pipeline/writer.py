@@ -273,7 +273,8 @@ def build_brief(arc: dict, research: dict, transcript: MovieTranscript | None, p
                 line_id = f"s{i}l{j}"
                 lines[line_id] = {**line, "scene": i, "clip_start": round(line["start"] - offset, 2),
                                   "clip_end": round(line["end"] - offset, 2), "words": len(line["text"].split()),
-                                  "playable": playable(line["text"])}
+                                  # A scene timed only by Gemini (±1 s) cannot play a movie line in sync.
+                                  "playable": playable(line["text"]) and scene.get("timed_by") != "gemini"}
                 scene_lines.append(line["text"][:LINE_CHARS])
             scenes.append({"scene": i, "seconds": round(seconds, 1),
                            "clip_title": _clean_title(scene["clip_title"], movie["title"]), "dialogue": scene_lines,
@@ -488,7 +489,7 @@ def good_enough(script: dict, brief: Brief) -> bool:
 
 
 def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, llm, *, plot: str = "",
-                drafts: int = 2) -> dict:
+                drafts: int = 2, picture_check=None) -> dict:
     big = (getattr(llm, "context_tokens", None) or 0) >= 100_000
     # A big-context writer gets the whole stretch of dialogue instead of a trimmed brief.
     brief = build_brief(arc, research, transcript, plot, **({"token_budget": 40_000, "max_lines": 240,
@@ -524,6 +525,21 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
         fixed_check = check(fixed, brief)
         if fixed_check["score"] >= final_check["score"]:
             final, final_check = fixed, fixed_check
+    picture_notes: list[str] = []
+    if picture_check is not None:  # say what the viewer sees: sentences about unseen action are rewritten once
+        try:
+            picture_notes = picture_check(brief.data, final)
+        except Exception as exc:  # noqa: BLE001 - the check is a bonus, never a reason to fail
+            picture_notes = [f"picture check unavailable: {str(exc)[:80]}"]
+        problems = [p for p in picture_notes if p.startswith("not on screen")]
+        if problems:
+            try:
+                fixed = cleanup(fix(llm, brief, final, {**final_check, "issues": problems}), brief)
+                fixed_check = check(fixed, brief)
+                if fixed_check["score"] >= final_check["score"] - 0.05 and not any(is_serious(i) for i in fixed_check["issues"]):
+                    final, final_check = fixed, fixed_check
+            except (RuntimeError, ValueError, KeyError):
+                pass
     serious = [i for i in final_check["issues"] if is_serious(i)]
     rejected = bool(serious) or final_check["score"] < 0.25
     return {"arc": arc["id"], "script": final, "check": final_check, "brief": brief.data,
@@ -531,4 +547,4 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
             "dialogue_lines": {k: v for k, v in brief.lines.items()
                                if any(b.get("line") == k for b in final.get("beats", []))},
             "drafts": candidates, "fixed": final is not best["script"], "model_calls": list(getattr(llm, "stats", []))[calls_before:],
-            "writer_notes": list(getattr(llm, "notes", []))}
+            "writer_notes": list(getattr(llm, "notes", [])) + picture_notes}

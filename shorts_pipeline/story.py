@@ -160,13 +160,56 @@ def beat_searches(stories: list[dict]) -> list[str]:
     return out
 
 
-def stories_to_arcs(stories: list[dict], units: list, target_seconds: float) -> list[dict]:
-    """Each beat gets the placed footage covering its stretch of the movie, cut to that stretch.
-    A story keeps the beats that have footage; with fewer than MIN_BEATS it is dropped."""
+def _offset(placement: dict, at: float) -> float | None:
+    """movie time − clip time for the placed piece around clip second `at` (None if not placed)."""
+    for seg in placement.get("segments") or []:
+        if seg.get("matched") and seg["start"] - 5 <= at <= seg["end"] + 5:
+            return seg["offset_seconds"] - seg["start"]
+    if placement.get("matched") and placement.get("offset_seconds") is not None:
+        return float(placement["offset_seconds"])
+    return None
+
+
+def confirmed_scene(beat: dict, check: dict, clip: dict | None, report: dict | None) -> dict | None:
+    """A scene from footage Gemini confirmed. With dialogue the subtitle placement gives exact movie
+    times and sharpens the cut; a silent scene uses Gemini's own seconds."""
+    if report is not None and not report.get("accept"):
+        return None  # screening found a problem (logo inside the picture, low resolution, …)
+    gs, ge = check["start"], check["end"]
+    offset = _offset((clip or {}).get("placement") or {}, (gs + ge) / 2)
+    if offset is not None:
+        cs, ce = beat["movie_start"] - offset, beat["movie_end"] - offset
+        lo, hi = max(cs, gs - 3), min(ce, ge + 3)
+        cs, ce = (lo, hi) if hi - lo >= 5 else (gs, ge)  # the plan's times were off: trust what Gemini saw
+        ms, me, timed = cs + offset, ce + offset, "subtitles"
+    else:
+        cs, ce, ms, me, timed = gs, ge, beat["movie_start"], beat["movie_end"], "gemini"
+    watch = (report or {}).get("watch") or {}
+    peaks = [p.get("start") for p in ((clip or {}).get("signals") or {}).get("heatmap_peaks") or [] if p.get("start") is not None]
+    return {"clip_id": check["id"], "clip_title": (clip or {}).get("title", ""),
+            "clip_start": round(cs, 2), "clip_end": round(ce, 2), "movie_start": round(ms, 1), "movie_end": round(me, 1),
+            "peaks": sorted({round(p, 1) for p in peaks if cs <= p <= ce}),
+            "avoid": [r for r in (report or {}).get("avoid") or [] if r[1] > cs and r[0] < ce],
+            "moments": [m for m in watch.get("moments") or [] if m["end"] > cs and m["start"] < ce],
+            "alternates": [], "timed_by": timed, "confirmed": check.get("confidence"),
+            "beat": {k: beat[k] for k in ("name", "role", "what_we_see", "key_moment")}}
+
+
+def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, confirmed: dict | None = None,
+                    clips: dict | None = None, screening: dict | None = None) -> list[dict]:
+    """Each beat gets footage: first the upload Gemini confirmed shows it, else the placed footage
+    covering its stretch of the movie, cut to that stretch. A story keeps the beats that have
+    footage; with fewer than MIN_BEATS it is dropped."""
     arcs = []
-    for story in stories:
+    for n, story in enumerate(stories):
         scenes = []
-        for beat in story["beats"]:
+        for b, beat in enumerate(story["beats"]):
+            check = ((confirmed or {}).get(n) or {}).get(b)
+            if check:
+                scene = confirmed_scene(beat, check, (clips or {}).get(check["id"]), (screening or {}).get(check["id"]))
+                if scene:
+                    scenes.append(scene)
+                    continue
             best, best_cover = None, 0.0
             for u in units:
                 cover = min(u.movie_end, beat["movie_end"]) - max(u.movie_start, beat["movie_start"])
@@ -183,7 +226,7 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float) -> 
                            "peaks": sorted({round(p, 1) for p in best.peaks if cs <= p <= ce}),
                            "avoid": [r for r in best.avoid if r[1] > cs and r[0] < ce],
                            "moments": [m for m in best.moments if m["end"] > cs and m["start"] < ce],
-                           "alternates": best.alternates,
+                           "alternates": best.alternates, "timed_by": "subtitles",
                            "beat": {k: beat[k] for k in ("name", "role", "what_we_see", "key_moment")}})
         if len(scenes) < MIN_BEATS:
             continue
@@ -196,3 +239,71 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float) -> 
                                                          "cold_open")},
                      "scenes": scenes})
     return arcs
+
+
+# ======================================================================== Gemini finds and checks the footage
+
+YOUTUBE_ID = re.compile(r"(?:youtube\.com/(?:watch\?v=|shorts/|embed/)|youtu\.be/)([A-Za-z0-9_-]{11})")
+MAX_CHECK_SECONDS = 15 * 60   # longer uploads are checked only if nothing shorter shows the beat
+
+
+def suggest_links(gemini, movie: dict, story: dict) -> dict[int, list[str]]:
+    """Real YouTube videos for each beat, found with Google Search (the API cannot browse YouTube
+    itself; asked from memory it invents links, so every id is verified before use)."""
+    lines = "\n".join(f"{i}. {b['name']}: {b['what_we_see']} (search: {b['search']})" for i, b in enumerate(story["beats"]))
+    prompt = (f"Use Google Search to find YouTube videos that show these scenes of {movie['title']} "
+              f"({movie.get('year')}). Prefer clip uploads of the scene itself (not trailers, reviews, reactions "
+              f"or recaps). For each scene number give up to 3 full youtube.com/watch?v= links.\n{lines}\n"
+              'Answer as JSON: {"scenes": [{"scene": 0, "links": ["https://www.youtube.com/watch?v=..."]}]}')
+    text = gemini.generate("light", [{"text": prompt}], tools=[{"google_search": {}}], temperature=0.2)
+    found: dict[int, list[str]] = {}
+    for match in re.finditer(r'"scene"\s*:\s*(\d+)\s*,\s*"links"\s*:\s*\[([^\]]*)\]', str(text)):
+        ids = list(dict.fromkeys(YOUTUBE_ID.findall(match.group(2))))
+        if ids:
+            found[int(match.group(1))] = ids[:3]
+    return found
+
+
+CHECK_SCHEMA = {"type": "object", "properties": {
+    "shows_scene": {"type": "boolean"}, "confidence": {"type": "number"},
+    "start": {"type": "number"}, "end": {"type": "number"}, "why": {"type": "string"}},
+    "required": ["shows_scene", "confidence", "start", "end"]}
+
+
+def check_clip(gemini, video_id: str, movie: dict, beat: dict, duration: float | None = None) -> dict:
+    """Does this upload show this beat? Where (seconds from the start of the upload)?"""
+    prompt = (f"This should be footage from the movie {movie['title']} ({movie.get('year')}). Does it show this "
+              f"scene: {beat['name']} — {beat['what_we_see']}? It must be the film's own footage of that scene "
+              "(not a trailer, review, reaction or someone talking over it). If yes, give start and end in seconds "
+              "from the start of the video (numbers) covering exactly that scene, and how sure you are (0-1).")
+    video = {"fileData": {"fileUri": f"https://www.youtube.com/watch?v={video_id}"}}
+    reply = gemini.generate("light", [video, {"text": prompt}], schema=CHECK_SCHEMA, temperature=0.1, low_media=True)
+    start, end = float(reply.get("start") or 0), float(reply.get("end") or 0)
+    if duration:
+        start, end = max(0.0, min(start, duration)), max(0.0, min(end, duration))
+    ok = bool(reply.get("shows_scene")) and end - start >= 3 and float(reply.get("confidence") or 0) >= 0.6
+    return {"id": video_id, "ok": ok, "confidence": round(float(reply.get("confidence") or 0), 2),
+            "start": round(start, 1), "end": round(end, 1), "why": str(reply.get("why") or "")[:160]}
+
+
+def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, per_beat: int = 3,
+                  log=lambda m: None) -> dict[int, dict]:
+    """For each beat, watch its likeliest uploads (its own search results first, then Gemini's
+    links) until one is confirmed. Wrong uploads are dropped before anything is downloaded."""
+    from .gemini import GeminiUnavailable
+    confirmed: dict[int, dict] = {}
+    for i, beat in enumerate(story["beats"]):
+        mine = [c for c in candidates if beat["search"] in (c.get("queries") or []) or i in (c.get("suggested_for") or [])]
+        mine.sort(key=lambda c: ((c.get("duration") or 0) > MAX_CHECK_SECONDS, i not in (c.get("suggested_for") or [])))
+        for c in mine[:per_beat]:
+            try:
+                result = check_clip(gemini, c["id"], movie, beat, c.get("duration"))
+            except GeminiUnavailable as exc:
+                log(f"beat {beat['name']}: cannot check {c['id']}: {str(exc)[:100]}")
+                return confirmed
+            log(f"beat {beat['name']}: {c['id']} {'YES' if result['ok'] else 'no'} "
+                f"{result['start']}-{result['end']}s ({result['why'][:80]})")
+            if result["ok"]:
+                confirmed[i] = result
+                break
+    return confirmed

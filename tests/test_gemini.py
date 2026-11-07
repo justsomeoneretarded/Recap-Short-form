@@ -329,3 +329,13 @@ def test_corner_logo_through_the_whole_clip_never_blocks_its_footage():
     card = [{"start": 190, "end": 199, "what": "Available now", "type": "title_card", "size": "large"}]
     seen = g.clean_watch({"right_movie": True, "confidence": 1, "kind": "movie_scene", "overlays": card, "moments": []}, 200)
     assert g.apply_watch(base, seen)["avoid"] == [[189.5, 199.5]]
+
+
+def test_picture_check_names_sentences_that_are_not_on_screen():
+    c = client({"gemini-3.5-flash-lite": [answer({"problems": [{"sentence": "Lorraine plunges through the floor.",
+                                                                "why": "the footage shows a man at a closet"}]})]})
+    brief = {"scenes": [{"scene": 0, "on_screen": ["0-4s: a man opens a closet"], "dialogue": []}]}
+    script = {"beats": [{"kind": "narration", "scene": 0, "text": "Lorraine plunges through the floor."}]}
+    notes = g.picture_check(c, brief, script)
+    assert notes and notes[0].startswith('not on screen: "Lorraine plunges')
+    assert g.picture_check(c, {"scenes": [{"scene": 0}]}, script) == []  # nothing watched: nothing to check

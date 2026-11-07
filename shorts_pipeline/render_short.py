@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 from .media import probe
-from .reframe import filter_graph, native_size, plan_shot, sample
+from .reframe import filter_graph, lift_for, native_size, plan_shot, sample
 
 FPS = 60
 SIZES = {"square": (1080, 1080), "vertical": (1080, 1920)}
@@ -253,9 +253,12 @@ def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertic
         frames = sample(Path(shot["source"]), shot["start"], max(shot["start"] + 0.2, shot["end"]), 5)
         entry = {"active": active, "motion": motion(Path(shot["source"]), shot["start"], shot["end"] - shot["start"])}
         logo = bool(((screening.get(shot["clip_id"]) or {}).get("text") or {}).get("watermarks"))
+        lift = lift_for(frames)
         for aspect in aspects:
             size = SIZES[aspect]
             entry[aspect] = plan_shot(frames, active, size[0] / size[1])
+            if lift:
+                entry[aspect]["lift"] = lift
             if logo and entry[aspect]["mode"] == "fit":
                 entry[aspect]["trim"] = 0.08  # corner logo: fit shots lose 8 % at every edge
         plans[str(i)] = entry

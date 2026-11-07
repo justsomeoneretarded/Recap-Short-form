@@ -74,3 +74,72 @@ def test_timeline_is_thinned_evenly_when_too_long():
     transcript = MovieTranscript.from_subtitles(SRT)
     text = st.timeline(transcript, limit=500)
     assert len(text) <= 600 and text.startswith("00:00")
+
+
+class FakeGemini:
+    def __init__(self, answers):
+        self.answers, self.calls = list(answers), []
+
+    def generate(self, role, parts, **kw):
+        self.calls.append((role, parts, kw))
+        return self.answers.pop(0)
+
+
+def one_story():
+    return st.clean_stories({"stories": [{"title": "T", "spine": "", "hook_idea": "", "ending_idea": "",
+                                          "beats": [beat("gas", "12:00", "12:30", "John Wick gas station"),
+                                                    beat("break-in", "17:00", "17:30", "John Wick break in"),
+                                                    beat("basement", "30:00", "30:30", "John Wick basement")]}]}, 6000)[0]
+
+
+def test_suggested_links_are_parsed_from_the_answer():
+    g = FakeGemini(['Here: {"scenes": [{"scene": 0, "links": ["https://www.youtube.com/watch?v=abcdefghijk", '
+                    '"https://youtu.be/ZYXWVUTSRQP"]}, {"scene": 2, "links": []}]}'])
+    links = st.suggest_links(g, {"title": "John Wick", "year": 2014}, one_story())
+    assert links == {0: ["abcdefghijk", "ZYXWVUTSRQP"]}
+    assert g.calls[0][2]["tools"] == [{"google_search": {}}]
+
+
+def test_beats_are_confirmed_by_watching_before_any_download():
+    story = one_story()
+    candidates = [{"id": "wrongclip01", "queries": ["John Wick gas station"], "duration": 200},
+                  {"id": "rightclip01", "queries": ["John Wick gas station"], "duration": 150},
+                  {"id": "breakin0001", "queries": [], "suggested_for": [1], "duration": 120}]
+    g = FakeGemini([{"shows_scene": False, "confidence": 0.9, "start": 0, "end": 0},
+                    {"shows_scene": True, "confidence": 0.9, "start": 12, "end": 41},
+                    {"shows_scene": True, "confidence": 0.4, "start": 5, "end": 30}])  # too unsure
+    confirmed = st.confirm_beats(g, story, candidates, {"title": "John Wick", "year": 2014})
+    assert confirmed == {0: {"id": "rightclip01", "ok": True, "confidence": 0.9, "start": 12.0, "end": 41.0, "why": ""}}
+    assert "youtube.com/watch?v=wrongclip01" in g.calls[0][1][0]["fileData"]["fileUri"]
+
+
+def test_confirmed_scene_uses_subtitles_with_dialogue_and_gemini_when_silent():
+    beat_ = one_story()["beats"][0]  # movie 720-750
+    check = {"id": "rightclip01", "ok": True, "confidence": 0.9, "start": 12.0, "end": 45.0}
+    spoken = {"title": "gas", "placement": {"matched": True, "offset_seconds": 700.0}, "signals": {}}
+    scene = st.confirmed_scene(beat_, check, spoken, {"accept": True, "watch": {"moments": []}})
+    assert (scene["clip_start"], scene["clip_end"], scene["timed_by"]) == (20.0, 48.0, "subtitles") or \
+        (scene["clip_start"], scene["clip_end"]) == (20.0, 48.0)
+    silent = {"title": "basement", "placement": {"matched": False}, "signals": {}}
+    scene = st.confirmed_scene(beat_, check, silent, None)
+    assert (scene["clip_start"], scene["clip_end"], scene["timed_by"]) == (12.0, 45.0, "gemini")
+    assert st.confirmed_scene(beat_, check, spoken, {"accept": False}) is None
+
+
+def test_story_arc_prefers_confirmed_footage_and_falls_back_to_placed_units():
+    story = one_story()
+    units = [Unit("B", "break", 0, 60, 1000, 1060, 0.5, 1080), Unit("C", "base", 0, 60, 1780, 1840, 0.5, 1080)]
+    confirmed = {0: {0: {"id": "G", "ok": True, "confidence": 0.8, "start": 3.0, "end": 30.0}}}
+    arcs = st.stories_to_arcs([story], units, 150, confirmed=confirmed, clips={"G": {"placement": {}}}, screening={})
+    assert [s["clip_id"] for s in arcs[0]["scenes"]] == ["G", "B", "C"]
+    assert arcs[0]["scenes"][0]["timed_by"] == "gemini"
+
+
+def test_silent_scene_lines_are_never_played_out_of_sync():
+    from shorts_pipeline import writer as w
+    transcript = MovieTranscript.from_subtitles("1\n00:12:05,000 --> 00:12:07,000\nIt is not for sale my friend\n")
+    arc = {"id": "a", "movie_start": 720, "movie_end": 750, "short_seconds": 60, "scenes": [
+        {"clip_id": "G", "clip_title": "t", "clip_start": 3, "clip_end": 33, "movie_start": 720, "movie_end": 750,
+         "timed_by": "gemini"}]}
+    brief = w.build_brief(arc, {"movie": {"title": "John Wick", "year": 2014, "cast": []}}, transcript)
+    assert brief.lines and not any(l["playable"] for l in brief.lines.values())

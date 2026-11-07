@@ -115,9 +115,11 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
     if viewer and viewer.get("scores"):
         scores = viewer["scores"]
         overall = scores.get("overall", 0)
-        add("viewer review (Gemini watched it)", "pass" if overall >= 7 and viewer.get("keep_watching") else "warn",
+        add("viewer review (Gemini watched it)",
+            "pass" if overall >= 7 and viewer.get("keep_watching") else "fail" if overall < 5 else "warn",
             " · ".join(f"{k.replace('_', ' ')} {v}/10" for k, v in scores.items()) +
-            ("" if viewer.get("keep_watching") else " · would scroll away"))
+            ("" if viewer.get("keep_watching") else " · would scroll away") +
+            (" · NOT READY TO UPLOAD" if overall < 5 else ""))
         if viewer.get("problems"):
             add("viewer review: problems", "warn",
                 "; ".join(f"{p['second']:.0f}s {p['what']}" + (f" → {p['fix']}" if p.get("fix") else "")

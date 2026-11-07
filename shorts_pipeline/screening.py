@@ -219,7 +219,11 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
         reasons.append(f"channel watermark inside the picture: '{mark['text']}'")
     if text.get("text_card_times"):
         notes.append(f"text cards at {text['text_card_times'][:6]} s — never used in a Short")
+    brightness = round(float(np.median([f.mean() for _, f in frames])), 1) if frames else None
+    if brightness is not None and brightness < 35:
+        notes.append(f"very dark footage (brightness {brightness:.0f}/255)")
     return {"accept": not reasons, "reasons": reasons, "notes": notes, "usable": usable, "active": active, "text": text,
+            "brightness": brightness,
             "avoid": [[max(0.0, t - every), t + every] for t in text.get("text_card_times", [])],
             "mirror_check": flip, "cutting": cutting, "width": info.get("width"), "height": info.get("height"),
             "fps": info.get("fps"), "duration": info.get("duration")}
@@ -244,7 +248,7 @@ def _watch(report: dict, clip: dict, movie: dict | None, gemini) -> dict:
 
 
 def screen_candidates(placed: dict, youtube, workdir: Path, *, top: int = 8, movie: dict | None = None,
-                      gemini=None) -> list[dict]:
+                      gemini=None, first: set | None = None) -> list[dict]:
     """Download the best-ranked clips and screen them; one failure never stops the batch."""
     import os
     import time
@@ -252,7 +256,8 @@ def screen_candidates(placed: dict, youtube, workdir: Path, *, top: int = 8, mov
     reports = []
     deadline = time.monotonic() + float(os.environ.get("SHORTS_SCREEN_BUDGET", "1200"))
     # Placed clips first: only they can become story scenes.
-    ordered = sorted(placed["clips"], key=lambda c: not (c.get("placement") or {}).get("matched"))
+    ordered = sorted(placed["clips"], key=lambda c: (c["id"] not in (first or set()),
+                                                     not (c.get("placement") or {}).get("matched")))
     for clip in ordered[:top]:
         row = {"id": clip["id"], "title": clip["title"]}
         if time.monotonic() > deadline:

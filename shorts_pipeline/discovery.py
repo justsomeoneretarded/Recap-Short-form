@@ -365,3 +365,19 @@ def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None 
             first += [c for c in kept if wanted & set(c.queries) and c.id not in {f.id for f in first}][:2]
         kept = first + [c for c in kept if c.id not in {f.id for f in first}]
     return {"queries": queries, "candidates": [c.as_dict() for c in kept], "rejected": rejected, "errors": errors}
+
+
+def candidate_from_id(youtube, video_id: str, movie: dict, query: str) -> dict | None:
+    """A candidate for a video someone suggested (Gemini + Google Search), after the same checks as
+    search results. None if the video does not exist or fails them."""
+    try:
+        info = youtube.info(video_id)
+    except RuntimeError:
+        return None
+    if not info or prefilter(info, movie):
+        return None
+    fmt = best_format(info)
+    if fmt.get("width") and fmt["width"] < fmt["height"]:
+        return None
+    item = candidate(info, movie, query, set())
+    return item.as_dict() if item.identity["ok"] else None

@@ -150,8 +150,34 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
             print(f"[discover] no Gemini scene hints: {str(exc)[:160]}", file=sys.stderr, flush=True)
     found = discover(research, youtube, **({'scene_hints': hints} if hints else {}))
     lap('search_and_rank')
-    if planned:  # each beat's best two finds are placed, plus the usual top clips
-        top = max(top, min(30, 2 * sum(len(st['beats']) for st in planned)))
+    confirmed, checked = {}, set()
+    if planned:
+        from .discovery import candidate_from_id
+        from .story import confirm_beats, suggest_links
+        log = lambda m: print(f"[discover] {m}", file=sys.stderr, flush=True)  # noqa: E731
+        known = {c['id']: c for c in found['candidates']}
+        for n, story in enumerate(planned[:wanted]):
+            try:  # Gemini + Google Search suggest real uploads per beat; each one is verified
+                for beat_index, ids in suggest_links(google, research['movie'], story).items():
+                    for vid in ids:
+                        if vid not in known:
+                            made = candidate_from_id(youtube, vid, research['movie'], story['beats'][beat_index]['search']
+                                                     if beat_index < len(story['beats']) else '')
+                            if not made:
+                                log(f"suggested link {vid} rejected (missing or failed checks)")
+                                continue
+                            known[vid] = made
+                            found['candidates'].insert(0, made)
+                        known[vid].setdefault('suggested_for', []).append(beat_index)
+            except gem.GeminiUnavailable as exc:
+                log(f"no suggested links: {str(exc)[:120]}")
+            # Gemini watches each beat's likeliest uploads and confirms the scene and its seconds.
+            confirmed[n] = confirm_beats(google, story, found['candidates'], research['movie'], log=log)
+            checked |= {c['id'] for c in confirmed[n].values()}
+            log(f"story '{story['title']}': {len(confirmed[n])} of {len(story['beats'])} beats confirmed by watching")
+        # Confirmed uploads are placed and screened first (subtitles sharpen their cuts).
+        found['candidates'].sort(key=lambda c: c['id'] not in checked)
+        top = max(top, min(30, len(checked) + 2 * sum(len(st['beats']) for st in planned)))
     placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
     lap('download_and_place')
     screened = {}
@@ -159,7 +185,7 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
         from .screening import screen_candidates
         screened = {r['id']: r for r in screen_candidates(placed, youtube, Path(workdir).resolve(),
                                                           top=max(screen, top if planned else 0),
-                                                          movie=research['movie'], gemini=google)}
+                                                          movie=research['movie'], gemini=google, first=checked)}
     lap('screen')
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -168,7 +194,8 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     stories = None
     if planned:
         from .story import stories_to_arcs
-        arcs = stories_to_arcs(planned, units_from(placed['clips'], screened), length)
+        arcs = stories_to_arcs(planned, units_from(placed['clips'], screened), length, confirmed=confirmed,
+                               clips={c['id']: c for c in placed['clips']}, screening=screened)
         if arcs:
             if transcript is not None:
                 attach_dialogue(arcs, transcript)
@@ -201,7 +228,8 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
                          'shorter': a['shorter_than_requested']} for a in stories['arcs']],
                'clips': rows, 'timings_seconds': timings,
                'gemini': google.usage() if google is not None else 'off (no GEMINI_API_KEY)',
-               'scene_hints': hints or [], 'planned_stories': planned}
+               'scene_hints': hints or [], 'planned_stories': planned,
+               'confirmed_beats': {str(k): v for k, v in confirmed.items()}}
     write_json(output/'summary.json', summary)
     return summary
 
@@ -236,7 +264,9 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
         if spare_every and results:
             break  # this machine's Short is written
         started = time.time()
-        result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '', drafts=drafts)
+        checker = (lambda data, script: gem.picture_check(google, data, script)) if google is not None else None
+        result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '', drafts=drafts,
+                             picture_check=checker)
         result['seconds_to_write'] = round(time.time()-started, 1)
         if google is not None:
             result['gemini'] = google.usage()

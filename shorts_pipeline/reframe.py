@@ -94,6 +94,17 @@ def window_fraction(source_aspect: float, output_aspect: float) -> float:
     return min(1.0, output_aspect / source_aspect)
 
 
+DARK_LUMA = 70.0   # mean brightness (0-255) under which a shot is lifted
+
+
+def lift_for(frames: list[np.ndarray]) -> float | None:
+    """Gamma lift for dark shots (a 0-255 mean of 30 gets ~1.5), None for normal ones."""
+    if not frames:
+        return None
+    luma = float(np.mean([f.mean() for f in frames]))
+    return round(min(1.6, 1.0 + (DARK_LUMA - luma) / 80.0), 2) if luma < DARK_LUMA else None
+
+
 def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> dict:
     """Decide mode and crop centre path (fractions of the active picture width)."""
     x0a, y0a, x1a, y1a = active
@@ -180,6 +191,8 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
     aw = int((active[2] - active[0]) * src_w) // 2 * 2
     ah = int((active[3] - active[1]) * src_h) // 2 * 2
     base = f"[{label_in}]crop={aw}:{ah}:{ax}:{ay},setsar=1"
+    if plan.get("lift"):  # dark footage: lift the shadows so it reads on a phone
+        base += f",eq=gamma={plan['lift']:.2f}:contrast=1.04:saturation=1.05"
     if plan["mode"] == "stack" and plan.get("layout") == "columns":  # 1:1: two people side by side
         tile_w = out_w // 2 // 2 * 2
         fw = min(aw, int(round(ah * tile_w / out_h / 2)) * 2)
