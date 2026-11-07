@@ -29,9 +29,10 @@ Everything else is automatic:
 5. **Stories**: nearby scenes become up to five Shorts that never share footage.
 6. **Write** each script with Qwen3 14B from the movie's real dialogue (2 drafts, checks + judge, fix-up; every story is written on its own machine at the same time),
    keeping up to three real movie lines.
-7. **Voice** with the chosen narrator at ~195 words/minute; word-exact captions.
-8. **Edit and render** square 1080×1080 and vertical 1080×1920 at true 60 fps (RIFE, or motion
-   blending as a fallback), smart face/action framing, −14 LUFS.
+7. **Voice** with the chosen narrator at ~205 words/minute (long pauses shortened); word-exact captions.
+8. **Edit and render** square 1080×1080 and vertical 1080×1920 at true 60 fps (RIFE, every result
+   checked, motion blending as a fallback), −14 LUFS. Framing follows faces and action; vertical
+   Shorts never use blurred side bars: two people far apart are stacked one above the other.
 9. **Package**: covers, title options, description, tags, captions and an automatic quality review.
 
 Download **Artifacts → shorts**: one folder per Short with `final-square.mp4`, `final-vertical.mp4`,
