@@ -6,7 +6,10 @@
    (audience score, resolution) is kept and the others are alternates.
 3. Arcs: runs of consecutive scenes close together in the movie, long enough for the
    requested length. Arcs never share a scene, so Shorts never reuse footage.
-4. Ranking: audience score, Most Replayed / comment peaks, and footage coverage.
+4. Ranking: audience score, Most Replayed / comment peaks, footage coverage and intensity.
+   When Gemini watched the clips, intensity is what actually happens on screen (action and
+   story value per moment) instead of a guess from the cutting rate, and its strongest
+   moments count as peaks.
 """
 from __future__ import annotations
 
@@ -38,6 +41,7 @@ class Unit:
     clip_seconds: float = 0.0
     intensity: float = 0.5   # 0 calm talk … 1 fast action (from the clip's cutting rate)
     avoid: list = field(default_factory=list)  # clip-time ranges never to show (text cards)
+    moments: list = field(default_factory=list)  # what Gemini saw, clip time (optional)
 
     @property
     def seconds(self) -> float:
@@ -69,6 +73,11 @@ def units_from(clips: list[dict], screening: dict[str, dict]) -> list[Unit]:
         clip_seconds = float(clip.get("duration") or (report or {}).get("duration") or 0.0)
         shot = ((report or {}).get("cutting") or {}).get("average_shot_seconds")
         intensity = 0.5 if not shot else min(1.0, max(0.0, (7.0 - float(shot)) / 5.0))  # 2 s shots → 1, 7 s → 0
+        watch = (report or {}).get("watch") or {}
+        moments = watch.get("moments") or []
+        watched_peaks = [m["start"] for m in moments if m.get("intensity", 0) >= 8 or m.get("story", 0) >= 9]
+        if watch.get("best_moment"):
+            watched_peaks.append(watch["best_moment"]["start"])
         score = clip.get("score", {}).get("total", 0.0)
         if clip_seconds >= LONG_UPLOAD_SECONDS:
             score *= 0.85  # a long excerpt is less of an audience signal for any one scene in it
@@ -82,11 +91,23 @@ def units_from(clips: list[dict], screening: dict[str, dict]) -> list[Unit]:
             step = (end - start) / count
             for k in range(count):
                 s, e = start + k * step, start + (k + 1) * step
+                inside = [m for m in moments if m["end"] > s and m["start"] < e]
                 units.append(Unit(clip["id"], clip.get("title", ""), s, e, max(0.0, piece["offset"] + s),
-                                  piece["offset"] + e, score, height, [p for p in peaks if s <= p <= e],
-                                  clip_seconds=clip_seconds, intensity=intensity,
-                                  avoid=[r for r in (report or {}).get("avoid") or [] if r[1] > s and r[0] < e]))
+                                  piece["offset"] + e, score, height,
+                                  [p for p in peaks + watched_peaks if s <= p <= e],
+                                  clip_seconds=clip_seconds, intensity=seen_intensity(inside, intensity),
+                                  avoid=[r for r in (report or {}).get("avoid") or [] if r[1] > s and r[0] < e],
+                                  moments=inside))
     return units
+
+
+def seen_intensity(moments: list[dict], fallback: float) -> float:
+    """0..1 from what is on screen: half action, half story value, weighted by moment length."""
+    if not moments:
+        return fallback
+    weight = sum(max(0.5, m["end"] - m["start"]) for m in moments)
+    value = sum(max(0.5, m["end"] - m["start"]) * (0.5 * m.get("intensity", 5) + 0.5 * m.get("story", 5)) for m in moments)
+    return round(min(1.0, max(0.0, (value / weight - 1) / 9)), 3)
 
 
 def merge_duplicates(units: list[Unit], threshold: float = 0.5) -> list[Unit]:
@@ -160,7 +181,7 @@ def describe(arc: list[Unit], target: float, number: int, movie: MovieTranscript
         "scenes": [{"clip_id": u.clip_id, "clip_title": u.clip_title, "clip_start": round(u.clip_start, 2),
                     "clip_end": round(u.clip_end, 2), "movie_start": round(u.movie_start, 1),
                     "movie_end": round(u.movie_end, 1), "peaks": sorted(set(round(p, 1) for p in u.peaks)),
-                    "avoid": u.avoid,
+                    "avoid": u.avoid, "moments": u.moments,
                     "alternates": u.alternates} for u in arc],
     }
 

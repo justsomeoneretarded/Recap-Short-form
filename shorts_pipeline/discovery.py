@@ -50,12 +50,15 @@ def build_queries(movie: dict, scene_hints: list[str] | None = None, limit: int 
     title, year = movie["title"], movie.get("year") or ""
     stem = f"{title} {year}".strip()
     queries = [f"{stem} scene", f"{stem} best scenes", f"{stem} clip"]
+    # The scenes people talk about most (Gemini + Google Search) come before the generic queries.
+    for hint in (scene_hints or [])[:5]:
+        queries.append(f"{title} {hint} scene")
     for clip in movie.get("clips", [])[:6]:
         name = re.sub(r"(?i)\b(clip|official|hd|4k|movieclips|\(\d{4}\))\b", " ", clip.get("name", ""))
         name = " ".join(name.replace("|", " ").replace("-", " ").split())
         if name and fold(name) != fold(title):
             queries.append(f"{title} {name}" if fold(title) not in fold(name) else name)
-    for hint in scene_hints or []:
+    for hint in (scene_hints or [])[5:]:
         queries.append(f"{title} {hint} scene")
     for genre in movie.get("genres", []):
         for concept in SCENE_CONCEPTS.get(genre, ()):

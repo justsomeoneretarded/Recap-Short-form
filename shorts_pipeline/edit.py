@@ -7,6 +7,9 @@
   comment peaks, then evenly spread), cut on the clip's own shot changes, 1.3–2.8 s each
   (reference median 1.5–2.9 s). When there is less, the footage is gently slowed (≥0.8x)
   and then the scene's unused earlier footage fills in.
+- When Gemini watched the clips, each narration beat prefers the pieces that show what the
+  sentence talks about (embedding or word match against the moment descriptions), strong
+  moments over weak ones, and skips dead moments (nothing happening).
 """
 from __future__ import annotations
 
@@ -52,24 +55,59 @@ def _pieces(a: float, b: float, cuts: list[float], avoid: list | None = None) ->
     return pieces
 
 
-def choose(pieces: list[tuple[float, float]], need: float, peaks: list[float]) -> list[tuple[float, float]]:
-    """Pick pieces (kept in story order) adding up to `need` seconds, preferring peaks and spread."""
+STOP = set("a an the and or but so then of to in on at for with by from into onto his her their its he she they "
+           "it is are was were be as that this who what when while out up down off over".split())
+
+
+def _words(text: str) -> set[str]:
+    return {w.rstrip("s") for w in re.findall(r"[a-z']+", text.lower()) if w not in STOP and len(w) > 2}
+
+
+def word_match(text: str, what: str) -> float:
+    """0..1 overlap of content words between a narration sentence and a moment description."""
+    a, b = _words(text), _words(what)
+    return len(a & b) / max(1, min(len(a), len(b))) if a and b else 0.0
+
+
+def _moment_at(moments: list[dict], t: float) -> dict | None:
+    return next((m for m in moments if m["start"] - 0.5 <= t <= m["end"] + 0.5), None)
+
+
+def choose(pieces: list[tuple[float, float]], need: float, peaks: list[float], *, moments: list[dict] | None = None,
+           text: str = "", similar=None) -> list[tuple[float, float]]:
+    """Pick pieces (kept in story order) adding up to `need` seconds, preferring peaks, pieces that
+    show what the narration says, strong moments, and spread."""
     if not pieces or need <= 0:
         return []
+    moments = moments or []
+    if moments:  # never spend the Short on dead moments when there is enough other footage
+        lively = [p for p in pieces if (_moment_at(moments, (p[0] + p[1]) / 2) or {}).get("intensity", 5) > 2
+                  or (_moment_at(moments, (p[0] + p[1]) / 2) or {}).get("story", 5) > 4]
+        if sum(e - s for s, e in lively) >= need:
+            pieces = lively
     total = sum(e - s for s, e in pieces)
     if total <= need:
         return list(pieces)
     span = (pieces[0][0], pieces[-1][1])
+    match = similar or word_match
 
     def interest(piece: tuple[float, float]) -> float:
         s, e = piece
         near_peak = max((1.0 / (1.0 + abs((s + e) / 2 - p)) for p in peaks), default=0.0)
-        return near_peak
+        moment = _moment_at(moments, (s + e) / 2)
+        if not moment:
+            return near_peak
+        strength = (moment.get("intensity", 5) + moment.get("story", 5)) / 20
+        relevance = match(text, moment["what"]) if text else 0.0
+        return near_peak + 0.5 * strength + 1.2 * relevance
 
     chosen: list[tuple[float, float]] = []
     picked = 0.0
-    # 1) peaks first, 2) then evenly spread pieces so the scene still reads from start to end.
-    order = sorted(pieces, key=interest, reverse=True)[:max(1, len(peaks))] if peaks else []
+    # 1) peaks and the pieces that show what is said, 2) then evenly spread pieces so the scene
+    #    still reads from start to end.
+    slots_needed = max(1, round(need / ((MIN_SHOT + MAX_SHOT) / 2)))
+    top = max(1, len(peaks)) if not moments else max(1, (slots_needed * 2) // 3)
+    order = sorted(pieces, key=interest, reverse=True)[:top] if (peaks or moments) else []
     slots = max(1, round(need / ((MIN_SHOT + MAX_SHOT) / 2)))
     spread = [min(pieces, key=lambda p: abs((p[0] + p[1]) / 2 - (span[0] + (span[1] - span[0]) * (k + 0.5) / slots)))
               for k in range(slots)]
@@ -127,7 +165,7 @@ def _extra_footage(arc: dict, scene_index: int, footage: dict, cuts: dict, used:
                         return
 
 
-def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | None = None) -> dict:
+def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | None = None, similar=None) -> dict:
     """Shots on the output timeline: {clip_id, source, start, end, speed, timeline_start, duration, audio}."""
     cuts = cuts if cuts is not None else {}
     shots: list[dict] = []
@@ -166,7 +204,8 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
         available = sum(e - s for s, e in pieces)
         speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
         need = gap * speed
-        picked = choose(pieces, need, scene.get("peaks", []))
+        picked = choose(pieces, need, scene.get("peaks", []), moments=scene.get("moments"), text=beat.get("text", ""),
+                        similar=similar)
         cursor = start_t
         for s, e in picked:
             length = (e - s) / speed

@@ -42,7 +42,28 @@ and `review.html`.
 
 Repository secrets: `TMDB_READ_TOKEN` and `OPENSUBTITLES_API_KEY` (required for good stories), and
 optionally `YOUTUBE_COOKIES` (a Netscape `cookies.txt` export, ideally from a spare account) to reduce
-YouTube's bot checks. No paid APIs are used. Footage belongs to its owners; check your platform's
+YouTube's bot checks. No paid APIs are used.
+
+### Optional: Gemini (free Google AI Studio key)
+
+Add a free key from aistudio.google.com as the secret `GEMINI_API_KEY`. Gemini then:
+
+| Step | What Gemini adds | Without it |
+|---|---|---|
+| Find clips | the scenes people talk about most (Google Search) become search words | title/genre/studio-clip searches |
+| Screen | watches each clip from its YouTube link: wrong movie, trailer, recap, reaction, fan edit, commentary, overlays; a second-by-second description with action and story scores | OCR, cutting rate, Whisper checks |
+| Stories | ranks scenes by what actually happens on screen; strongest moments become peaks | cutting rate as "intensity" |
+| Write | writes the script from the dialogue **and** what is on screen, plus title options, cover words, pinned comment and hashtags; same spoiler/name/quote checks | Qwen3 14B on the runner |
+| Edit | each sentence plays over the shot that shows it (embeddings); dead moments skipped | clip order, peaks |
+| Covers | picks the strongest real frame and the cover words | frame sharpness/face scores |
+| Review | watches the finished Short: hook, clarity, picture-matches-words, pace, framing, ending, problems with timestamps, age-restriction risk | numeric checks only |
+
+Gemini is never required: when the key is missing, the daily quota is used up, the service is down or
+a request is blocked, every step falls back to the local tools and the run still finishes. Models are
+discovered from the API (newest Flash / Flash-Lite), not hardcoded; `SHORTS_GEMINI_<SMART|LIGHT|EMBED>_MODEL`
+overrides a choice, `SHORTS_GEMINI=off` turns Gemini off and `SHORTS_GEMINI_MAX_CALLS` (default 80)
+caps requests per job. Free-tier requests may be used by Google to improve its products; only public
+movie material is sent, never cookies or keys. The last version without Gemini is the `pre-gemini` branch. Footage belongs to its owners; check your platform's
 rules before publishing.
 
 The previous single-source command (`python -m shorts_pipeline generate --request …`) still works locally.

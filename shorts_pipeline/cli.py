@@ -122,14 +122,23 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     research = run_research(movie, workdir, output)
     lap('research')
     youtube = YouTube()
-    found = discover(research, youtube)
+    from . import gemini as gem
+    google, hints = gem.client(), None
+    if google is not None:  # the scenes people talk about most → better search words
+        try:
+            hints = gem.scene_hints(google, research['movie']) or None
+            print(f"[discover] Gemini scene hints: {hints}", file=sys.stderr, flush=True)
+        except gem.GeminiUnavailable as exc:
+            print(f"[discover] no Gemini scene hints: {str(exc)[:160]}", file=sys.stderr, flush=True)
+    found = discover(research, youtube, **({'scene_hints': hints} if hints else {}))
     lap('search_and_rank')
     placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
     lap('download_and_place')
     screened = {}
     if screen:
         from .screening import screen_candidates
-        screened = {r['id']: r for r in screen_candidates(placed, youtube, Path(workdir).resolve(), top=screen)}
+        screened = {r['id']: r for r in screen_candidates(placed, youtube, Path(workdir).resolve(), top=screen,
+                                                          movie=research['movie'], gemini=google)}
     lap('screen')
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -152,7 +161,8 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
              'caption_note': c['placement'].get('caption_error') or (None if c['placement'].get('caption_file')
                                                                     else 'no caption file'),
              'screen': (None if c['id'] not in screened else
-                        'pass' if screened[c['id']].get('accept') else '; '.join(screened[c['id']].get('reasons', [])))}
+                        'pass' if screened[c['id']].get('accept') else '; '.join(screened[c['id']].get('reasons', []))),
+             'watched': bool(screened.get(c['id'], {}).get('watch'))}
             for i, c in enumerate(placed['clips'])]
     summary = {'movie': research['movie']['title'], 'year': research['movie']['year'],
                'candidates': len(found['candidates']), 'rejected': len(found['rejected']),
@@ -160,7 +170,9 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
                'arcs': [{'id': a['id'], 'movie': [a['movie_start'], a['movie_end']], 'footage': a['footage_seconds'],
                          'score': a['score'], 'scenes': [s['clip_title'][:40] for s in a['scenes']],
                          'shorter': a['shorter_than_requested']} for a in stories['arcs']],
-               'clips': rows, 'timings_seconds': timings}
+               'clips': rows, 'timings_seconds': timings,
+               'gemini': google.usage() if google is not None else 'off (no GEMINI_API_KEY)',
+               'scene_hints': hints or []}
     write_json(output/'summary.json', summary)
     return summary
 
@@ -175,7 +187,15 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
     stories = json.loads((source/'arcs.json').read_text())
     srt, plot = source/'movie.srt', source/'plot.txt'
     transcript = MovieTranscript.from_subtitles(srt.read_text(errors='ignore')) if srt.exists() else None
-    llm = Ollama(model or WRITER_MODEL)
+    from . import gemini as gem
+    local_model = model or WRITER_MODEL
+    google = gem.client()
+    if google is not None:  # Gemini writes; the local model takes over if Gemini cannot
+        llm = gem.FallbackWriter(gem.GeminiWriter(google), lambda: Ollama(local_model),
+                                 wait_ready=lambda: gem.wait_for_ollama(model=local_model))
+        drafts = 1  # a strong first draft, then the same checks and targeted fixes
+    else:
+        llm = Ollama(local_model)
     output.mkdir(parents=True, exist_ok=True)
     results, rejected, lines = [], [], [f"# {research['movie']['title']} ({research['movie']['year']}) — scripts", '']
     chosen = stories['arcs'][:max_arcs]
@@ -185,6 +205,8 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
         started = time.time()
         result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '', drafts=drafts)
         result['seconds_to_write'] = round(time.time()-started, 1)
+        if google is not None:
+            result['gemini'] = google.usage()
         if result.get('rejected'):  # never voiced or rendered; kept for review
             rejected.append(result)
             write_json(output/'rejected.json', rejected)
@@ -201,7 +223,8 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
                   f"**Hook:** {script.get('hook')}", '']
         calls = result.get('model_calls') or []
         if calls:
-            lines[-2:-2] = [f"Model: {len(calls)} calls · reading prompt {sum(c['prompt_seconds'] for c in calls):.0f} s "
+            used = sorted({c.get('model') or local_model for c in calls})
+            lines[-2:-2] = [f"Model: {', '.join(used)} · {len(calls)} calls · reading prompt {sum(c['prompt_seconds'] for c in calls):.0f} s "
                             f"({sum(c['prompt_tokens'] for c in calls)} tokens) · writing {sum(c['output_seconds'] for c in calls):.0f} s "
                             f"({sum(c['output_tokens'] for c in calls)} tokens)", '']
         for beat in script.get('beats', []):
@@ -375,6 +398,11 @@ def run_package(discover: Path, scripts: Path, voice: Path, render: Path, output
             print(f'Packaging {arc_id} incomplete: {str(exc)[:300]}', file=sys.stderr)
             rows.append({'arc': arc_id, 'title': results.get(arc_id, {}).get('script', {}).get('title'),
                          'verdict': 'warn', 'warnings': [f'packaging incomplete: {str(exc)[:200]}']})
+    from . import gemini as gem
+    google = gem.client()
+    if google is not None:
+        for row in rows:
+            row['gemini'] = google.usage()
     write_json(output/'summary.json', rows)
     return {'packages': rows}
 
@@ -384,13 +412,26 @@ def _package_story(arc_id, folder, main_video, rendered, outputs, edl, voiceover
     from .covers import contact_sheet, make_covers
     from .publish import write_package
     shot_parts = Path(parts).resolve()/arc_id if parts and (Path(parts)/arc_id).exists() else None
-    made = make_covers(main_video, edl, results[arc_id]['script'].get('title', ''), folder,
+    from . import gemini as gem
+    google = gem.client()
+    script = results[arc_id]['script']
+    chooser = (lambda images, title: gem.pick_cover(google, images, title)) if google is not None else None
+    made = make_covers(main_video, edl, script.get('title', ''), folder,
                        aspects=tuple(outputs), text_reader=text_reader, face_finder=face_finder,
-                       parts=shot_parts, plans=rendered.get('plans'))
+                       parts=shot_parts, plans=rendered.get('plans'), chooser=chooser,
+                       words=(script.get('cover_words') or '').split())
     sheet = contact_sheet(main_video, edl['duration'], folder/'contact-sheet.jpg')
+    viewer = None
+    if google is not None:  # a strict editor watches the finished Short
+        spoken = ' '.join(b.get('text', '') for b in voiceover['beats'])
+        try:
+            viewer = gem.critique(google, main_video, script.get('title', ''), spoken)
+            write_json(folder/'gemini-review.json', viewer)
+        except gem.GeminiUnavailable as exc:
+            viewer = {'error': str(exc)[:200]}
     pack = write_package(folder, result=results[arc_id], research=research, arc=arcs[arc_id], clips=clips,
                          voiceover=voiceover, edl=edl, render=outputs, covers=made, sheet=str(sheet),
-                         target_seconds=length)
+                         target_seconds=length, viewer=viewer)
     return {'arc': arc_id, 'title': pack['titles'][0] if pack['titles'] else None, 'verdict': pack['verdict'],
             'warnings': [f"{c['check']}: {c['detail']}" for c in pack['checks'] if c['status'] != 'pass']}
 
@@ -444,7 +485,7 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         arc = arcs[voiceover['arc']]
         footage = _footage([s['clip_id'] for s in arc['scenes']], screened, workdir)
         cuts = {s['clip_id']: shot_changes(Path(footage[s['clip_id']]), s['clip_start'], s['clip_end']) for s in arc['scenes']}
-        edl = build_edl(arc, voiceover, footage, cuts)
+        edl = build_edl(arc, voiceover, footage, cuts, similar=_similarity(arc, voiceover))
         plans = plan_shots(edl, screened)
         for shot in edl['shots']:
             shot.pop('source', None)  # machine-specific; each render machine downloads its own copy
@@ -452,6 +493,29 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         rows.append({'arc': voiceover['arc'], 'shots': edl['shot_count'],
                      'moving_shots': sum(1 for p in plans.values() if p['motion'] >= 2.5)})
     return {'planned': rows}
+
+
+def _similarity(arc: dict, voiceover: dict):
+    """Sentence ↔ moment-description similarity from Gemini embeddings (one request per Short);
+    None (word overlap) without Gemini or moments."""
+    from . import gemini as gem
+    google = gem.client()
+    whats = sorted({m['what'] for s in arc['scenes'] for m in s.get('moments') or []})
+    texts = sorted({b.get('text', '') for b in voiceover['beats'] if b['kind'] == 'narration' and b.get('text')})
+    if google is None or not whats or not texts:
+        return None
+    try:
+        vectors = google.embed(texts + whats)
+    except gem.GeminiUnavailable as exc:
+        print(f'No Gemini embeddings, word matching used: {str(exc)[:120]}', file=sys.stderr)
+        return None
+    table = dict(zip(texts + whats, vectors))
+
+    def similar(text: str, what: str) -> float:
+        a, b = table.get(text), table.get(what)
+        # Embedding cosines of unrelated sentences sit around 0.5-0.6: stretch the useful range to 0..1.
+        return max(0.0, min(1.0, (gem.cosine(a, b) - 0.55) / 0.3)) if a and b else 0.0
+    return similar
 
 
 def run_render_part(edit_dir: Path, arc: str, aspect: str, chunk: int, chunks: int, output: Path, workdir: Path) -> dict:

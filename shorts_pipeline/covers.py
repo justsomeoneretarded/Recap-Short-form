@@ -126,7 +126,9 @@ def _part(parts: Path | None, aspect: str, index: int) -> Path | None:
 
 def make_covers(video: Path, edl: dict, title: str, outdir: Path, *, aspects=("square", "vertical"),
                 text_reader=None, face_finder=None, max_candidates: int = 24, parts: Path | None = None,
-                plans: dict | None = None) -> dict:
+                plans: dict | None = None, chooser=None, words: list[str] | None = None) -> dict:
+    """Covers from real frames of the Short. `chooser(images, title)` (Gemini, optional) picks the
+    strongest of the best-scoring frames and the cover words; otherwise the frame scores decide."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     main = "vertical" if "vertical" in aspects else aspects[0]
@@ -153,7 +155,17 @@ def make_covers(video: Path, edl: dict, title: str, outdir: Path, *, aspects=("s
     candidates.sort(key=lambda c: c["score"], reverse=True)
     best_face = next((c for c in candidates if c["faces"]), candidates[0])
     best_other = next((c for c in candidates if abs(c["time"] - best_face["time"]) > 3), candidates[0])
-    words = hook_words(title)
+    words = [w for w in (words or []) if w][:4] or hook_words(title)
+    picked_by = "frame scores"
+    if chooser is not None and len(candidates) > 1:
+        shortlist = candidates[:10]
+        try:
+            pick = chooser([c["image"] for c in shortlist], title)
+            best_face, best_other = shortlist[pick["best"]], shortlist[pick["second"]]
+            words = pick.get("words") or words
+            picked_by = "Gemini"
+        except Exception as exc:  # noqa: BLE001 - the frame scores still give a good cover
+            picked_by = f"frame scores (Gemini: {str(exc)[:80]})"
     outputs = {}
     for aspect in aspects:
         size = SIZES[aspect]
@@ -181,6 +193,7 @@ def make_covers(video: Path, edl: dict, title: str, outdir: Path, *, aspects=("s
             image.save(path, quality=92)
             outputs[f"{aspect}-{name}"] = str(path)
     return {"covers": outputs, "chosen_times": [best_face["time"], best_other["time"]], "hook": " ".join(words),
+            "picked_by": picked_by,
             "from_clean_shots": bool(parts and _part(parts, main, best_face["index"])),
             "candidates": [{k: v for k, v in c.items() if k != "image"} for c in candidates[:8]]}
 

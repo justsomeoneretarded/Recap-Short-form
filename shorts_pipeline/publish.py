@@ -16,10 +16,12 @@ def _hashtag(text: str) -> str:
     return "#" + re.sub(r"[^A-Za-z0-9]", "", text.title())
 
 
-def title_options(result: dict, limit: int = 3) -> list[str]:
-    """The chosen script's title first, then the other drafts' titles (distinct, ≤ 70 characters)."""
+def title_options(result: dict, limit: int = 5) -> list[str]:
+    """The chosen script's title first, then the writer's alternatives and the other drafts' titles
+    (distinct, ≤ 70 characters)."""
     seen, titles = set(), []
-    for title in [result["script"].get("title")] + [(d.get("script") or {}).get("title") for d in result.get("drafts", [])]:
+    for title in ([result["script"].get("title")] + list(result["script"].get("title_options") or []) +
+                  [(d.get("script") or {}).get("title") for d in result.get("drafts", [])]):
         if not title:
             continue
         clean = " ".join(str(title).split())[:70]
@@ -34,6 +36,7 @@ def description(result: dict, research: dict, arc: dict, clips: dict[str, dict])
     script = result["script"]
     cast = ", ".join(c["name"] for c in movie.get("cast", [])[:4])
     tags = [_hashtag(movie["title"]), "#MovieRecap", "#Shorts"] + [_hashtag(g) for g in movie.get("genres", [])[:2]]
+    tags += [_hashtag(t.lstrip("#")) for t in script.get("hashtags") or [] if str(t).strip("# ")][:5]
     sources = []
     for scene in arc["scenes"]:
         clip = clips.get(scene["clip_id"], {})
@@ -64,7 +67,8 @@ def tags(research: dict) -> list[str]:
     return out
 
 
-def review(render: dict, voiceover: dict, result: dict, edl: dict, target_seconds: float) -> list[dict]:
+def review(render: dict, voiceover: dict, result: dict, edl: dict, target_seconds: float,
+           viewer: dict | None = None) -> list[dict]:
     checks = []
 
     def add(name: str, status: str, detail: str) -> None:
@@ -104,6 +108,21 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
                 for out in render.values() for r in out.get("shot_rows", []) if r.get("fallback")]
     add("automatic repairs", "pass" if not repairs else "warn",
         "; ".join(r["reason"] for r in repairs)[:400] or "none needed")
+    if viewer and viewer.get("scores"):
+        scores = viewer["scores"]
+        overall = scores.get("overall", 0)
+        add("viewer review (Gemini watched it)", "pass" if overall >= 7 and viewer.get("keep_watching") else "warn",
+            " · ".join(f"{k.replace('_', ' ')} {v}/10" for k, v in scores.items()) +
+            ("" if viewer.get("keep_watching") else " · would scroll away"))
+        if viewer.get("problems"):
+            add("viewer review: problems", "warn",
+                "; ".join(f"{p['second']:.0f}s {p['what']}" + (f" → {p['fix']}" if p.get("fix") else "")
+                          for p in viewer["problems"])[:900])
+        risk = viewer.get("age_restriction_risk", "low")
+        add("age restriction risk", {"low": "pass", "medium": "warn", "high": "fail"}[risk],
+            f"{risk}" + (f": {viewer['age_reason']}" if viewer.get("age_reason") else ""))
+    elif viewer and viewer.get("error"):
+        add("viewer review (Gemini)", "warn", f"not available: {viewer['error']}")
     return checks
 
 
@@ -122,11 +141,15 @@ def review_html(name: str, checks: list[dict], covers: dict, sheet: str | None, 
 
 
 def write_package(folder: Path, *, result: dict, research: dict, arc: dict, clips: dict[str, dict], voiceover: dict,
-                  edl: dict, render: dict, covers: dict, sheet: str | None, target_seconds: float) -> dict:
+                  edl: dict, render: dict, covers: dict, sheet: str | None, target_seconds: float,
+                  viewer: dict | None = None) -> dict:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     titles = title_options(result)
-    checks = review(render, voiceover, result, edl, target_seconds)
+    checks = review(render, voiceover, result, edl, target_seconds, viewer)
+    pinned = (result["script"].get("pinned_comment") or "").strip()
+    if pinned:
+        (folder / "pinned-comment.txt").write_text(pinned + "\n")
     (folder / "title-options.txt").write_text("\n".join(titles) + "\n")
     (folder / "description.txt").write_text(description(result, research, arc, clips) + "\n")
     (folder / "tags.txt").write_text(", ".join(tags(research)) + "\n")

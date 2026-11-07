@@ -229,7 +229,22 @@ def write_report(path: Path, report: dict) -> None:
     path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
 
-def screen_candidates(placed: dict, youtube, workdir: Path, *, top: int = 8) -> list[dict]:
+def _watch(report: dict, clip: dict, movie: dict | None, gemini) -> dict:
+    """Let Gemini watch an accepted clip (optional): reject what our checks miss, and keep its
+    second-by-second description for the stories, the writer and the edit."""
+    if gemini is None or movie is None or not report.get("accept") or report.get("watch"):
+        return report
+    from .gemini import GeminiUnavailable, apply_watch, watch_clip
+    try:
+        watch = watch_clip(gemini, clip["id"], movie, duration=report.get("duration") or clip.get("duration"),
+                           local=Path(report["path"]) if report.get("path") else None)
+    except GeminiUnavailable as exc:
+        return {**report, "notes": list(report.get("notes") or []) + [f"not watched by Gemini: {str(exc)[:120]}"]}
+    return apply_watch(report, watch)
+
+
+def screen_candidates(placed: dict, youtube, workdir: Path, *, top: int = 8, movie: dict | None = None,
+                      gemini=None) -> list[dict]:
     """Download the best-ranked clips and screen them; one failure never stops the batch."""
     import os
     import time
@@ -245,7 +260,11 @@ def screen_candidates(placed: dict, youtube, workdir: Path, *, top: int = 8) -> 
             continue
         cache = folder / f"{clip['id']}.screen.json"
         if cache.exists():
-            reports.append({**row, **json.loads(cache.read_text())})
+            cached = json.loads(cache.read_text())
+            watched = _watch(cached, clip, movie, gemini)
+            if watched is not cached and watched.get("watch"):
+                write_report(cache, watched)
+            reports.append({**row, **watched})
             continue
         try:
             video = youtube.download(clip["id"], folder)
@@ -253,6 +272,7 @@ def screen_candidates(placed: dict, youtube, workdir: Path, *, top: int = 8) -> 
                 raise RuntimeError("download produced no file")
             report = screen(video, placement=clip.get("placement"))
             report["path"] = str(video)
+            report = _watch(report, clip, movie, gemini)
             write_report(cache, report)
         except Exception as exc:  # noqa: BLE001
             report = {"accept": False, "reasons": [f"could not screen: {str(exc)[:160]}"], "notes": []}

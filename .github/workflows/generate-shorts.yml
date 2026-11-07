@@ -41,6 +41,11 @@ concurrency:
   group: generate-shorts-${{ github.run_id }}-${{ inputs.tag }}
   cancel-in-progress: false
 
+env:
+  # Optional free Google AI Studio key. With it, Gemini watches the clips, writes the scripts, matches
+  # sentences to shots, picks covers and reviews each finished Short; without it, everything runs locally.
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
 jobs:
   validate:
     runs-on: ubuntu-24.04
@@ -156,16 +161,25 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
           sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends zstd
           python -m pip install -e .
+          cat > "$RUNNER_TEMP/local-writer.sh" <<'SH'
+          set -e
           python scripts/install_ollama.py
           # Flash attention and an 8-bit KV cache: faster on long prompts on CPU, same output quality.
-          OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 "$RUNNER_TEMP/shorts-ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 nohup "$RUNNER_TEMP/shorts-ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
           for _ in $(seq 1 60); do curl -sf http://127.0.0.1:11434/api/version > /dev/null && break; sleep 1; done
           "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull qwen3:14b > /dev/null
+          SH
+          if [ -n "$GEMINI_API_KEY" ]; then
+            # Gemini writes; the local writer gets ready in the background in case Gemini cannot.
+            nohup bash "$RUNNER_TEMP/local-writer.sh" > "$RUNNER_TEMP/local-writer.log" 2>&1 &
+          else
+            bash "$RUNNER_TEMP/local-writer.sh"
+          fi
       - uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.tag }}discover
           path: output/discover
-      - name: Write this story's script (2 drafts, judged, fixed)
+      - name: Write this story's script (Gemini, or 2 local drafts judged and fixed)
         run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 5 --drafts 2 --arc-index ${{ matrix.slot }}
       - uses: actions/upload-artifact@v4
         with:
