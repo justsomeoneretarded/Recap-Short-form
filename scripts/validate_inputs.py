@@ -30,11 +30,18 @@ if not 30 <= length <= 180:
 speech = str(data.get("speech_model", "original")).strip().lower()
 if speech not in MODELS:
     errors.append(f"Speech model must be one of {sorted(MODELS)}.")
+try:
+    stories = int(float(str(data.get("max_stories") or 5)))
+except ValueError:
+    stories = -1
+if not 1 <= stories <= 5:
+    errors.append("Stories must be between 1 and 5.")
 if errors:
     for error in errors:
         print(f"::error title=Invalid input::{error}")
     sys.exit(1)
-values = {"movie": movie, "narrator": narrator, "length": str(length), "speech_model": speech}
+values = {"movie": movie, "narrator": narrator, "length": str(length), "speech_model": speech,
+          "stories": str(stories)}
 print(json.dumps(values))
 if os.environ.get("GITHUB_OUTPUT"):
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:

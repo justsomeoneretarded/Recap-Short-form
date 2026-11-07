@@ -25,11 +25,20 @@ on:
         options: [original, turbo, nano]
         default: original
 
+  workflow_call:  # the five-movie test runs this exact pipeline once per movie, side by side
+    inputs:
+      movie: {type: string, required: true}
+      narrator: {type: string, default: warguy}
+      length: {type: string, default: '150'}
+      speech_model: {type: string, default: original}
+      max_stories: {type: number, default: 5}
+      tag: {type: string, default: '', description: Prefix for artifact names when several movies share one run}
+
 permissions:
   contents: read
 
 concurrency:
-  group: generate-shorts-${{ github.ref }}
+  group: generate-shorts-${{ github.run_id }}-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -41,6 +50,7 @@ jobs:
       narrator: ${{ steps.check.outputs.narrator }}
       length: ${{ steps.check.outputs.length }}
       speech_model: ${{ steps.check.outputs.speech_model }}
+      stories: ${{ steps.check.outputs.stories }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate inputs before model downloads
@@ -103,10 +113,13 @@ jobs:
         run: python -u -m shorts_pipeline discover --movie "$MOVIE" --screen 10 --length "$LENGTH" --output output/discover
       - name: Count the stories (one writing machine each, up to 5)
         id: stories
+        env:
+          MAX_STORIES: ${{ needs.validate.outputs.stories }}
         run: |
           python - <<'EOF'
           import json, os
-          count = min(5, len(json.load(open("output/discover/arcs.json")).get("arcs", [])))
+          limit = int(os.environ.get("MAX_STORIES") or 5)
+          count = min(limit, len(json.load(open("output/discover/arcs.json")).get("arcs", [])))
           if not count:
               raise SystemExit("No story could be built from the clips; see output/discover/summary.json")
           open(os.environ["GITHUB_OUTPUT"], "a").write(f"slots={json.dumps(list(range(count)))}\n")
@@ -115,7 +128,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: discover
+          name: ${{ inputs.tag }}discover
           path: output/discover
           retention-days: 7
 
@@ -150,13 +163,13 @@ jobs:
           "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull qwen3:14b > /dev/null
       - uses: actions/download-artifact@v4
         with:
-          name: discover
+          name: ${{ inputs.tag }}discover
           path: output/discover
       - name: Write this story's script (2 drafts, judged, fixed)
         run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 5 --drafts 2 --arc-index ${{ matrix.slot }}
       - uses: actions/upload-artifact@v4
         with:
-          name: write-part-${{ matrix.slot }}
+          name: ${{ inputs.tag }}write-part-${{ matrix.slot }}
           path: output/write
           retention-days: 2
 
@@ -170,7 +183,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: write-part-*
+          pattern: ${{ inputs.tag }}write-part-*
           path: parts
       - name: Join the scripts and list the stories to produce
         id: arcs
@@ -180,7 +193,7 @@ jobs:
           from pathlib import Path
           out = Path("output/write"); out.mkdir(parents=True, exist_ok=True)
           results, markdown = [], []
-          for folder in sorted(glob.glob("parts/write-part-*"), key=lambda p: int(p.rsplit("-", 1)[1])):
+          for folder in sorted(glob.glob("parts/*write-part-*"), key=lambda p: int(p.rsplit("-", 1)[1])):
               scripts = Path(folder, "scripts.json")
               if scripts.exists():
                   results += json.loads(scripts.read_text())
@@ -196,7 +209,7 @@ jobs:
           EOF
       - uses: actions/upload-artifact@v4
         with:
-          name: write
+          name: ${{ inputs.tag }}write
           path: output/write
           retention-days: 7
 
@@ -257,11 +270,11 @@ jobs:
           key: shorts-make-models-v2  # includes the alignment model
       - uses: actions/download-artifact@v4
         with:
-          name: discover
+          name: ${{ inputs.tag }}discover
           path: output/discover
       - uses: actions/download-artifact@v4
         with:
-          name: write
+          name: ${{ inputs.tag }}write
           path: output/write
       - name: Voice the script and make captions
         run: python -u -m shorts_pipeline voice --discover output/discover --scripts output/write --output output/voice --arc "$ARC" --narrator "$NARRATOR" --tts-model "$SPEECH_MODEL"
@@ -269,7 +282,7 @@ jobs:
         run: python -u -m shorts_pipeline edit-plan --discover output/discover --voice output/voice --output output/edit
       - uses: actions/upload-artifact@v4
         with:
-          name: voice-${{ matrix.arc }}
+          name: ${{ inputs.tag }}voice-${{ matrix.arc }}
           path: |
             output/voice
             output/edit
@@ -277,7 +290,7 @@ jobs:
       - name: Ship this story's clips to the render machines (no YouTube downloads there)
         uses: actions/upload-artifact@v4
         with:
-          name: footage-${{ matrix.arc }}
+          name: ${{ inputs.tag }}footage-${{ matrix.arc }}
           path: work/shorts/footage/*.mp4
           compression-level: 0
           retention-days: 2
@@ -310,7 +323,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: footage-${{ matrix.arc }}
+          name: ${{ inputs.tag }}footage-${{ matrix.arc }}
           path: work/shorts/footage
       - uses: actions/setup-node@v4
         if: steps.footage.outcome != 'success'
@@ -342,13 +355,13 @@ jobs:
         run: bash scripts/phase0/warp_proxy.sh
       - uses: actions/download-artifact@v4
         with:
-          name: voice-${{ matrix.arc }}
+          name: ${{ inputs.tag }}voice-${{ matrix.arc }}
           path: output
       - name: Render this chunk (RIFE on moving shots, blending on calm ones)
         run: python -u -m shorts_pipeline render-part --edit output/edit --arc "$ARC" --aspect "$ASPECT" --chunk "$CHUNK" --chunks 4 --output output/parts
       - uses: actions/upload-artifact@v4
         with:
-          name: parts-${{ matrix.arc }}-${{ matrix.aspect }}-${{ matrix.chunk }}
+          name: ${{ inputs.tag }}parts-${{ matrix.arc }}-${{ matrix.aspect }}-${{ matrix.chunk }}
           path: output/parts
           retention-days: 2
 
@@ -380,19 +393,19 @@ jobs:
           curl -fsSL --retry 3 -o "$SHORTS_YUNET_MODEL" https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx || true
       - uses: actions/download-artifact@v4
         with:
-          name: discover
+          name: ${{ inputs.tag }}discover
           path: output/discover
       - uses: actions/download-artifact@v4
         with:
-          name: write
+          name: ${{ inputs.tag }}write
           path: output/write
       - uses: actions/download-artifact@v4
         with:
-          name: voice-${{ matrix.arc }}
+          name: ${{ inputs.tag }}voice-${{ matrix.arc }}
           path: output
       - uses: actions/download-artifact@v4
         with:
-          pattern: parts-${{ matrix.arc }}-*
+          pattern: ${{ inputs.tag }}parts-${{ matrix.arc }}-*
           path: output/parts
           merge-multiple: true
       - name: Join the chunks, add the narrator, master and burn captions
@@ -404,7 +417,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: short-${{ matrix.arc }}
+          name: ${{ inputs.tag }}short-${{ matrix.arc }}
           path: output/shorts
           retention-days: 14
 
@@ -415,7 +428,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: short-*
+          pattern: ${{ inputs.tag }}short-*
           path: shorts
           merge-multiple: true
       - name: Summary
@@ -436,6 +449,6 @@ jobs:
           EOF
       - uses: actions/upload-artifact@v4
         with:
-          name: shorts
+          name: ${{ inputs.tag }}shorts
           path: shorts
           retention-days: 14

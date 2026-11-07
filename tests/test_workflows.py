@@ -49,3 +49,17 @@ def test_pipeline_order_and_per_story_matrix():
     finish_runs=' '.join(s.get('run','') for s in jobs['finish']['steps'])
     assert finish_runs.index('shorts_pipeline finish')<finish_runs.index('shorts_pipeline package')
     assert 'secrets.YOUTUBE_COOKIES' in str(jobs['render']) and 'setup-node' in str(jobs['discover'])
+
+
+def test_test_runs_use_the_real_pipeline_per_movie():
+    import yaml
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    research = yaml.safe_load((root / "shorts-research.yml").read_text())
+    job = research["jobs"]["shorts"]
+    assert job["uses"] == "./.github/workflows/generate-shorts.yml"
+    assert job["with"]["tag"].startswith("m")
+    called = yaml.safe_load((root / "generate-shorts.yml").read_text())
+    on = called.get("on", called.get(True))
+    assert {"movie", "tag", "max_stories"} <= set(on["workflow_call"]["inputs"])
+    assert "inputs.tag" in called["concurrency"]["group"]

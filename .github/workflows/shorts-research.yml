@@ -43,331 +43,55 @@ jobs:
               out.write(f"indexes={json.dumps(list(range(len(films))))}\n")
           EOF
 
-  research:
+  shorts:
+    # The real one-button pipeline, once per movie, all movies side by side. Each movie moves
+    # through its stages at its own pace (no waiting for the slowest movie between stages).
+    name: shorts (${{ fromJSON(needs.movies.outputs.list)[matrix.index] }})
     needs: movies
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        movie: ${{ fromJSON(needs.movies.outputs.list) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-      - run: python -m pip install -e .
-      - name: Cache research (saves subtitle download quota)
-        uses: actions/cache@v4
-        with:
-          path: work/shorts/research
-          key: shorts-research-v1-${{ hashFiles('shorts_pipeline/research.py') }}-${{ matrix.movie }}
-          restore-keys: shorts-research-v1-
-      - name: Research the movie
-        env:
-          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
-          OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
-          MOVIE: ${{ matrix.movie }}
-        run: |
-          python -m shorts_pipeline research --movie "$MOVIE" --output output/research > research-summary.json
-          python - <<'EOF'
-          import json, os
-          r = json.load(open("output/research/research.json"))
-          m, w, s = r["movie"], r["wikipedia"], r["subtitles"]
-          lines = [f"### {m['title']} ({m['year']})",
-                   f"- TMDB {m['tmdb_id']} · IMDb {m['imdb_id']} · {m['runtime_minutes']} min · {', '.join(m['genres'])}",
-                   f"- Cast with photos: {sum(1 for c in m['cast'] if c['photo'])}/{len(m['cast'])} · official clips: {len(m['clips'])} · backdrops: {len(m['backdrops'])}",
-                   f"- Wikipedia: {w.get('page')} ({w.get('words')} plot words)",
-                   f"- Subtitles: {'cached' if s.get('cached') else s.get('release', s.get('skipped'))} · quota left: {s.get('remaining_quota', '–')}",
-                   *[f"- ⚠️ {x}" for x in r["warnings"]], ""]
-          print("\n".join(lines))
-          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write("\n".join(lines) + "\n")
-          EOF
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: research-${{ strategy.job-index }}
-          path: output/research
-          retention-days: 7
-
-  discover:
-    needs: movies
-    runs-on: ubuntu-24.04
-    timeout-minutes: 80
-    strategy:
-      fail-fast: false
-      matrix:
-        movie: ${{ fromJSON(needs.movies.outputs.list) }}
-    env:
-      HF_HOME: ${{ github.workspace }}/work/huggingface
-      SHORTS_CPU_THREADS: '4'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-      - name: Install FFmpeg, downloader and Whisper
-        timeout-minutes: 10
-        run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          APT="-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
-          sudo apt-get $APT update -qq && sudo apt-get $APT install -y --no-install-recommends ffmpeg jq
-          python -m pip install -e '.[source,screening]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Prepare optional YouTube cookies
-        env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-        run: python scripts/prepare_youtube_cookies.py
-      - name: Start YouTube proof-of-origin token provider
-        continue-on-error: true
-        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
-      - name: Prepare WARP route
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: bash scripts/phase0/warp_proxy.sh
-      - name: Restore research, placements and Whisper model
-        uses: actions/cache@v4
-        with:
-          path: |
-            work/shorts/research
-            work/shorts/placement
-            work/huggingface
-          key: shorts-discover-v1-${{ hashFiles('shorts_pipeline/research.py', 'shorts_pipeline/placement.py', 'shorts_pipeline/locate.py') }}-${{ matrix.movie }}
-          restore-keys: shorts-discover-v1-
-      - name: Discover, rank and place clips
-        env:
-          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
-          OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
-          MOVIE: ${{ matrix.movie }}
-        run: python -u -m shorts_pipeline discover --movie "$MOVIE" --screen 8 --output output/discover > /dev/null
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: discover-${{ strategy.job-index }}
-          path: |
-            output/discover/summary.json
-            output/discover/clips.json
-            output/discover/research.json
-            output/discover/screening.json
-            output/discover/arcs.json
-            output/discover/plot.txt
-            output/discover/movie.srt
-          retention-days: 7
-
-  write:
-    # One machine per story: every movie's 2 stories are written at the same time.
-    name: write (${{ fromJSON(needs.movies.outputs.list)[matrix.index] }}, story ${{ matrix.slot }})
-    needs: [movies, discover]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         index: ${{ fromJSON(needs.movies.outputs.indexes) }}
-        slot: [0, 1]
-    env:
-      SCRIPT_MODEL: qwen3:14b
-      SHORTS_WRITER_MODEL: qwen3:14b
-      OLLAMA_MODELS: ${{ github.workspace }}/work/ollama
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-      - name: Install pipeline and Ollama runtime
-        run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends zstd
-          python -m pip install -e .
-          python scripts/install_ollama.py
-          # Flash attention and an 8-bit KV cache: faster on long prompts on CPU, same output quality.
-          OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 "$RUNNER_TEMP/shorts-ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
-          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:11434/api/version > /dev/null && break; sleep 1; done
-          "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull qwen3:14b > /dev/null
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: discover-${{ matrix.index }}
-          path: output/discover
-      - name: Write this story's script
-        if: hashFiles('output/discover/arcs.json') != ''
-        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 2 --drafts 2 --arc-index ${{ matrix.slot }}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: write-${{ matrix.index }}-${{ matrix.slot }}
-          path: output/write
-          retention-days: 7
-
-  voice:
-    needs: [movies, write]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        movie: ${{ fromJSON(needs.movies.outputs.list) }}
-    env:
-      HF_HOME: ${{ github.workspace }}/work/huggingface
-      TORCH_HOME: ${{ github.workspace }}/work/torch
-      SHORTS_CPU_THREADS: '4'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-      - name: Install FFmpeg, Chatterbox, Whisper and downloader
-        timeout-minutes: 20
-        run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq
-          python -m pip install --upgrade pip
-          python -m pip install torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -e '.[voice,source]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Prepare optional YouTube cookies
-        env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-        run: python scripts/prepare_youtube_cookies.py
-      - name: Start YouTube proof-of-origin token provider
-        continue-on-error: true
-        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
-      - name: Prepare WARP route
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: bash scripts/phase0/warp_proxy.sh
-      - name: Restore voice and alignment models
-        uses: actions/cache@v4
-        with:
-          path: |
-            work/huggingface
-            work/torch
-          key: shorts-voice-models-v2  # v1 was saved before the 1.2 GB alignment model existed
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: discover-${{ strategy.job-index }}
-          path: output/discover
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: write-${{ strategy.job-index }}-*
-          path: parts
-      - name: Join this movie's story scripts
-        run: |
-          python3 - <<'EOF'
-          import glob, json
-          from pathlib import Path
-          results = []
-          for folder in sorted(glob.glob("parts/write-*-*"), key=lambda p: int(p.rsplit("-", 1)[1])):
-              scripts = Path(folder, "scripts.json")
-              if scripts.exists():
-                  results += json.loads(scripts.read_text())
-          if results:
-              Path("output/write").mkdir(parents=True, exist_ok=True)
-              Path("output/write/scripts.json").write_text(json.dumps(results, indent=1))
-          print("Stories written:", [r["arc"] for r in results])
-          EOF
-      - name: Voice the top story and make captions
-        if: hashFiles('output/write/scripts.json') != ''
-        run: python -u -m shorts_pipeline voice --discover output/discover --scripts output/write --output output/voice --max-arcs 1
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: voice-${{ strategy.job-index }}
-          path: output/voice
-          retention-days: 7
-
-  render:
-    name: render (${{ fromJSON(needs.movies.outputs.list)[matrix.index] }}, ${{ matrix.aspect }})
-    needs: [movies, voice]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:  # one machine per movie and shape: square and vertical render at the same time
-        index: ${{ fromJSON(needs.movies.outputs.indexes) }}
-        aspect: [square, vertical]
-    env:
-      SHORTS_YUNET_MODEL: ${{ github.workspace }}/work/models/face_detection_yunet_2023mar.onnx
-      SHORTS_RIFE_BUDGET: '2700'   # per shape; calm shots and anything past the budget use blending
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-      - name: Install FFmpeg, OpenCV, downloader and RIFE
-        timeout-minutes: 10
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq unzip libvulkan1 mesa-vulkan-drivers libgomp1
-          python -m pip install -e '.[source,screening]' 'bgutil-ytdlp-pot-provider>=2.0'
-          mkdir -p work/models
-          bash scripts/install_rife.sh || echo "::warning::RIFE unavailable; 60 fps uses motion-blended interpolation"
-          curl -fsSL --retry 3 -o "$SHORTS_YUNET_MODEL" https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx || echo "::warning::YuNet face model unavailable; framing uses motion only"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Prepare optional YouTube cookies
-        env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-        run: python scripts/prepare_youtube_cookies.py
-      - name: Start YouTube proof-of-origin token provider
-        continue-on-error: true
-        run: docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
-      - name: Prepare WARP route
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: bash scripts/phase0/warp_proxy.sh
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: discover-${{ matrix.index }}
-          path: output/discover
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: voice-${{ matrix.index }}
-          path: output/voice
-      - name: Edit and render (square + vertical, 60 fps with RIFE on moving shots)
-        if: hashFiles('output/voice/*/voiceover.json') != ''
-        run: python -u -m shorts_pipeline render --discover output/discover --voice output/voice --output output/render --interpolation auto --aspects ${{ matrix.aspect }}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: render-${{ matrix.index }}-${{ matrix.aspect }}
-          path: |
-            output/render/summary.json
-            output/render/*/final-*.mp4
-            output/render/*/render.json
-          retention-days: 7
+    uses: ./.github/workflows/generate-shorts.yml
+    with:
+      movie: ${{ fromJSON(needs.movies.outputs.list)[matrix.index] }}
+      narrator: warguy
+      length: '150'
+      speech_model: original
+      max_stories: 1
+      tag: m${{ matrix.index }}-
+    secrets: inherit
 
   summary:
-    needs: [research, discover, write, voice, render]
+    needs: [movies, shorts]
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with:
-          pattern: '*-*'
-          path: all
-      - name: One table for every movie
-        run: python -u scripts/summarize_discovery.py all
+        with: {pattern: 'm*-discover', path: all}
+      - uses: actions/download-artifact@v4
+        with: {pattern: 'm*-write', path: all}
+      - uses: actions/download-artifact@v4
+        with: {pattern: 'm*-shorts', path: all}
+      - name: Scripts, review results and quality numbers for every movie
+        run: |
+          python3 - <<'EOF'
+          import glob, json, os
+          from pathlib import Path
+          out = []
+          for movie in sorted({Path(p).name.split("-")[0] for p in glob.glob("all/m*-*")}):
+              disc = Path(f"all/{movie}-discover/summary.json")
+              if disc.exists():
+                  d = json.loads(disc.read_text())
+                  out += [f"# {movie}: {d.get('movie', '?')}", json.dumps({k: v for k, v in d.items() if not isinstance(v, (list, dict))})[:600], ""]
+              scripts = Path(f"all/{movie}-write/scripts.md")
+              out += [scripts.read_text() if scripts.exists() else "(no scripts)", ""]
+              for review in sorted(glob.glob(f"all/{movie}-shorts/*/review.json")):
+                  out.append(f"## review {review.split('/')[-2]}")
+                  out += [f"- {c['status'].upper()} {c['check']}: {c['detail']}" for c in json.load(open(review))]
+                  out.append("")
+              out.append("---")
+          text = "\n".join(out)
+          print(text)
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write(text + "\n")
+          EOF
