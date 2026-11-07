@@ -187,7 +187,8 @@ jobs:
           sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends zstd
           python -m pip install -e .
           python scripts/install_ollama.py
-          "$RUNNER_TEMP/shorts-ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          # Flash attention and an 8-bit KV cache: faster on long prompts on CPU, same output quality.
+          OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 "$RUNNER_TEMP/shorts-ollama/bin/ollama" serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
           for _ in $(seq 1 60); do curl -sf http://127.0.0.1:11434/api/version > /dev/null && break; sleep 1; done
           "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull qwen3:14b > /dev/null
       - uses: actions/download-artifact@v4

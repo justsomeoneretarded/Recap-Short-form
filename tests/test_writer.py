@@ -205,3 +205,24 @@ def test_swearing_lines_cliches_and_camera_talk_are_handled():
         {"scene": 0, "kind": "narration", "text": "Every second counts. The camera lingers on her face. Her jaw tightens."}]}
     assert any("cliches" in i for i in w.check(script, b)["issues"])
     assert "camera" not in " ".join(x.get("text", "") for x in w.cleanup(script, b)["beats"])
+
+
+def test_a_clean_first_draft_needs_only_one_model_call():
+    b = brief()
+
+    class GoodFirst(FakeLLM):
+        def chat(self, system, user, schema, **kw):
+            self.calls.append(schema is w.JUDGE_SCHEMA)
+            return self.drafts[1]  # the good draft straight away
+
+    llm = GoodFirst(b)
+    result = w.write_short(ARC, RESEARCH, MovieTranscript.from_subtitles(SRT), llm, drafts=2)
+    assert len(llm.calls) == 1 and not result["rejected"]
+
+
+def test_being_under_the_word_budget_alone_does_not_trigger_a_rewrite():
+    report = {"issues": [], "total_words": 140, "target_words": 230, "off_budget": {0: (60, 120)}}
+    assert not w.needs_fix(report)
+    assert w.needs_fix({**report, "total_words": 90})               # under half: worth a rewrite
+    assert not w.needs_fix({**report, "issues": ["filler: meanwhile"]}, serious_only=True)
+    assert w.needs_fix({**report, "issues": ["2 repeated sentences"]}, serious_only=True)

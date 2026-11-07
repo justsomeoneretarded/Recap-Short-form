@@ -363,9 +363,11 @@ def judge(llm, brief: Brief, drafts: list[dict]) -> dict[str, float]:
 
 
 def fix(llm, brief: Brief, script: dict, report: dict) -> dict:
-    if not report["issues"] and not report["off_budget"]:
+    if not needs_fix(report):
         return script
-    problems = list(report["issues"]) + [f"scene {s} has {w} words, needs about {b}" for s, (w, b) in report["off_budget"].items()]
+    problems = list(report["issues"])
+    if report["total_words"] < 0.5 * max(1, report["target_words"]):
+        problems += [f"scene {s} has {w} words, needs about {b}" for s, (w, b) in report["off_budget"].items()]
     extra = ("Here is a draft. Keep what works and its dialogue beats, but fix these problems:\n- " + "\n- ".join(problems) +
              "\nDRAFT:\n" + json.dumps(script, ensure_ascii=False))
     return llm.chat(SYSTEM, _user(brief, extra), SCRIPT_SCHEMA, temperature=0.4, seed=303,
@@ -405,6 +407,27 @@ def cleanup(script: dict, brief: Brief) -> dict:
     return script
 
 
+SERIOUS = ("names not in the brief", "generic template", "retells the dialogue", "repeated")
+
+
+def is_serious(issue: str) -> bool:
+    return any(key in issue for key in SERIOUS)
+
+
+def needs_fix(report: dict, *, serious_only: bool = False) -> bool:
+    """Rewrite for real problems. Being under the word budget alone is not one (the Short's length
+    follows the narration) unless the script is under half of it; a second rewrite only for
+    problems that would otherwise reject the script."""
+    issues = [i for i in report["issues"] if not serious_only or is_serious(i)]
+    too_short = report["total_words"] < 0.5 * max(1, report["target_words"])
+    return bool(issues) or (too_short and not serious_only)
+
+
+def good_enough(script: dict, brief: Brief) -> bool:
+    report = check(script, brief)
+    return not report["issues"] and report["total_words"] >= 0.6 * report["target_words"]
+
+
 def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, llm, *, plot: str = "",
                 drafts: int = 2) -> dict:
     brief = build_brief(arc, research, transcript, plot)
@@ -416,18 +439,21 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
             candidates.append({"script": script, "check": check(script, brief)})
         except (RuntimeError, ValueError, KeyError) as exc:
             candidates.append({"script": None, "error": str(exc)[:200]})
+        first = candidates[0]
+        if n == 0 and first["script"] and good_enough(cleanup(first["script"], brief), brief):
+            break  # a clean first draft: no second draft and no judge call (each costs minutes on CPU)
     usable = [c for c in candidates if c["script"]]
     if not usable:
         raise RuntimeError(f"No usable draft for {arc['id']}: {[c.get('error') for c in candidates]}")
-    judged = judge(llm, brief, [c["script"] for c in usable])
+    judged = judge(llm, brief, [c["script"] for c in usable]) if len(usable) > 1 else {"A": 0.0}
     for i, candidate in enumerate(usable):
         candidate["judge"] = judged.get(chr(65 + i), 0.0)
         candidate["total"] = round(0.6 * candidate["judge"] + 0.4 * candidate["check"]["score"], 3)
     best = max(usable, key=lambda c: c["total"])
     final = cleanup(best["script"], brief)
     final_check = check(final, brief)
-    for _ in range(2):  # targeted rewrites while problems remain
-        if not final_check["issues"] and not final_check["off_budget"]:
+    for attempt in range(2):  # targeted rewrites while problems remain
+        if not needs_fix(final_check, serious_only=attempt > 0):
             break
         try:
             fixed = cleanup(fix(llm, brief, final, final_check), brief)
@@ -436,8 +462,7 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
         fixed_check = check(fixed, brief)
         if fixed_check["score"] >= final_check["score"]:
             final, final_check = fixed, fixed_check
-    serious = [i for i in final_check["issues"]
-               if i.startswith(("names not in the brief", "generic template", "retells the dialogue", "repeated"))]
+    serious = [i for i in final_check["issues"] if is_serious(i)]
     rejected = bool(serious) or final_check["score"] < 0.25
     return {"arc": arc["id"], "script": final, "check": final_check, "brief": brief.data,
             "rejected": rejected, "rejected_because": serious or (["low script score"] if rejected else []),
