@@ -226,3 +226,13 @@ def test_being_under_the_word_budget_alone_does_not_trigger_a_rewrite():
     assert w.needs_fix({**report, "total_words": 90})               # under half: worth a rewrite
     assert not w.needs_fix({**report, "issues": ["filler: meanwhile"]}, serious_only=True)
     assert w.needs_fix({**report, "issues": ["2 repeated sentences"]}, serious_only=True)
+
+
+
+def test_hook_repeated_as_first_narration_is_dropped_not_rejected():
+    from shorts_pipeline import writer as w
+    brief = w.Brief({}, set(), {}, {0: 20})
+    script = {"title": "T", "hook": "SWAT officers break open a wall.", "beats": [
+        {"scene": 0, "kind": "narration", "text": "SWAT officers break open a wall! Bodies are inside."}]}
+    clean = w.cleanup(script, brief)
+    assert clean["beats"][0]["text"] == "Bodies are inside."

@@ -61,7 +61,8 @@ JUDGE_SCHEMA = {"type": "object", "properties": {"scores": {"type": "array", "it
 
 SYSTEM = """You write narration for viral movie-recap Shorts about ONE stretch of a movie: the scenes listed in the brief.
 Rules:
-1. The first sentence is the HOOK: the most intense, visible moment of these scenes, at most 14 words. No greeting, no title.
+1. The HOOK (its own field) is spoken first: the most intense, visible moment of these scenes, at most 14 words. No greeting,
+   no title. The beats continue after it: never repeat the hook inside the beats.
 2. Then at most two short sentences of setup from story_so_far (who, what they want). Nothing more about earlier events.
 3. Narrate ONLY what happens in these scenes, in order, using the scene dialogue and this_part_of_the_plot.
    Never mention anything that happens after these scenes, even if you know the movie. No spoilers of the ending.
@@ -415,12 +416,17 @@ def fix(llm, brief: Brief, script: dict, report: dict) -> dict:
                     max_tokens=output_tokens(brief))
 
 
+def _key(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9']+", text.lower()))
+
+
 def cleanup(script: dict, brief: Brief) -> dict:
     """Mechanical fixes that need no model: at most 3 playable movie lines, no quotation marks in
     narration, and the title never read out as narration."""
     script = json.loads(json.dumps(script))
     title = (script.get("title") or "").strip().lower().rstrip(".!")
     beats, lines, seen = [], 0, set()
+    hook_key = _key(script.get("hook") or "")
     for beat in script.get("beats", []):
         if beat.get("kind") == "dialogue":
             line = brief.lines.get(beat.get("line"))
@@ -433,7 +439,8 @@ def cleanup(script: dict, brief: Brief) -> dict:
             kept = []
             for sentence in _sentences_of(text):
                 key = sentence.lower()
-                if key in seen or (title and key.rstrip(".!") == title) or copies_dialogue(sentence, brief.lines):
+                if key in seen or (hook_key and _key(sentence) == hook_key) or (title and key.rstrip(".!") == title) \
+                        or copies_dialogue(sentence, brief.lines):  # the hook is already spoken first
                     continue
                 if re.search(r"\bthe camera\b|\bcuts to\b|\bthe scene shifts\b", sentence, re.I):
                     continue  # describes the film, not the story
