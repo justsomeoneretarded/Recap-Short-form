@@ -524,7 +524,9 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         plans = plan_shots(edl, screened)
         for shot in edl['shots']:
             shot.pop('source', None)  # machine-specific; each render machine downloads its own copy
-        write_json(output/voiceover['arc']/'edit.json', {'arc': voiceover['arc'], 'edl': edl, 'plans': plans})
+        write_json(output/voiceover['arc']/'edit.json', {'arc': voiceover['arc'], 'edl': edl, 'plans': plans,
+                                                         'mood': (arc.get('story') or {}).get('mood'),
+                                                         'movie': arc.get('id')})
         rows.append({'arc': voiceover['arc'], 'shots': edl['shot_count'],
                      'moving_shots': sum(1 for p in plans.values() if p['motion'] >= 2.5)})
     return {'planned': rows}
@@ -590,6 +592,12 @@ def run_finish(edit_dir: Path, voice: Path, parts: Path, arc: str, output: Path)
     parts_folder = Path(parts).resolve()/arc
     out = Path(output).resolve()/arc
     out.mkdir(parents=True, exist_ok=True)
+    from .sound import pick_track, scene_changes
+    mood = edit.get('mood')
+    music = pick_track(mood, key=f"{edit.get('movie', '')}-{arc}")
+    hits = scene_changes(edit['edl'], voiceover)
+    print(f"Sound: mood {mood}, music {music.name if music else 'none in the library'}, {len(hits)} whooshes",
+          file=sys.stderr)
     reports = {}
     for aspect in SIZES:
         rows = [r for p in sorted(parts_folder.glob(f'{aspect}-chunk-*.json')) for r in json.loads(p.read_text())]
@@ -597,7 +605,8 @@ def run_finish(edit_dir: Path, voice: Path, parts: Path, arc: str, output: Path)
             continue
         captions = folder/f'captions-{aspect}'/'captions.ass'
         reports[aspect] = finish_aspect(edit['edl'], voiceover, aspect, parts_folder,
-                                        captions if captions.exists() else None, out, rows)
+                                        captions if captions.exists() else None, out, rows,
+                                        music=music, hits=hits)
     write_json(out/'render.json', {'edl': edit['edl'], 'outputs': reports, 'plans': edit['plans']})
     return {'arc': arc, 'outputs': {a: {k: r[k] for k in ('duration', 'fps', 'duplicate_frames', 'integrated_lufs',
                                                           'interpolation_reasons')} for a, r in reports.items()}}

@@ -87,6 +87,10 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
         lufs, peak = out["integrated_lufs"], out["true_peak_db"]
         add(f"{aspect}: loudness", "pass" if abs(lufs + 14) <= 1 and peak <= -0.8 else "warn",
             f"{lufs:.1f} LUFS, {peak:.1f} dBTP (target −14 / −1)")
+        sound = out.get("sound") or {}
+        add(f"{aspect}: music and sound", "pass" if sound.get("music") else "warn",
+            (f"music '{sound['music']}' ducked under the voice" if sound.get("music") else
+             "no music bed (no track in the music library for this mood)") + f", {sound.get('hits', 0)} whooshes")
         streaks = out.get("streaked_shots") or []
         add(f"{aspect}: clean picture", "pass" if not streaks else "fail",
             "no damaged frames" if not streaks else f"shots {streaks[:8]} look smeared or corrupted")

@@ -30,6 +30,7 @@ STORY_SCHEMA = {"type": "object", "properties": {"stories": {"type": "array", "i
     "ending_mode": {"type": "string", "enum": ["renewed_threat", "reveal", "reflection", "thematic_payoff",
                                                 "resolved_payoff"]},
     "cold_open": {"type": "boolean"},
+    "mood": {"type": "string", "enum": ["tense", "action", "dark", "sad", "mysterious", "triumphant"]},
     "hooks": {"type": "array", "items": {"type": "string"}},
     "hook": {"type": "string"},
     "beats": {"type": "array", "items": {"type": "object", "properties": {
@@ -96,6 +97,7 @@ WRITE THE FULL SCRIPT NOW, like a great narrator (see the style examples):
   SCREEN in that beat; explain only what the picture cannot (who someone is, why it matters) in a few words. Never
   read dialogue out, never quote, never "X says", no filler ("little did he know", "meanwhile", "stay tuned"), no
   invented facts, no camera talk. Never repeat the hook.
+- mood: the music mood of this story (tense, action, dark, sad, mysterious or triumphant).
 - movie_lines: at most 3 per story in total, each an exact short line from the subtitle timeline inside that beat,
   played as the original audio at a confrontation or reveal.
 Plan up to {count} different stories, best first.
@@ -192,6 +194,7 @@ def clean_stories(raw: dict, runtime: float) -> list[dict]:
                             "hook": " ".join(str(story.get("hook") or "").split())[:160],
                             "hooks": [str(h)[:160] for h in (story.get("hooks") or [])][:5],
                             "ending_mode": story.get("ending_mode") or "renewed_threat",
+                            "mood": story.get("mood") or "tense",
                             "cold_open": bool(story.get("cold_open")) and len(beats) > 1 and
                             beats[0]["movie_start"] > beats[1]["movie_start"], "beats": beats[:MAX_BEATS]})
     return stories
@@ -346,7 +349,7 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, 
                      "short_seconds": round(min(target_seconds, 0.85 * footage), 1),
                      "shorter_than_requested": 0.85 * footage < target_seconds, "planned": True,
                      "story": {k: story.get(k) for k in ("title", "spine", "hook_idea", "ending_idea", "ending_mode",
-                                                         "cold_open", "hook")},
+                                                         "cold_open", "hook", "mood")},
                      "missing": missing,
                      "scenes": scenes})
     return arcs

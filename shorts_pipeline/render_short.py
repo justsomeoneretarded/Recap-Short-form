@@ -308,7 +308,7 @@ def streaked_shots(video: Path, edl: dict) -> list[int]:
 
 
 def finish_aspect(edl: dict, voiceover: dict, aspect: str, parts_folder: Path, captions: Path | None,
-                  outdir: Path, rows: list[dict]) -> dict:
+                  outdir: Path, rows: list[dict], *, music: Path | None = None, hits: list[float] | None = None) -> dict:
     """Join every shot of one aspect, add the narrator, master, burn captions → final-<aspect>.mp4."""
     parts = [Path(parts_folder) / f"{aspect}-shot-{i:04d}.mkv" for i in range(len(edl["shots"]))]
     missing = [p.name for p in parts if not p.exists()]
@@ -318,6 +318,15 @@ def finish_aspect(edl: dict, voiceover: dict, aspect: str, parts_folder: Path, c
     joined, mixed = work / "joined.mkv", work / "mixed.mkv"
     _concat(parts, joined)
     _narration_mix(joined, voiceover, mixed)
+    sound = {"music": None, "hits": 0}
+    if music or hits:  # music bed ducked under every voice, whooshes on scene changes
+        from .sound import add_sound
+        scored = work / "scored.mkv"
+        try:
+            sound = add_sound(mixed, scored, music=music, hits=hits or [], duration=probe(mixed)["duration"], work=work)
+            mixed = scored
+        except RuntimeError as exc:  # a broken track never costs the Short
+            sound = {"music": None, "hits": 0, "error": str(exc)[:160]}
     final = Path(outdir) / f"final-{aspect}.mp4"
     audio = finish(mixed, captions, final)
     info = probe(final)
@@ -326,7 +335,7 @@ def finish_aspect(edl: dict, voiceover: dict, aspect: str, parts_folder: Path, c
     for row in rows:
         reasons[row["why"]] = reasons.get(row["why"], 0) + 1
     return {"path": str(final), "duration": info["duration"], "width": info["width"], "height": info["height"],
-            "fps": info["fps"], **audio, "duplicate_frames": duplicate_frame_ratio(final),
+            "fps": info["fps"], **audio, "sound": sound, "duplicate_frames": duplicate_frame_ratio(final),
             "streaked_shots": streaked_shots(final, edl),
             "modes": {m: sum(1 for x in rows if x["mode"] == m) for m in ("track", "fit", "stack")},
             "interpolation": sorted({x["interpolation"] for x in rows}), "interpolation_reasons": reasons,
