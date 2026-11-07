@@ -129,35 +129,50 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     transcript = MovieTranscript.from_subtitles(Path(subtitles).read_text(errors='ignore')) if subtitles else None
     plot_file = Path(research.get('folder') or output)/'plot.txt'
     plot = plot_file.read_text() if plot_file.exists() else ''
-    google, hints, planned = gem.client(), None, []
+    google, hints, planned, found = gem.client(), None, [], None
+    log = lambda m: print(f"[discover] {m}", file=sys.stderr, flush=True)  # noqa: E731
     if google is not None and transcript is not None:
-        # Story first: plan the spine across the whole movie, then search footage for every beat.
-        from .story import beat_searches, plan_stories
+        # 1) general searches find what footage exists; 2) the story is planned from scenes those uploads
+        # contain; 3) each beat's own search adds targeted finds.
+        from .story import beat_searches, general_searches, plan_stories
         wanted = max(1, min(5, int(os.environ.get('MAX_STORIES') or 5)))
         try:
-            planned, broad = plan_stories(google, research, transcript, plot, length, count=wanted + 1, with_searches=True)
-            # General searches (action, fights, compilations …) find most real clips; the right seconds are
-            # cut out of long uploads later. Then each beat's own search.
-            hints = list(dict.fromkeys(broad + beat_searches(planned))) or None
-            print(f"[discover] searches from Gemini: {hints}", file=sys.stderr, flush=True)
-            for story in planned:
-                print(f"[discover] story: {story['title']} — " + " → ".join(b['name'] for b in story['beats']),
-                      file=sys.stderr, flush=True)
+            broad = general_searches(google, research['movie'], plot)
+            log(f"general searches from Gemini: {broad}")
         except gem.GeminiUnavailable as exc:
-            print(f"[discover] no story plan (scene-by-scene stories instead): {str(exc)[:160]}", file=sys.stderr, flush=True)
-    if google is not None and not hints:  # the scenes people talk about most → better search words
+            broad = []
+            log(f"no general searches from Gemini: {str(exc)[:120]}")
+        found = discover(research, youtube, **({'scene_hints': broad} if broad else {}))
         try:
-            hints = gem.scene_hints(google, research['movie']) or None
-            print(f"[discover] Gemini scene hints: {hints}", file=sys.stderr, flush=True)
+            planned = plan_stories(google, research, transcript, plot, length, count=wanted + 1,
+                                   uploads=found['candidates'])
+            for story in planned:
+                log(f"story: {story['title']} — " + " → ".join(b['name'] for b in story['beats']))
         except gem.GeminiUnavailable as exc:
-            print(f"[discover] no Gemini scene hints: {str(exc)[:160]}", file=sys.stderr, flush=True)
-    found = discover(research, youtube, **({'scene_hints': hints} if hints else {}))
+            log(f"no story plan (scene-by-scene stories instead): {str(exc)[:160]}")
+        targeted = [q for q in beat_searches(planned) if q not in found['queries']]
+        if targeted:
+            log(f"scene searches: {targeted}")
+            more = discover(research, youtube, scene_hints=targeted)
+            known = {c['id'] for c in found['candidates']}
+            found['candidates'] += [c for c in more['candidates'] if c['id'] not in known]
+            found['queries'] += [q for q in more['queries'] if q not in found['queries']]
+            found['rejected'] += more['rejected']
+            found['errors'] += more['errors']
+        hints = (broad or []) + targeted
+    if found is None:
+        if google is not None:  # the scenes people talk about most → better search words
+            try:
+                hints = gem.scene_hints(google, research['movie']) or None
+                log(f"Gemini scene hints: {hints}")
+            except gem.GeminiUnavailable as exc:
+                log(f"no Gemini scene hints: {str(exc)[:160]}")
+        found = discover(research, youtube, **({'scene_hints': hints} if hints else {}))
     lap('search_and_rank')
     confirmed, checked = {}, set()
     if planned:
         from .discovery import candidate_from_id
         from .story import confirm_beats, suggest_links
-        log = lambda m: print(f"[discover] {m}", file=sys.stderr, flush=True)  # noqa: E731
         known = {c['id']: c for c in found['candidates']}
         for n, story in enumerate(planned[:wanted]):
             try:  # Gemini + Google Search suggest real uploads per beat; each one is verified

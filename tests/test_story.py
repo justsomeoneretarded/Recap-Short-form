@@ -176,3 +176,34 @@ def test_plan_can_return_the_general_searches_too():
     stories, searches = st.plan_stories(Fake(), {"movie": {"title": "Havoc", "year": 2025, "runtime_minutes": 100}},
                                         transcript, "", 150, with_searches=True)
     assert len(stories) == 1 and searches == ["Havoc kills", "Havoc shootout"]
+
+
+def test_story_is_planned_from_the_uploads_that_exist():
+    transcript = MovieTranscript.from_subtitles(SRT)
+    seen = {}
+
+    class Fake:
+        def generate(self, role, parts, **kw):
+            seen["prompt"] = parts[0]["text"]
+            return {"broad_searches": [], "stories": []}
+    st.plan_stories(Fake(), {"movie": {"title": "Havoc", "year": 2025, "runtime_minutes": 100}}, transcript, "", 150,
+                    uploads=[{"id": "a", "title": "Havoc (2025) | Brutal Club Fight Scene", "duration": 180}])
+    assert "FOOTAGE THAT EXISTS" in seen["prompt"] and "Brutal Club Fight Scene (180 s)" in seen["prompt"]
+
+
+def test_general_searches_come_from_one_light_request():
+    g = FakeGemini([{"broad_searches": ["Fractured 2019 hospital scene", "intense scene"]}])
+    assert st.general_searches(g, {"title": "Fractured", "year": 2019}, "plot") == \
+        ["Fractured 2019 hospital scene", "Fractured intense scene"]
+    assert g.calls[0][0] == "light" and "never to a genre template" in g.calls[0][1][0]["text"]
+
+
+def test_long_confirmed_stretch_is_capped_and_soft_uploads_are_not_watched():
+    beat_ = one_story()["beats"][0]
+    scene = st.confirmed_scene(beat_, {"id": "x", "start": 29.0, "end": 174.0, "confidence": 0.9}, None, None)
+    assert scene["clip_end"] - scene["clip_start"] <= st.MAX_BEAT_SECONDS
+    g = FakeGemini([{"beats": [{"beat": 0, "uploads": [0, 1]}]}, {"shows_scene": True, "confidence": 0.9, "start": 1, "end": 20}])
+    cands = [{"id": "soft", "title": "gas station 354p", "signals": {"height": 354}},
+             {"id": "sharp", "title": "gas station", "signals": {"height": 1080}}]
+    confirmed = st.confirm_beats(g, one_story(), cands, {"title": "John Wick", "year": 2014})
+    assert confirmed[0]["id"] == "sharp"

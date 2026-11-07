@@ -42,6 +42,14 @@ STORY_SCHEMA = {"type": "object", "properties": {"stories": {"type": "array", "i
     "broad_searches": {"type": "array", "items": {"type": "string"}}},
     "required": ["stories", "broad_searches"]}
 
+BROAD_RULES = """Also give broad_searches: 6-10 short, general searches people type to find ANY footage of this movie on YouTube.
+Fit them to what THIS movie actually contains, never to a genre template: an action film may get action, fights, kills,
+shootout, best action; a psychological thriller with no fights gets things like intense scene, hospital scene, sad scene,
+twist, ending; a horror film scariest moments, jump scares. Add compilations ("all ... scenes", best moments).
+Movie title + 1-3 words; most of them WITHOUT the word "scene"; about half of them with the release year after the title
+(e.g. "Fractured 2019 hospital scene") so YouTube tells this film apart from others with the same name.
+Long compilations are welcome: the right seconds are cut out of them later."""
+
 PLANNER = """You plan viral movie-recap YouTube Shorts (about {seconds} seconds each) for {movie}.
 A great Short tells ONE gripping story told across several scenes of the movie, not one scene described.
 What the best channels do (from the reference Shorts):
@@ -74,15 +82,9 @@ Rules for each story:
 - ending_mode and ending_idea: how it ends (see above) and the last line idea, ideally looping to the opening.
 - Different stories must not share beats.
 Plan up to {count} different stories, best first.
-Also give broad_searches: 6-10 short, general searches people type to find ANY footage of this movie on YouTube.
-Fit them to what THIS movie actually contains, never to a genre template: an action film may get action, fights, kills,
-shootout, best action; a psychological thriller with no fights gets things like intense scene, hospital scene, sad scene,
-twist, ending; a horror film scariest moments, jump scares. Add compilations ("all ... scenes", best moments).
-Movie title + 1-3 words; most of them WITHOUT the word "scene"; about half of them with the release year after the title
-(e.g. "Fractured 2019 hospital scene") so YouTube tells this film apart from others with the same name.
-Long compilations are welcome: the right seconds are cut out of them later.
+{broad_rules}
 
-PLOT:
+{uploads}PLOT:
 {plot}
 
 SUBTITLE TIMELINE (mm:ss dialogue):
@@ -163,16 +165,46 @@ def broad_searches(raw: dict, title: str, limit: int = 10) -> list[str]:
     return out[:limit]
 
 
+UPLOADS_NOTE = """FOOTAGE THAT EXISTS: these uploads of the movie were found on YouTube (title, length). A beat is only
+usable if one of them shows it, so build every story from scenes these uploads very likely contain (their titles name
+the scene, or a long compilation of that kind of scene). A beat no upload shows will be dropped, and a story with fewer
+than {min_beats} usable beats is lost.
+{listing}
+
+"""
+
+
+def uploads_listing(candidates: list[dict], limit: int = 60) -> str:
+    rows = [c for c in candidates if c.get("id") and c.get("title")][:limit]
+    return "\n".join(f"- {c['title'][:100]} ({int(c.get('duration') or 0)} s)" for c in rows)
+
+
 def plan_stories(gemini, research: dict, transcript: MovieTranscript, plot: str, seconds: float,
-                 count: int = 5, *, with_searches: bool = False):
+                 count: int = 5, *, with_searches: bool = False, uploads: list[dict] | None = None):
     movie = research["movie"]
     runtime = float(movie.get("runtime_minutes") or 0) * 60 or (transcript.cues[-1].end if transcript.cues else 0)
+    listing = uploads_listing(uploads or [])
     prompt = PLANNER.format(seconds=round(seconds), movie=f"{movie['title']} ({movie.get('year')})",
                             min_beats=MIN_BEATS, max_beats=MAX_BEATS, min_s=MIN_BEAT_SECONDS, max_s=MAX_BEAT_SECONDS,
-                            count=count, plot=plot[:20000] or "(no plot)", timeline=timeline(transcript))
+                            count=count, plot=plot[:20000] or "(no plot)", timeline=timeline(transcript),
+                            uploads=UPLOADS_NOTE.format(min_beats=MIN_BEATS, listing=listing) if listing else "",
+                            broad_rules=BROAD_RULES)
     raw = gemini.generate("smart", [{"text": prompt}], schema=STORY_SCHEMA, temperature=0.5)
     stories = clean_stories(raw, runtime)[:count]
     return (stories, broad_searches(raw, movie["title"])) if with_searches else stories
+
+
+SEARCH_SCHEMA = {"type": "object", "properties": {"broad_searches": {"type": "array", "items": {"type": "string"}}},
+                 "required": ["broad_searches"]}
+
+
+def general_searches(gemini, movie: dict, plot: str) -> list[str]:
+    """Gemini's general searches for any footage of this movie (written from what it contains)."""
+    prompt = (f"Movie: {movie['title']} ({movie.get('year')}). Plot:\n{plot[:6000]}\n\n" +
+              BROAD_RULES +
+              "\nAnswer as JSON with broad_searches.")
+    raw = gemini.generate("light", [{"text": prompt}], schema=SEARCH_SCHEMA, temperature=0.4)
+    return broad_searches(raw, movie["title"])
 
 
 def beat_searches(stories: list[dict]) -> list[str]:
@@ -201,6 +233,9 @@ def confirmed_scene(beat: dict, check: dict, clip: dict | None, report: dict | N
     if report is not None and not report.get("accept"):
         return None  # screening found a problem (logo inside the picture, low resolution, …)
     gs, ge = check["start"], check["end"]
+    longest = max(MAX_BEAT_SECONDS, beat["movie_end"] - beat["movie_start"])
+    if ge - gs > longest:  # a long stretch (a whole sequence): keep its opening, where the beat starts
+        ge = gs + longest
     offset = _offset((clip or {}).get("placement") or {}, (gs + ge) / 2)
     if offset is not None:
         cs, ce = beat["movie_start"] - offset, beat["movie_end"] - offset
@@ -364,7 +399,8 @@ def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, p
     used: set[str] = set()
     for i, beat in enumerate(story["beats"]):
         ids = [c["id"] for c in candidates if i in (c.get("suggested_for") or [])] + likely.get(i, [])
-        mine = [by_id[v] for v in dict.fromkeys(ids) if v in by_id]
+        mine = [by_id[v] for v in dict.fromkeys(ids) if v in by_id
+                and ((by_id[v].get("signals") or {}).get("height") or 1080) >= 720]  # soft uploads fail screening
         # Shorter uploads first (a focused scene clip); long uploads and compilations are still checked, and
         # one compilation may serve several beats.
         mine.sort(key=lambda c: (c["id"] in used and (c.get("duration") or 0) <= MAX_CHECK_SECONDS,
