@@ -389,7 +389,7 @@ def likely_uploads(gemini, story: dict, candidates: list[dict], movie: dict) -> 
 
 
 def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, per_beat: int = 3,
-                  log=lambda m: None) -> dict[int, dict]:
+                  log=lambda m: None, only: set | None = None, checked: set | None = None) -> dict[int, dict]:
     """For each beat, watch its likeliest uploads (judged from all titles found, plus Gemini's
     suggested links) until one is confirmed. Wrong uploads are dropped before anything is downloaded."""
     from .gemini import GeminiUnavailable
@@ -397,8 +397,12 @@ def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, p
     by_id = {c["id"]: c for c in candidates if c.get("id")}
     likely = likely_uploads(gemini, story, candidates, movie)
     used: set[str] = set()
+    checked = checked if checked is not None else set()   # (beat, upload) pairs already watched: never twice
     for i, beat in enumerate(story["beats"]):
+        if only is not None and i not in only:
+            continue
         ids = [c["id"] for c in candidates if i in (c.get("suggested_for") or [])] + likely.get(i, [])
+        ids = [v for v in ids if (i, v) not in checked]
         mine = [by_id[v] for v in dict.fromkeys(ids) if v in by_id
                 and ((by_id[v].get("signals") or {}).get("height") or 1080) >= 720]  # soft uploads fail screening
         # Shorter uploads first (a focused scene clip); long uploads and compilations are still checked, and
@@ -407,6 +411,7 @@ def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, p
                                  (c.get("duration") or 0) > MAX_CHECK_SECONDS))
         log(f"beat {beat['name']}: candidates {[c['id'] for c in mine[:per_beat]]}")
         for c in mine[:per_beat]:
+            checked.add((i, c["id"]))
             try:
                 result = check_clip(gemini, c["id"], movie, beat, c.get("duration"))
             except GeminiUnavailable as exc:
@@ -419,3 +424,22 @@ def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, p
                 used.add(c["id"])
                 break
     return confirmed
+
+
+RETRY_SCHEMA = {"type": "object", "properties": {"searches": {"type": "array", "items": {"type": "string"}}},
+                "required": ["searches"]}
+
+
+def missing_searches(gemini, movie: dict, story: dict, missing: list[int], tried: list[str], per_beat: int = 4) -> list[str]:
+    """New YouTube searches for the beats that still have no confirmed upload: different wording from
+    everything tried, from very specific (what happens, who) to very general (the kind of scene)."""
+    beats = "\n".join(f"- {story['beats'][i]['name']}: {story['beats'][i]['what_we_see']}" for i in missing)
+    prompt = (f"We need YouTube uploads of these scenes from {movie['title']} ({movie.get('year')}), and these searches "
+              f"did not find them:\n{chr(10).join('- ' + t for t in tried[-40:])}\n\nScenes still missing:\n{beats}\n\n"
+              f"Write up to {per_beat} NEW searches per scene, worded differently from the ones above: mix very specific "
+              "(the action, the place, the famous line, the actor's name) and very general (the kind of scene, a "
+              "compilation that would include it). Movie title in each; the year in some; most without the word scene. "
+              "Answer as JSON with searches.")
+    reply = gemini.generate("light", [{"text": prompt}], schema=RETRY_SCHEMA, temperature=0.7)
+    return [q for q in broad_searches({"broad_searches": reply.get("searches") or []}, movie["title"], limit=4 * per_beat)
+            if q.lower() not in {t.lower() for t in tried}]

@@ -75,7 +75,7 @@ jobs:
   discover:
     needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 80
+    timeout-minutes: 110
     outputs:
       slots: ${{ steps.stories.outputs.slots }}
       every: ${{ steps.stories.outputs.every }}

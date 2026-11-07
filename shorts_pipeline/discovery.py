@@ -162,6 +162,7 @@ class Candidate:
     queries: list[str] = field(default_factory=list)
     official: bool = False
     compilation: bool = False
+    channel_url: str | None = None
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -171,6 +172,8 @@ def candidate(info: dict, movie: dict, query: str, official_ids: set[str]) -> Ca
     fmt = best_format(info)
     description = info.get("description") or ""
     return Candidate(
+        channel_url=info.get("channel_url") or (f"https://www.youtube.com/channel/{info['channel_id']}"
+                                                  if info.get("channel_id") else None),
         id=info["id"], title=info.get("title") or "", channel=info.get("channel"), duration=info.get("duration"),
         url=f"https://www.youtube.com/watch?v={info['id']}", score=score(info), identity=identity(info, movie),
         signals={"views": info.get("view_count"), "likes": info.get("like_count"),
@@ -251,6 +254,22 @@ class YouTube:
 
     def search(self, query: str, count: int = 10) -> list[dict]:
         return self.extract(f"ytsearch{count}:{query}", extract_flat="in_playlist").get("entries") or []
+
+    def search_playlists(self, query: str, count: int = 5) -> list[dict]:
+        """Playlists matching a query (clip channels keep a movie's scenes together in one)."""
+        from urllib.parse import quote_plus
+        url = f"https://www.youtube.com/results?search_query={quote_plus(query)}&sp=EgIQAw%253D%253D"
+        entries = self.extract(url, extract_flat="in_playlist", playlistend=count).get("entries") or []
+        return [e for e in entries if (e.get("url") or "").find("list=") >= 0 or e.get("ie_key") == "YoutubeTab"][:count]
+
+    def playlist(self, url: str, count: int = 50) -> list[dict]:
+        return self.extract(url, extract_flat="in_playlist", playlistend=count).get("entries") or []
+
+    def channel_search(self, channel_url: str, query: str, count: int = 30) -> list[dict]:
+        """A channel's own uploads matching a query: a channel that clipped one scene usually clipped many."""
+        from urllib.parse import quote_plus
+        url = f"{channel_url.rstrip('/')}/search?query={quote_plus(query)}"
+        return self.extract(url, extract_flat="in_playlist", playlistend=count).get("entries") or []
 
     def info(self, video_id: str) -> dict:
         return self.extract(f"https://www.youtube.com/watch?v={video_id}")
@@ -387,3 +406,61 @@ def candidate_from_id(youtube, video_id: str, movie: dict, query: str) -> dict |
         return None
     item = candidate(info, movie, query, set())
     return item.as_dict() if item.identity["ok"] else None
+
+
+SCENE_CLIP = re.compile(r"\b(scene|clip|fight|shootout|chase|ending|opening|moment)s?\b", re.I)
+
+
+def good_channels(candidates: list[dict], limit: int = 4) -> list[str]:
+    """Channels that upload clean scene clips of this movie (title says scene/clip/fight, 720p+, not a
+    long review): their other uploads of the same movie are the likeliest source of the missing scenes."""
+    counts: dict[str, float] = {}
+    for c in candidates:
+        url = c.get("channel_url")
+        height = (c.get("signals") or {}).get("height") or 0
+        if not url or height < 720 or not SCENE_CLIP.search(c.get("title") or "") or (c.get("duration") or 0) > 15 * 60:
+            continue
+        counts[url] = counts.get(url, 0.0) + 1.0 + float((c.get("score") or {}).get("total") or 0)
+    return [u for u, _ in sorted(counts.items(), key=lambda kv: -kv[1])][:limit]
+
+
+def expand(youtube, movie: dict, candidates: list[dict], *, log=lambda m: None, per_source: int = 30,
+           max_new: int = 40) -> list[dict]:
+    """More uploads of this movie from where scene clips live: the channels that already uploaded
+    clean scene clips (their own search for the movie) and playlists of the movie's scenes. Every
+    new upload passes the same checks as search results."""
+    title, year = movie["title"], movie.get("year") or ""
+    known = {c["id"] for c in candidates}
+    entries: list[tuple[dict, str]] = []
+    for url in good_channels(candidates):
+        try:
+            found = youtube.channel_search(url, title, per_source)
+            entries += [(e, f"channel {url.rsplit('/', 1)[-1]}") for e in found]
+            log(f"channel {url.rsplit('/', 1)[-1]}: {len(found)} uploads for '{title}'")
+        except RuntimeError as exc:
+            log(f"channel {url}: {str(exc)[:100]}")
+    for query in (f"{title} {year} scenes".strip(), f"{title} {year} clips".strip()):
+        try:
+            for pl in youtube.search_playlists(query, 3):
+                url = pl.get("url") or (f"https://www.youtube.com/playlist?list={pl['id']}" if pl.get("id") else "")
+                if not url or title.lower() not in (pl.get("title") or "").lower():
+                    continue
+                items = youtube.playlist(url, per_source)
+                entries += [(e, f"playlist {pl.get('title', '')[:40]}") for e in items]
+                log(f"playlist '{(pl.get('title') or '')[:50]}': {len(items)} uploads")
+        except RuntimeError as exc:
+            log(f"playlists for '{query}': {str(exc)[:100]}")
+    fresh, seen = [], set(known)
+    for entry, source in entries:
+        vid = entry.get("id")
+        if not vid or vid in seen or len(vid) != 11 or prefilter(entry, movie):
+            continue
+        seen.add(vid)
+        fresh.append((vid, source))
+    made = []
+    for (vid, source), cand in zip(fresh[:max_new], _parallel(lambda item: candidate_from_id(youtube, item[0], movie, item[1]),
+                                                              fresh[:max_new])):
+        if cand:
+            made.append(cand)
+    log(f"expanded search: {len(made)} new uploads kept of {len(fresh)} found")
+    return made

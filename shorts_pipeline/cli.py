@@ -143,6 +143,10 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
             broad = []
             log(f"no general searches from Gemini: {str(exc)[:120]}")
         found = discover(research, youtube, **({'scene_hints': broad} if broad else {}))
+        # Where scene clips live: the good channels' own uploads of this movie, and playlists of its scenes,
+        # so the planner sees as much existing footage as possible.
+        from .discovery import expand
+        found['candidates'] += expand(youtube, research['movie'], found['candidates'], log=log)
         try:
             planned = plan_stories(google, research, transcript, plot, length, count=wanted + 1,
                                    uploads=found['candidates'])
@@ -172,7 +176,7 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     confirmed, checked = {}, set()
     if planned:
         from .discovery import candidate_from_id
-        from .story import confirm_beats, suggest_links
+        from .story import confirm_beats, missing_searches, suggest_links
         known = {c['id']: c for c in found['candidates']}
         for n, story in enumerate(planned[:wanted]):
             try:  # Gemini + Google Search suggest real uploads per beat; each one is verified
@@ -189,8 +193,28 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
                         known[vid].setdefault('suggested_for', []).append(beat_index)
             except gem.GeminiUnavailable as exc:
                 log(f"no suggested links: {str(exc)[:120]}")
-            # Gemini watches each beat's likeliest uploads and confirms the scene and its seconds.
-            confirmed[n] = confirm_beats(google, story, found['candidates'], research['movie'], log=log)
+            # Gemini watches each beat's likeliest uploads and confirms the scene and its seconds; for the beats
+            # still missing it writes new searches (specific and general) and checks the new finds, twice more.
+            watched: set = set()
+            confirmed[n] = confirm_beats(google, story, found['candidates'], research['movie'], log=log, checked=watched)
+            for round_ in range(2):
+                missing = [i for i in range(len(story['beats'])) if i not in confirmed[n]]
+                if not missing:
+                    break
+                try:
+                    retry = missing_searches(google, research['movie'], story, missing, found['queries'])
+                except gem.GeminiUnavailable as exc:
+                    log(f"no new searches for missing beats: {str(exc)[:100]}")
+                    break
+                log(f"round {round_ + 2}: {len(missing)} beats missing; new searches {retry}")
+                if not retry:
+                    break
+                more = discover(research, youtube, scene_hints=retry)
+                have = {c['id'] for c in found['candidates']}
+                found['candidates'] += [c for c in more['candidates'] if c['id'] not in have]
+                found['queries'] += [q for q in more['queries'] if q not in found['queries']]
+                confirmed[n].update(confirm_beats(google, story, found['candidates'], research['movie'], log=log,
+                                                  only=set(missing), checked=watched))
             checked |= {c['id'] for c in confirmed[n].values()}
             log(f"story '{story['title']}': {len(confirmed[n])} of {len(story['beats'])} beats confirmed by watching")
         # Confirmed uploads are placed and screened first (subtitles sharpen their cuts).

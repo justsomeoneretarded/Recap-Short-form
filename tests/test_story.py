@@ -207,3 +207,18 @@ def test_long_confirmed_stretch_is_capped_and_soft_uploads_are_not_watched():
              {"id": "sharp", "title": "gas station", "signals": {"height": 1080}}]
     confirmed = st.confirm_beats(g, one_story(), cands, {"title": "John Wick", "year": 2014})
     assert confirmed[0]["id"] == "sharp"
+
+
+def test_missing_beats_get_new_searches_different_from_the_tried_ones():
+    g = FakeGemini([{"searches": ["John Wick break in", "John Wick 2014 home invasion", "Keanu puppy scene"]}])
+    out = st.missing_searches(g, {"title": "John Wick", "year": 2014}, one_story(), [1], ["John Wick break in"])
+    assert out == ["John Wick 2014 home invasion", "John Wick Keanu puppy scene"]
+
+
+def test_confirm_round_only_checks_the_missing_beats_and_never_rewatches():
+    watched = {(1, "breakin0001")}
+    g = FakeGemini([{"beats": [{"beat": 1, "uploads": [0, 1]}]},
+                    {"shows_scene": True, "confidence": 0.8, "start": 2, "end": 30}])
+    cands = [{"id": "breakin0001", "title": "break in"}, {"id": "breakin0002", "title": "break in 2"}]
+    got = st.confirm_beats(g, one_story(), cands, {"title": "John Wick", "year": 2014}, only={1}, checked=watched)
+    assert list(got) == [1] and got[1]["id"] == "breakin0002" and (1, "breakin0002") in watched

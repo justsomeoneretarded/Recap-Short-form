@@ -157,3 +157,24 @@ def test_every_search_that_found_a_video_is_remembered(monkeypatch):
     monkeypatch.setattr(d, "identity", lambda info, movie: {"ok": True})
     out = d.discover({"movie": {"title": "Havoc", "year": 2025, "clips": []}}, YT())
     assert out["candidates"][0]["queries"] == ["Havoc scene", "Havoc club fight"]
+
+
+def test_good_channels_are_followed_and_playlists_searched(monkeypatch):
+    from shorts_pipeline import discovery as d
+    cands = [{"id": "a" * 11, "title": "Havoc (2025) | Club Fight Scene", "duration": 180, "channel_url": "https://yt/@Clips",
+              "signals": {"height": 1080}, "score": {"total": 0.5}},
+             {"id": "b" * 11, "title": "Havoc review", "duration": 900, "channel_url": "https://yt/@Critic",
+              "signals": {"height": 1080}, "score": {"total": 0.9}}]
+    assert d.good_channels(cands) == ["https://yt/@Clips"]
+
+    class YT:
+        def channel_search(self, url, query, count):
+            return [{"id": "c" * 11, "title": "Havoc Cabin Shootout Scene", "duration": 200}, {"id": "a" * 11, "title": "dup"}]
+        def search_playlists(self, query, count):
+            return [{"url": "https://yt/playlist?list=PL1", "title": "Havoc (2025) all scenes"}]
+        def playlist(self, url, count):
+            return [{"id": "d" * 11, "title": "Havoc hospital shootout", "duration": 150}]
+    monkeypatch.setattr(d, "candidate_from_id", lambda yt, vid, movie, query: {"id": vid, "queries": [query]})
+    new = d.expand(YT(), {"title": "Havoc", "year": 2025, "cast": []}, cands)
+    assert {c["id"] for c in new} == {"c" * 11, "d" * 11}
+    assert any(c["queries"][0].startswith("playlist") for c in new)
