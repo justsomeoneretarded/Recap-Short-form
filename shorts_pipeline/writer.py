@@ -67,8 +67,9 @@ Rules:
    Never mention anything that happens after these scenes, even if you know the movie. No spoilers of the ending.
 4. Present tense, third person, short spoken sentences, concrete nouns and verbs. Cause and effect: but, so, then.
 5. Use ONLY facts from the brief. Never invent names, numbers, objects or events. If unsure, describe the action plainly.
-6. Never quote dialogue in narration (no quotation marks). To let a real line play, add a beat
-   {"kind": "dialogue", "line": "<line id>"} using an id from playable_lines. At most 3, the most dramatic ones.
+6. Never quote or read out dialogue in narration (no quotation marks, no first person, never "X says ... Y asks ...").
+   Tell what happens and why it matters. Never repeat a sentence. Do not invent facial expressions or gestures. To let a real line play, add a beat
+   {"kind": "dialogue", "line": "<line id>"} using an id from playable_lines. Exactly 3, the most dramatic ones.
 7. Each scene's narration should be close to its word budget. Not shorter, not much longer.
 8. No filler: never say "in this movie", "little did he know", "meanwhile", "our hero", "stay tuned", "subscribe".
 9. End on tension or a payoff from these scenes; the last sentence should lead back into the opening shot so the Short loops.
@@ -122,8 +123,36 @@ def _clean_title(title: str, movie_title: str) -> str:
     return " ".join(re.sub(r"[|\-–:()]+", " ", title).split()).strip() or "scene"
 
 
+COMMON_PROPER = {"english", "american", "mexican", "russian", "spanish", "french", "british", "african", "fbi", "cia",
+                 "dea", "doj", "u.s", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+                 "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+                 "november", "december", "god", "christmas"}
+
+
 def _names(text: str) -> set[str]:
-    return {w.lower() for w in re.findall(r"\b[A-Z][a-zA-Z'’-]+", text or "")}
+    """Capitalised words, possessives folded (Frost's → frost)."""
+    return {re.sub(r"['’]s$", "", w.lower()) for w in re.findall(r"\b[A-Z][a-zA-Z'’-]+", text or "")}
+
+
+def _sentences_of(text: str) -> list[str]:
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+", text or "") if x.strip()]
+
+
+def _norm_words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", (text or "").lower().replace("’", "'"))
+
+
+def copies_dialogue(sentence: str, lines: dict, run: int = 6) -> bool:
+    """The narrator reads a movie line (6+ words in a row from the subtitles) instead of narrating."""
+    words = _norm_words(sentence)
+    if len(words) < run:
+        return False
+    grams = {tuple(words[i:i + run]) for i in range(len(words) - run + 1)}
+    for line in lines.values():
+        lw = _norm_words(line["text"])
+        if any(tuple(lw[i:i + run]) in grams for i in range(len(lw) - run + 1)):
+            return True
+    return False
 
 
 def _trim(text: str, limit: int) -> str:
@@ -250,8 +279,8 @@ def check(script: dict, brief: Brief) -> dict:
     filler = FILLER.findall(full)
     if filler:
         issues.append(f"filler: {', '.join(sorted(set(f.lower() for f in filler)))}")
-    sentence_starts = {m.lower() for m in re.findall(r"(?:^|[.!?]\s+)([A-Z][a-zA-Z'’-]+)", full)}
-    unknown = sorted(n for n in _names(full) - brief.allowed_names - sentence_starts
+    sentence_starts = {re.sub(r"['’]s$", "", m.lower()) for m in re.findall(r"(?:^|[.!?]\s+)([A-Z][a-zA-Z'’-]+)", full)}
+    unknown = sorted(n for n in _names(full) - brief.allowed_names - sentence_starts - COMMON_PROPER
                      if n not in {"i", "he", "she", "they", "but", "so", "then", "now"})
     if unknown:
         issues.append(f"names not in the brief: {', '.join(unknown[:6])}")
@@ -260,9 +289,19 @@ def check(script: dict, brief: Brief) -> dict:
         issues.append("generic template title")
     if title and title.lower().rstrip(".!") in full.lower():
         issues.append("title read out in the narration")
-    quoted = re.findall(r"[\"“']([^\"”']{12,})[\"”']", full)
+    quoted = re.findall(r"[\"“”]([^\"“”]{12,})[\"“”]|(?<![\w])'([^']{12,})'(?![\w])", full)
     if quoted:
         issues.append("quotes dialogue inside narration")
+    sentences = [x.lower() for x in _sentences_of(full)]
+    repeats = len(sentences) - len(set(sentences))
+    if repeats:
+        issues.append(f"{repeats} repeated sentences")
+    copied = sum(copies_dialogue(x, brief.lines) for x in _sentences_of(full))
+    if copied:
+        issues.append(f"{copied} sentences read movie dialogue instead of narrating")
+    says = len(re.findall(r"\b(?:says|asks|tells (?:him|her|them)|replies|admits)\b", full, re.I))
+    if says > max(2, len(sentences) // 6):
+        issues.append(f"retells the dialogue ({says}x says/asks) instead of the action")
     off = {s: (words.get(s, 0), b) for s, b in brief.budgets.items() if abs(words.get(s, 0) - b) > 0.25 * b}
     total = sum(words.values())
     target = sum(brief.budgets.values())
@@ -326,7 +365,7 @@ def cleanup(script: dict, brief: Brief) -> dict:
     narration, and the title never read out as narration."""
     script = json.loads(json.dumps(script))
     title = (script.get("title") or "").strip().lower().rstrip(".!")
-    beats, lines = [], 0
+    beats, lines, seen = [], 0, set()
     for beat in script.get("beats", []):
         if beat.get("kind") == "dialogue":
             line = brief.lines.get(beat.get("line"))
@@ -335,9 +374,17 @@ def cleanup(script: dict, brief: Brief) -> dict:
             lines += 1
         else:
             text = re.sub(r"[\"“”]", "", beat.get("text") or "")
-            if title and text.strip().lower().rstrip(".!") == title:
+            text = re.sub(r"(?<![\w])'([^']{6,})'(?![\w])", r"\1", text)  # single-quoted phrases
+            kept = []
+            for sentence in _sentences_of(text):
+                key = sentence.lower()
+                if key in seen or (title and key.rstrip(".!") == title) or copies_dialogue(sentence, brief.lines):
+                    continue
+                seen.add(key)
+                kept.append(sentence)
+            if not kept:
                 continue
-            beat = {**beat, "text": text}
+            beat = {**beat, "text": " ".join(kept)}
         beats.append(beat)
     script["beats"] = beats
     script["hook"] = re.sub(r"[\"“”]", "", script.get("hook") or "")

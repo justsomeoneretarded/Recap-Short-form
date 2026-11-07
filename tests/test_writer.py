@@ -169,3 +169,30 @@ def test_brief_fits_the_model_context():
                               "clip_end": 2900}] * 6}
     b = w.build_brief(arc, RESEARCH, MovieTranscript.from_subtitles(long_srt), "A plot sentence. " * 400)
     assert w._estimate_tokens(b.data) <= w.BRIEF_TOKEN_BUDGET
+
+
+def test_run15_script_problems_are_caught_and_cleaned():
+    b = brief()
+    b.lines["x1"] = {"text": "I once saw him kill three men in a bar with a pencil.", "scene": 0, "playable": True}
+    looped = ("Aurelio says they agreed to his terms. John asks if he's seen Iosef. Aurelio says he hasn't. "
+              "Aurelio says they agreed to his terms. John asks if he's seen Iosef. Aurelio says he hasn't.")
+    script = {"title": "Baba Yaga's Return", "hook": "John Wick digs up his guns.", "beats": [
+        {"scene": 0, "kind": "narration", "text": looped},
+        {"scene": 1, "kind": "narration", "text": "I once saw him kill three men in a bar with a pencil. Frost's men run."}]}
+    issues = w.check(script, b)["issues"]
+    assert any("repeated" in i for i in issues) and any("dialogue instead" in i for i in issues)
+    assert any("retells the dialogue" in i for i in issues)
+    assert not any("names not in the brief" in i and "frost" in i for i in issues) or "frost" not in b.allowed_names
+    clean = w.cleanup(script, b)
+    text = " ".join(x.get("text", "") for x in clean["beats"])
+    assert text.count("Aurelio says they agreed to his terms.") == 1 and "pencil" not in text
+
+
+def test_possessives_and_apostrophes_are_not_false_alarms():
+    b = brief()
+    b.allowed_names |= {"frost", "alejandro"}
+    script = {"title": "A Rogue Agent", "hook": "Frost runs.", "beats": [
+        {"scene": 0, "kind": "narration", "text": "Frost's men can't stop. It's a trap, and he doesn't see it. Alejandro's gun is English."}]}
+    issues = w.check(script, b)["issues"]
+    assert not any("names not in the brief" in i for i in issues)
+    assert not any("quotes dialogue" in i for i in issues)

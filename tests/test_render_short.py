@@ -47,10 +47,10 @@ def test_rife_only_on_moving_shots_within_budget_and_at_native_size(tmp_path, mo
 
     def fake_rife(frames, audio, target, frames_out, size):
         from PIL import Image
-        first = sorted(frames.glob("*.jpg"))
+        first = sorted(frames.glob("*.png"))
         calls.append(Image.open(first[0]).width)  # frames go to RIFE at native crop size
         assert len(first) >= 30 and audio.exists()
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-framerate", "24", "-i", str(frames / "%06d.jpg"), "-i", str(audio),
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-framerate", "24", "-i", str(frames / "%06d.png"), "-i", str(audio),
                         "-vf", f"fps=60,scale={size[0]}:{size[1]}", "-c:a", "pcm_s16le", "-shortest", str(target)], check=True)
 
     monkeypatch.setattr(rs, "rife_available", lambda: True)
@@ -67,3 +67,37 @@ def test_rife_only_on_moving_shots_within_budget_and_at_native_size(tmp_path, mo
     late = rs.render_parts(edl, plans, "vertical", [2], tmp_path / "parts", budget=-1)
     assert late[0]["why"] == "time budget" and late[0]["interpolation"] == "blend"
     assert rs.probe(tmp_path / "parts" / "vertical-shot-0001.mkv")["width"] == 360
+
+
+def test_corrupted_rife_frames_are_rejected(tmp_path):
+    import numpy as np
+    from PIL import Image
+    src, good, bad = tmp_path / "in", tmp_path / "good", tmp_path / "bad"
+    for d in (src, good, bad):
+        d.mkdir()
+    rng = np.random.default_rng(0)
+    base = rng.integers(0, 255, (90, 160, 3), dtype=np.uint8)
+    frames = [np.roll(base, i, axis=1) for i in range(6)]  # a slow pan
+    for i, f in enumerate(frames):
+        Image.fromarray(f).save(src / f"{i + 1:06d}.png")
+    for k in range(15):  # 2.5x frames: honest in-betweens are the nearest real frame
+        Image.fromarray(frames[min(5, round(k / 2.5))]).save(good / f"{k + 1:08d}.png")
+        streak = np.repeat(frames[0][:1], 90, axis=0) if k % 3 else frames[min(5, round(k / 2.5))]
+        Image.fromarray(streak).save(bad / f"{k + 1:08d}.png")  # rows smeared like run 15
+    assert rs.rife_frames_ok(src, good)[0]
+    assert not rs.rife_frames_ok(src, bad)[0]
+
+
+def test_a_failed_rife_shot_falls_back_to_blending(tmp_path, monkeypatch):
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24",
+                    "-f", "lavfi", "-i", "sine", "-t", "3", "-shortest", "-pix_fmt", "yuv420p", str(clip)], check=True)
+
+    def broken_rife(*args, **kwargs):
+        raise RuntimeError("RIFE output rejected: frame 3 does not match its neighbours")
+
+    monkeypatch.setattr(rs, "_rife", broken_rife)
+    shot = {"source": str(clip), "start": 0.0, "end": 1.5, "speed": 1.0, "duration": 1.5, "audio": "duck"}
+    row = rs.render_shot(shot, {"mode": "track", "x_start": 0.5, "x_end": 0.5}, (0, 0, 1, 1), (180, 320),
+                         tmp_path / "shot.mkv", use_rife=True)
+    assert row["interpolation"] == "blend" and "rejected" in row["fallback"]

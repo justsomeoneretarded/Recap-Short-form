@@ -34,18 +34,56 @@ def rife_available() -> bool:
     return bool(binary and Path(binary).exists() and os.environ.get("SHORTS_RIFE_MODEL"))
 
 
-def _rife(frames: Path, audio: Path, target: Path, frames_out: int, size: tuple[int, int]) -> None:
-    """Interpolate one shot's frames with rife-ncnn-vulkan on the CPU, then scale and encode with its sound.
+def _gray(path: Path, width: int = 96):
+    import numpy as np
+    from PIL import Image
+    with Image.open(path) as image:
+        image = image.convert("L")
+        image = image.resize((width, max(2, round(width * image.height / image.width))))
+        return np.asarray(image, dtype=np.float32)
 
-    The framed shot is written straight to JPEG frames (no intermediate video encode/decode);
-    JPEG (quality 95) is several times faster than PNG at no visible cost; all cores are used.
+
+def rife_frames_ok(src: Path, dst: Path, samples: int = 16) -> tuple[bool, str]:
+    """Do RIFE's new frames look like the real frames around them?
+
+    A real in-between frame differs from its nearest source frames about as much as those differ
+    from each other. A corrupted one (the horizontal streaks seen in run 15) differs from both by
+    far more. Any such frame rejects the whole shot.
+    """
+    sources = sorted(src.glob("*.png"))
+    outputs = sorted(dst.glob("*.png"))
+    if len(sources) < 2 or len(outputs) < len(sources):
+        return False, f"RIFE wrote {len(outputs)} frames for {len(sources)} inputs"
+    step = max(1, len(outputs) // samples)
+    for k in range(0, len(outputs), step):
+        position = k * (len(sources) - 1) / max(1, len(outputs) - 1)
+        a, b = sources[int(position)], sources[min(len(sources) - 1, int(position) + 1)]
+        ga, gb, go = _gray(a), _gray(b), _gray(outputs[k])
+        if go.shape != ga.shape:
+            return False, f"frame {k} has the wrong size"
+        between = float(abs(ga - gb).mean())
+        nearest = min(float(abs(go - ga).mean()), float(abs(go - gb).mean()))
+        if nearest > 2.5 * between + 12:
+            return False, f"frame {k} does not match its neighbours ({nearest:.0f} vs {between:.0f})"
+    return True, "ok"
+
+
+def _rife(frames: Path, audio: Path, target: Path, frames_out: int, size: tuple[int, int]) -> None:
+    """Interpolate one shot's frames with rife-ncnn-vulkan on the CPU, check them, then scale and encode.
+
+    PNG in and out: the JPEG round trip used for speed produced streaked, corrupted frames.
+    Every result is checked against the real frames; a bad result raises, and the caller
+    renders the shot with motion blending instead.
     """
     threads = os.environ.get("SHORTS_RIFE_THREADS", f"2:{max(2, os.cpu_count() or 4)}:2")
     dst = frames.parent / "out"
     dst.mkdir(exist_ok=True)
     _run([os.environ["SHORTS_RIFE_BIN"], "-i", str(frames), "-o", str(dst), "-m", os.environ["SHORTS_RIFE_MODEL"],
-          "-n", str(frames_out), "-g", os.environ.get("SHORTS_RIFE_GPU", "-1"), "-j", threads, "-f", "jpg"])
-    _run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(dst / "%08d.jpg"), "-i", str(audio),
+          "-n", str(frames_out), "-g", os.environ.get("SHORTS_RIFE_GPU", "-1"), "-j", threads, "-f", "png"])
+    ok, why = rife_frames_ok(frames, dst)
+    if not ok:
+        raise RuntimeError(f"RIFE output rejected: {why}")
+    _run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(dst / "%08d.png"), "-i", str(audio),
           "-map", "0:v", "-map", "1:a", "-vf", f"scale={size[0]}:{size[1]}:flags=lanczos,format=yuv420p",
           "-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-c:a", "pcm_s16le", "-shortest", str(target)])
 
@@ -60,7 +98,7 @@ def motion(source: Path, start: float, span: float) -> float:
     return round(sum(values) / len(values), 2) if values else 99.0
 
 
-CALM_MOTION = float(os.environ.get("SHORTS_CALM_MOTION", "2.5"))
+CALM_MOTION = float(os.environ.get("SHORTS_CALM_MOTION", "1.5"))  # below this a shot is near-still
 
 
 def render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], target: Path, *,
@@ -108,7 +146,7 @@ def _render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], t
         with tempfile.TemporaryDirectory(dir=target.parent) as temp:
             frames, sound = Path(temp) / "in", Path(temp) / "sound.wav"
             frames.mkdir()
-            _run(cut + ["-map", "[v]", "-t", f"{shot['duration']:.4f}", "-q:v", "2", str(frames / "%06d.jpg"),
+            _run(cut + ["-map", "[v]", "-t", f"{shot['duration']:.4f}", str(frames / "%06d.png"),
                         "-map", "[a]", "-t", f"{shot['duration']:.4f}", "-c:a", "pcm_s16le", str(sound)])
             _rife(frames, sound, target, max(2, round(shot["duration"] * FPS)), size)
     else:

@@ -4,7 +4,7 @@
 - Movie-line beats play their exact clip window, picture and sound in sync.
 - Narration beats take the footage between the previous and the next movie line. When there
   is more footage than voice, the most interesting pieces are kept (Most Replayed and
-  comment peaks, then evenly spread), cut on the clip's own shot changes, 1.4–3.6 s each
+  comment peaks, then evenly spread), cut on the clip's own shot changes, 1.3–2.8 s each
   (reference median 1.5–2.9 s). When there is less, the footage is gently slowed (≥0.8x)
   and then the scene's unused earlier footage fills in.
 """
@@ -14,7 +14,7 @@ import re
 import subprocess
 from pathlib import Path
 
-MIN_SHOT, MAX_SHOT = 1.4, 3.6
+MIN_SHOT, MAX_SHOT = 1.3, 2.8  # reference Shorts: median shot 1.5–2.9 s
 MIN_SPEED = 0.8
 
 
