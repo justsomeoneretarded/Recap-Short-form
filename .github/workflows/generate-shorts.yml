@@ -254,7 +254,7 @@ jobs:
           path: |
             work/huggingface
             work/torch
-          key: shorts-make-models-v1
+          key: shorts-make-models-v2  # includes the alignment model
       - uses: actions/download-artifact@v4
         with:
           name: discover

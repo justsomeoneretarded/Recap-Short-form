@@ -254,7 +254,7 @@ jobs:
           path: |
             work/huggingface
             work/torch
-          key: shorts-voice-models-v1
+          key: shorts-voice-models-v2  # v1 was saved before the 1.2 GB alignment model existed
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -291,14 +291,16 @@ jobs:
           retention-days: 7
 
   render:
+    name: render (${{ fromJSON(needs.movies.outputs.list)[matrix.index] }}, ${{ matrix.aspect }})
     needs: [movies, voice]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      matrix:
-        movie: ${{ fromJSON(needs.movies.outputs.list) }}
+      matrix:  # one machine per movie and shape: square and vertical render at the same time
+        index: ${{ fromJSON(needs.movies.outputs.indexes) }}
+        aspect: [square, vertical]
     env:
       SHORTS_YUNET_MODEL: ${{ github.workspace }}/work/models/face_detection_yunet_2023mar.onnx
       SHORTS_RIFE_BUDGET: '2700'   # per shape; calm shots and anything past the budget use blending
@@ -337,20 +339,20 @@ jobs:
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: discover-${{ strategy.job-index }}
+          name: discover-${{ matrix.index }}
           path: output/discover
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: voice-${{ strategy.job-index }}
+          name: voice-${{ matrix.index }}
           path: output/voice
       - name: Edit and render (square + vertical, 60 fps with RIFE on moving shots)
         if: hashFiles('output/voice/*/voiceover.json') != ''
-        run: python -u -m shorts_pipeline render --discover output/discover --voice output/voice --output output/render --interpolation auto
+        run: python -u -m shorts_pipeline render --discover output/discover --voice output/voice --output output/render --interpolation auto --aspects ${{ matrix.aspect }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: render-${{ strategy.job-index }}
+          name: render-${{ matrix.index }}-${{ matrix.aspect }}
           path: |
             output/render/summary.json
             output/render/*/final-*.mp4
