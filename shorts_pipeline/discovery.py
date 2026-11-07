@@ -322,7 +322,12 @@ def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None 
             errors.append(error)
             continue
         for entry in entries:
-            if not entry.get("id") or entry["id"] in found:
+            if entry.get("id") in found:  # remember every search that found it (a beat's search may come later)
+                found[entry["id"]].setdefault("queries", [found[entry["id"]].get("query")])
+                if query not in found[entry["id"]]["queries"]:
+                    found[entry["id"]]["queries"].append(query)
+                continue
+            if not entry.get("id"):
                 continue
             reason = prefilter(entry, movie)
             if reason:
@@ -351,6 +356,7 @@ def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None 
         if not reason and re.search(r"#\w+", info.get("title") or "") and (info.get("duration") or 0) <= 70:
             reason = "hashtag short (re-upload)"
         item = candidate(info, movie, entry["query"], official)
+        item.queries = [q for q in entry.get("queries") or [entry["query"]] if q]
         if reason or not (item.identity["ok"] or item.official):
             rejected.append({"id": item.id, "title": item.title,
                              "reason": reason or f"identity not confirmed {item.identity}"})

@@ -177,7 +177,8 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
             log(f"story '{story['title']}': {len(confirmed[n])} of {len(story['beats'])} beats confirmed by watching")
         # Confirmed uploads are placed and screened first (subtitles sharpen their cuts).
         found['candidates'].sort(key=lambda c: c['id'] not in checked)
-        top = max(top, min(30, len(checked) + 2 * sum(len(st['beats']) for st in planned)))
+        # Confirmed footage needs no wide net: place and screen it plus a few spares (each clip costs minutes).
+        top = len(checked) + 6 if len(checked) >= 3 else max(top, min(30, len(checked) + 2 * sum(len(st['beats']) for st in planned)))
     placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
     lap('download_and_place')
     screened = {}

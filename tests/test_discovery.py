@@ -143,3 +143,17 @@ def test_parallel_lookups_give_the_same_result_as_one_at_a_time(monkeypatch):
     parallel = d.discover({"movie": MOVIE}, slow)
     assert [c["id"] for c in parallel["candidates"]] == [c["id"] for c in serial["candidates"]]
     assert slow.peak > 1
+
+
+def test_every_search_that_found_a_video_is_remembered(monkeypatch):
+    from shorts_pipeline import discovery as d
+    class YT:
+        def search(self, query, count):
+            return [{"id": "same", "title": "Havoc club fight scene", "view_count": 5}]
+        def info(self, vid):
+            return {"id": vid, "title": "Havoc (2025) | Club Fight Scene", "duration": 120, "view_count": 5,
+                    "formats": [{"width": 1920, "height": 1080, "vcodec": "avc1"}], "channel": "c"}
+    monkeypatch.setattr(d, "build_queries", lambda movie, hints=None, limit=12: ["Havoc scene", "Havoc club fight"])
+    monkeypatch.setattr(d, "identity", lambda info, movie: {"ok": True})
+    out = d.discover({"movie": {"title": "Havoc", "year": 2025, "clips": []}}, YT())
+    assert out["candidates"][0]["queries"] == ["Havoc scene", "Havoc club fight"]
