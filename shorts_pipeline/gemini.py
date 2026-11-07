@@ -39,6 +39,8 @@ MAX_MODELS_PER_REQUEST = 6
 MINUTE_WAIT = float(os.environ.get("SHORTS_GEMINI_MINUTE_WAIT", "60"))  # wait after a per-minute limit
 MINUTE_RETRIES = int(os.environ.get("SHORTS_GEMINI_MINUTE_RETRIES", "2"))  # same model, after waiting
 MIN_GAP = float(os.environ.get("SHORTS_GEMINI_MIN_GAP", "6"))  # seconds between this job's requests
+REQUEST_WAIT = float(os.environ.get("SHORTS_GEMINI_REQUEST_WAIT", "150"))  # most waiting for one answer
+JOB_WAIT = float(os.environ.get("SHORTS_GEMINI_JOB_WAIT", "900"))  # most waiting for limits in one job
 MAX_VIDEO_SECONDS = 20 * 60
 
 
@@ -100,7 +102,36 @@ class Client:
         self.cooldown: dict[str, float] = {}   # per-minute limit hit: usable again after this time
         self.good: dict[str, str] = {}         # the model that last answered, per role: tried first
         self.last_call = 0.0
+        self.waited = 0.0                      # seconds spent waiting for per-minute limits in this job
+        self._request_wait = REQUEST_WAIT
+        self.state_file = Path(os.environ["SHORTS_GEMINI_STATE"]) if os.environ.get("SHORTS_GEMINI_STATE") else None
+        self._load_state()
         self._models: dict[str, list[str]] | None = None
+
+    # ------------------------------------------------------------------ shared state
+    @staticmethod
+    def _quota_day() -> str:
+        """Google resets daily limits at midnight Pacific time (UTC-8, or UTC-7 in summer)."""
+        from datetime import datetime, timedelta, timezone
+        return (datetime.now(timezone.utc) - timedelta(hours=8)).strftime("%Y-%m-%d")
+
+    def _load_state(self) -> None:
+        """Models an earlier job already found used up today are skipped without spending a request."""
+        try:
+            data = json.loads(self.state_file.read_text()) if self.state_file and self.state_file.exists() else {}
+        except (OSError, ValueError):
+            data = {}
+        if data.get("day") == self._quota_day():
+            self.exhausted |= set(data.get("exhausted") or [])
+
+    def _save_state(self) -> None:
+        if not self.state_file:
+            return
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            self.state_file.write_text(json.dumps({"day": self._quota_day(), "exhausted": sorted(self.exhausted)}))
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------ plumbing
     def _http(self, method: str, url: str, **kwargs):
@@ -168,11 +199,16 @@ class Client:
                 print(f"[gemini] {model}: {why} — Google: {row['google_says'][:300]}", file=sys.stderr, flush=True)
                 if daily:  # nothing left today for this key on this model: never ask it again
                     self.exhausted.add(model)
+                    self._save_state()
                     raise _Exhausted(f"{model}: {why}")
-                if minute_waits < MINUTE_RETRIES:
+                pause = max(wait, MINUTE_WAIT) + 1
+                if minute_waits < MINUTE_RETRIES and pause <= self._request_wait and self.waited + pause <= JOB_WAIT:
                     # Per-minute limit: a full minute guarantees a fresh window; then the same model again.
+                    # Bounded per answer and per job, so limits can never stall a run for long.
                     minute_waits += 1
-                    self.sleep(max(wait, MINUTE_WAIT) + 1)
+                    self._request_wait -= pause
+                    self.waited += pause
+                    self.sleep(pause)
                     continue
                 self.cooldown[model] = time.time() + max(wait, MINUTE_WAIT)
                 raise _Exhausted(f"{model}: {why}")
@@ -190,6 +226,7 @@ class Client:
                  temperature: float = 0.4, seed: int | None = None, tools: list | None = None,
                  low_media: bool = False) -> dict | str:
         """Text (or parsed JSON when `schema` is given) from the best model still available."""
+        self._request_wait = REQUEST_WAIT
         for round_ in range(2):
             try:
                 return self._generate(role, parts, system=system, schema=schema, temperature=temperature, seed=seed,
@@ -197,9 +234,12 @@ class Client:
             except GeminiUnavailable:
                 # Every model is only pausing for its per-minute limit: wait for the first one, once.
                 waiting = [t for m, t in self.cooldown.items() if m not in self.exhausted and t > time.time()]
-                if round_ or not waiting or min(waiting) - time.time() > MAX_WAIT or self.chain(role):
+                pause = (min(waiting) - time.time() + 1) if waiting else 0
+                if round_ or not waiting or pause > min(MAX_WAIT, self._request_wait) or self.waited + pause > JOB_WAIT \
+                        or self.chain(role):
                     raise
-                self.sleep(min(waiting) - time.time() + 1)
+                self.waited += pause
+                self.sleep(pause)
         raise GeminiUnavailable("no Gemini model answered")
 
     def _generate(self, role, parts, *, system, schema, temperature, seed, tools, low_media):
@@ -293,7 +333,8 @@ class Client:
             if call.get("error"):
                 errors.setdefault(call["model"], f"{call['error']} — Google: {call.get('google_says', '')[:300]}")
         return {"requests": len(self.calls), "by_model": models, "exhausted": sorted(self.exhausted), "errors": errors,
-                "seconds": round(sum(c["seconds"] for c in self.calls), 1), "models": chosen}
+                "seconds": round(sum(c["seconds"] for c in self.calls), 1), "waited_for_limits": round(self.waited),
+                "models": chosen}
 
 
 class _Exhausted(RuntimeError):

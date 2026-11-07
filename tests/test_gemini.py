@@ -258,3 +258,59 @@ def test_google_message_names_the_limit():
     said = g.google_message(text)
     assert "PerMinute" in said and "= 10" in said and "gemini-3.6-flash" in said
     assert g.quota_problem(text)[1] is False
+
+
+DAILY = '{"error": {"code": 429, "message": "You exceeded your current quota.", "details": [{"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]}, {"retryDelay": "30s"}]}}'
+MINUTE = '{"error": {"code": 429, "message": "You exceeded your current quota.", "details": [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "15"}]}, {"retryDelay": "20s"}]}}'
+
+
+class Google:
+    """Fake Google with today's real behaviour: Flash models out for the day, Flash-Lite busy now and then."""
+
+    def __init__(self, busy_every=3, flash_daily=True, always_busy=False):
+        self.calls, self.n = [], 0
+        self.busy_every, self.flash_daily, self.always_busy = busy_every, flash_daily, always_busy
+
+    def request(self, method, url, headers=None, timeout=None, **kwargs):
+        if url.endswith("/v1beta/models"):
+            return Reply(200, MODELS)
+        model = url.rsplit("/", 1)[-1].split(":")[0]
+        self.calls.append(model)
+        if self.always_busy:
+            return Reply(429, text=MINUTE)
+        if "lite" not in model and self.flash_daily:
+            return Reply(429, text=DAILY)
+        self.n += 1
+        if self.n % self.busy_every == 0:
+            return Reply(429, text=MINUTE)
+        return answer({"right_movie": True, "confidence": 1, "kind": "movie_scene", "narrator_over_picture": False,
+                       "overlays": [], "moments": [{"start": 0, "end": 3, "what": "x", "intensity": 5, "story": 5}],
+                       "best_moment": None})
+
+
+def test_todays_quota_situation_finishes_fast_and_never_retries_used_up_models(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHORTS_GEMINI_STATE", str(tmp_path / "state.json"))
+    google, waits = Google(), []
+    c = g.Client("k", session=google, sleep=waits.append)
+    movie = {"title": "Sicario", "year": 2015, "cast": []}
+    for i in range(10):  # ten clips watched, then the script
+        assert g.watch_clip(c, f"clip{i}", movie, duration=60)["moments"]
+    # The writer asks for Flash; every Flash model is out for the day, so Flash-Lite answers instead.
+    assert c.generate("smart", [{"text": "write"}], schema={"type": "object"})["right_movie"] is True
+    assert c.generate("smart", [{"text": "write"}], schema={"type": "object"})  # and goes straight there next time
+    flash_calls = [m for m in google.calls if "lite" not in m]
+    assert len(flash_calls) == len(set(flash_calls)) <= 2  # each used-up Flash model asked once, never again
+    assert all(w == 61.0 for w in waits) and sum(waits) <= g.JOB_WAIT  # only full-minute waits, bounded
+    # A later job (another machine) starts from the saved state: no request wasted on used-up models.
+    later = Google()
+    c2 = g.Client("k", session=later, sleep=lambda s: None)
+    g.watch_clip(c2, "clip", movie, duration=60)
+    assert not [m for m in later.calls if "lite" not in m]
+
+
+def test_worst_case_every_model_busy_stops_waiting_within_budget():
+    google, waits = Google(always_busy=True), []
+    c = g.Client("k", session=google, sleep=waits.append)
+    with pytest.raises(g.GeminiUnavailable):
+        c.generate("light", [{"text": "x"}], schema={"type": "object"})
+    assert sum(waits) <= g.REQUEST_WAIT + g.MAX_WAIT  # minutes, not a quarter hour: then the local fallback runs

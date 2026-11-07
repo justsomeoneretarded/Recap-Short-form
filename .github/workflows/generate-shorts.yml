@@ -50,6 +50,9 @@ env:
   # Optional free Google AI Studio key. With it, Gemini watches the clips, writes the scripts, matches
   # sentences to shots, picks covers and reviews each finished Short; without it, everything runs locally.
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  # Models whose daily free limit is used up are remembered here (shipped with the discover results),
+  # so later jobs skip them instead of spending a request to find out again.
+  SHORTS_GEMINI_STATE: output/discover/gemini-state.json
 
 jobs:
   validate:
