@@ -31,8 +31,9 @@ Everything else is automatic:
    keeping up to three real movie lines.
 7. **Voice** with the chosen narrator at ~205 words/minute (long pauses shortened); word-exact captions.
 8. **Edit and render** square 1080×1080 and vertical 1080×1920 at true 60 fps (RIFE, every result
-   checked, motion blending as a fallback), −14 LUFS. Framing follows faces and action; vertical
-   Shorts never use blurred side bars: two people far apart are stacked one above the other.
+   checked, motion blending as a fallback), −14 LUFS. Framing follows faces and action;
+   Shorts never use blurred side bars: two people far apart get a crop each, stacked in 9:16 and
+   side by side in 1:1.
 9. **Package**: covers, title options, description, tags, captions and an automatic quality review.
 
 Download **Artifacts → shorts**: one folder per Short with `final-square.mp4`, `final-vertical.mp4`,

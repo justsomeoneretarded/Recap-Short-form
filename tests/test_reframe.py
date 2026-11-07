@@ -35,7 +35,7 @@ def test_pan_follows_motion_but_is_speed_limited():
     assert plan["x_end"] - plan["x_start"] <= 0.25 + 1e-6
 
 
-def test_wide_spread_action_follows_the_action_in_vertical_and_fits_in_square():
+def test_wide_spread_action_is_followed_in_both_shapes():
     frames = []
     for i in range(6):
         frame = np.full((270, 480, 3), 20, dtype=np.uint8)
@@ -43,7 +43,7 @@ def test_wide_spread_action_follows_the_action_in_vertical_and_fits_in_square():
         frame[:, 420:] = 120 if i % 2 else 200
         frames.append(frame)
     assert r.plan_shot(frames, (0, 0, 1, 1), 9 / 16)["mode"] == "track"  # no blurred bars in 9:16
-    assert r.plan_shot(frames, (0, 0, 1, 1), 1.0)["mode"] == "fit"
+    assert r.plan_shot(frames, (0, 0, 1, 1), 1.0)["mode"] == "track"
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
@@ -69,7 +69,7 @@ def test_fit_shots_trim_the_edges_when_the_clip_has_a_corner_logo():
     assert "crop=1612:906" in trimmed and "crop=1612" not in plain
 
 
-def test_vertical_never_uses_blurred_bars(monkeypatch):
+def test_no_shape_uses_blurred_bars(monkeypatch):
     import numpy as np
     from shorts_pipeline import reframe as r
     frames = [np.zeros((270, 480, 3), dtype=np.uint8)] * 4
@@ -77,7 +77,8 @@ def test_vertical_never_uses_blurred_bars(monkeypatch):
     monkeypatch.setattr(r, "faces", lambda f: [(0.10, 0.3, 0.22, 0.5), (0.78, 0.3, 0.90, 0.5)])
     plan = r.plan_shot(frames, (0, 0, 1, 1), 1080 / 1920)
     assert plan["mode"] == "stack" and plan["x_top"] < 0.5 < plan["x_bottom"]
-    assert r.plan_shot(frames, (0, 0, 1, 1), 1.0)["mode"] == "fit"  # square keeps its 4:3 window
+    square = r.plan_shot(frames, (0, 0, 1, 1), 1.0)  # square: the two people side by side, no blur
+    assert square["mode"] == "stack" and square["layout"] == "columns"
     monkeypatch.setattr(r, "faces", lambda f: [(0.10, 0.2, 0.30, 0.6), (0.80, 0.4, 0.86, 0.5)])
     plan = r.plan_shot(frames, (0, 0, 1, 1), 1080 / 1920)
     assert plan["mode"] == "track" and plan["x_start"] < 0.4
@@ -92,3 +93,15 @@ def test_stack_filter_renders_two_tiles(tmp_path):
                     "-filter_complex", g, "-map", "[v]", "-frames:v", "1", str(out)], check=True)
     from PIL import Image
     assert Image.open(out).size == (1080, 1920)
+
+
+def test_side_by_side_filter_renders_a_square(tmp_path):
+    import subprocess
+    from PIL import Image
+    from shorts_pipeline.reframe import filter_graph
+    g = filter_graph({"mode": "stack", "layout": "columns", "x_top": 0.2, "x_bottom": 0.8}, 1920, 1080, (0, 0, 1, 1),
+                     1080, 1080, 1.0)
+    out = tmp_path / "side.png"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=24", "-t", "1",
+                    "-filter_complex", g, "-map", "[v]", "-frames:v", "1", str(out)], check=True)
+    assert Image.open(out).size == (1080, 1080)

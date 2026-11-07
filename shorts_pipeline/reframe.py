@@ -5,9 +5,9 @@ its model file is configured) and a motion/edge "attention" map locate what matt
 
 Modes:
 - track: the crop window follows the subject with a smooth linear pan (or holds still);
-- stack: 9:16 only — two people too far apart for one crop: one on top, one below, each a
-         proper crop (no blurred side bars in vertical Shorts).
-- fit:   1:1 only — when the important content is wider than the crop (two people far apart, wide
+- stack: two people too far apart for one crop: each gets a proper crop of their own — one on
+         top of the other in 9:16, side by side in 1:1. No Short ever shows blurred side bars.
+- fit:   (kept only for older plans; the planner no longer chooses it) when the content is wider than the crop (two people far apart, wide
          action), a wider window that holds all of it (square for 9:16, 4:3 for 1:1, or the whole
          picture if needed) is shown across the full width over a blurred copy of itself. A thin
          16:9 strip in the middle of a 9:16 frame looked cheap; the wider window keeps it large.
@@ -28,6 +28,7 @@ SAMPLE_WIDTH = 480
 FIT_ASPECT_VERTICAL = 1.0      # a 9:16 Short shows a square window when it cannot track one subject
 FIT_ASPECT_SQUARE = 4 / 3      # a 1:1 Short shows a 4:3 window
 STACK_TILE_ASPECT = 1080 / 960  # 9:16 two-person shots: two 1080x960 crops stacked
+SIDE_TILE_ASPECT = 540 / 1080   # 1:1 two-person shots: two 540x1080 crops side by side
 
 
 def sample(video: Path, start: float, end: float, count: int = 6) -> list[np.ndarray]:
@@ -116,10 +117,10 @@ def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> 
                 min(((b[0] - x0a) / (x1a - x0a)) for b, s in zip(boxes, sizes) if s >= 0.35 * sizes[big])
             spreads.append(span)
             people.append(sorted((r, s) for r, s in zip(rel, sizes) if s >= 0.35 * sizes[big]))
-    fit_frac = window_fraction(active_aspect, FIT_ASPECT_VERTICAL if output_aspect < 0.8 else FIT_ASPECT_SQUARE)
     if found_faces >= max(2, len(frames) // 2):
-        if max(spreads) > win * 0.95 and output_aspect < 0.8:
-            # 9:16 never shows blurred side bars: follow the clearly bigger face, else stack the two people.
+        if max(spreads) > win * 0.95:
+            # Never blurred side bars: follow the clearly bigger face, else show both people in two crops
+            # (9:16: one above the other; 1:1: side by side).
             dominant = [len(p) == 1 or p[-1][1] >= 2 * sorted(x[1] for x in p)[-2] if len(p) > 1 else True
                         for p in people]
             biggest = [max(p, key=lambda x: x[1])[0] for p in people]
@@ -130,16 +131,12 @@ def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> 
                         "reason": "follows the main face"}
             left = float(np.median([p[0][0] for p in people]))
             right = float(np.median([p[-1][0] for p in people]))
-            frac = window_fraction(active_aspect, STACK_TILE_ASPECT)
+            rows = output_aspect < 0.8
+            frac = window_fraction(active_aspect, STACK_TILE_ASPECT if rows else SIDE_TILE_ASPECT)
             clamp = lambda c: round(min(1 - frac / 2, max(frac / 2, c)), 4)  # noqa: E731
-            return {"mode": "stack", "x_top": clamp(left), "x_bottom": clamp(right), "stack_window": round(frac, 4),
-                    "window": round(win, 4), "reason": "two people far apart: stacked"}
-        if max(spreads) > win * 0.95:
-            centre = float(np.median(centres))
-            frac = fit_frac if max(spreads) <= fit_frac * 0.95 else 1.0
-            centre = min(1 - frac / 2, max(frac / 2, centre))
-            return {"mode": "fit", "window": win, "fit_window": round(frac, 4), "x_center": round(centre, 4),
-                    "reason": "important faces wider than the crop"}
+            return {"mode": "stack", "layout": "rows" if rows else "columns", "x_top": clamp(left),
+                    "x_bottom": clamp(right), "stack_window": round(frac, 4), "window": round(win, 4),
+                    "reason": "two people far apart: " + ("stacked" if rows else "side by side")}
         reason = "faces"
     else:
         cols = attention(frames)
@@ -147,12 +144,6 @@ def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> 
         cols = cols[a:b] / max(1e-9, cols[a:b].sum())
         positions = np.linspace(0, 1, cols.size)
         centre = float((cols * positions).sum())
-        spread = float(np.sqrt((cols * (positions - centre) ** 2).sum()))
-        if spread > 0.30 and win < 0.6 and output_aspect >= 0.8:  # 9:16 follows the action instead
-            frac = fit_frac if spread < 0.36 else 1.0
-            centre = min(1 - frac / 2, max(frac / 2, centre))
-            return {"mode": "fit", "window": win, "fit_window": round(frac, 4), "x_center": round(centre, 4),
-                    "reason": "wide action"}
         half = len(frames) // 2 or 1
         centres = [centre] * len(frames)
         if len(frames) >= 4:  # pan only if attention clearly moves between halves
@@ -181,7 +172,16 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
     aw = int((active[2] - active[0]) * src_w) // 2 * 2
     ah = int((active[3] - active[1]) * src_h) // 2 * 2
     base = f"[{label_in}]crop={aw}:{ah}:{ax}:{ay},setsar=1"
-    if plan["mode"] == "stack":  # one person on top, the other below; no blur
+    if plan["mode"] == "stack" and plan.get("layout") == "columns":  # 1:1: two people side by side
+        tile_w = out_w // 2 // 2 * 2
+        fw = min(aw, int(round(ah * tile_w / out_h / 2)) * 2)
+        def left_c(x: float) -> int:
+            return int(min(max(0.0, x * aw - fw / 2), aw - fw)) // 2 * 2
+        return (f"{base},split=2[sleft][sright];"
+                f"[sleft]crop={fw}:{ah}:{left_c(plan.get('x_top', 0.3))}:0,scale={tile_w}:{out_h}:flags=lanczos[tileleft];"
+                f"[sright]crop={fw}:{ah}:{left_c(plan.get('x_bottom', 0.7))}:0,scale={out_w - tile_w}:{out_h}:flags=lanczos[tileright];"
+                f"[tileleft][tileright]hstack=inputs=2,setsar=1[{label_out}]")
+    if plan["mode"] == "stack":  # 9:16: one person on top, the other below; no blur
         tile_h = out_h // 2 // 2 * 2
         fw = min(aw, int(round(ah * out_w / tile_h / 2)) * 2)
         def left(x: float) -> int:
