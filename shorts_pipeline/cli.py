@@ -519,8 +519,14 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         footage = _footage([s['clip_id'] for s in arc['scenes']], screened, workdir)
         cuts = {s['clip_id']: shot_changes(Path(footage[s['clip_id']]), s['clip_start'], s['clip_end']) for s in arc['scenes']}
         director = _director(arc, voiceover)
-        edl = build_edl(arc, voiceover, footage, cuts, similar=_similarity(arc, voiceover), director=director)
+        similar = _similarity(arc, voiceover)
+        edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
+        fixes = _critic_fixes(arc, voiceover, edl)  # sentences whose shots do not show what is said
+        if fixes:
+            director = {**director, **fixes}
+            edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
         edl['director'] = {k: [list(r) for r in v] for k, v in director.items()}
+        edl['critic_fixed_beats'] = sorted(fixes)
         plans = plan_shots(edl, screened)
         for shot in edl['shots']:
             shot.pop('source', None)  # machine-specific; each render machine downloads its own copy
@@ -530,6 +536,22 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         rows.append({'arc': voiceover['arc'], 'shots': edl['shot_count'],
                      'moving_shots': sum(1 for p in plans.values() if p['motion'] >= 2.5)})
     return {'planned': rows}
+
+
+def _critic_fixes(arc: dict, voiceover: dict, edl: dict) -> dict:
+    """Gemini compares each sentence with its shots before rendering; better shots for weak matches."""
+    from . import gemini as gem
+    google = gem.client()
+    if google is None:
+        return {}
+    try:
+        fixes = gem.critique_edit(google, arc, voiceover, edl)
+    except gem.GeminiUnavailable as exc:
+        print(f'No pre-render critic: {str(exc)[:120]}', file=sys.stderr)
+        return {}
+    if fixes:
+        print(f'Critic re-picked shots for {len(fixes)} sentences: {sorted(fixes)}', file=sys.stderr)
+    return fixes
 
 
 def _director(arc: dict, voiceover: dict) -> dict:

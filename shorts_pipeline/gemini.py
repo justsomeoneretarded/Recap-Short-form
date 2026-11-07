@@ -833,3 +833,63 @@ def shot_list(gemini: Client, arc: dict, voiceover: dict) -> dict[str, list[tupl
         if ranges:
             out[beat] = ranges
     return out
+
+
+# ======================================================================== critic before rendering
+
+BOARD_SCHEMA = {"type": "object", "properties": {"beats": {"type": "array", "items": {"type": "object", "properties": {
+    "beat": {"type": "string"}, "match": {"type": "integer"}, "better": {"type": "array", "items": {"type": "integer"}},
+    "why": {"type": "string"}}, "required": ["beat", "match", "better"]}}}, "required": ["beats"]}
+
+
+def storyboard(arc: dict, edl: dict) -> tuple[list[dict], dict[int, tuple[int, float, float]]]:
+    """Per narration beat: what is said and what its shots show (from the watched moments), plus the
+    numbered moments the critic may choose from instead."""
+    keyed: dict[int, tuple[int, float, float]] = {}
+    for i, scene in enumerate(arc.get("scenes") or []):
+        for m in scene.get("moments") or []:
+            s, e = max(m["start"], scene["clip_start"]), min(m["end"], scene["clip_end"])
+            if e - s >= 0.8:
+                keyed[len(keyed)] = (i, s, e)
+    board = []
+    for shot in edl.get("shots") or []:
+        if shot.get("audio") == "full":
+            continue
+        scene_index = next((i for i, sc in enumerate(arc["scenes"]) if sc["clip_id"] == shot["clip_id"]), None)
+        seen = [m["what"][:100] for m in (arc["scenes"][scene_index].get("moments") or [])
+                if scene_index is not None and m["end"] > shot["start"] and m["start"] < shot["end"]]
+        if board and board[-1]["beat"] == shot["beat"]:
+            board[-1]["shows"] += seen
+        else:
+            board.append({"beat": shot["beat"], "scene": scene_index, "shows": seen})
+    return board, keyed
+
+
+def critique_edit(gemini: Client, arc: dict, voiceover: dict, edl: dict, keep_above: int = 6) -> dict[str, list]:
+    """Before anything is rendered, a strict editor compares each sentence with what its shots show;
+    for sentences scoring under `keep_above` it picks better moments of the same scene. Returns the
+    replacement shot lists ({} when everything matches or nothing was watched)."""
+    board, keyed = storyboard(arc, edl)
+    if not keyed or not board:
+        return {}
+    said = {b["id"]: b.get("text", "") for b in voiceover.get("beats") or []}
+    rows = [{"beat": r["beat"], "says": said.get(r["beat"], "")[:240], "shows": r["shows"][:8],
+             "choices": [{"k": k, "what": f"{v[1]:.0f}-{v[2]:.0f}s"} for k, v in keyed.items() if v[0] == r["scene"]][:20]}
+            for r in board]
+    menu = [{"k": k, "scene": v[0], "what": next((m["what"][:110] for m in arc["scenes"][v[0]].get("moments") or []
+                                                  if m["start"] <= v[1] < m["end"] + 0.01), "")} for k, v in keyed.items()]
+    prompt = ("Strict editor of a movie-recap Short, before rendering. For each narration beat, score 1-10 how well "
+              "what its shots show matches what is said at that moment. For any beat under "
+              f"{keep_above}, list better moments (keys from the same scene, in order) that show what is said.\n"
+              "BEATS:\n" + json.dumps(rows, ensure_ascii=False) + "\nMOMENTS:\n" + json.dumps(menu, ensure_ascii=False))
+    reply = gemini.generate("light", [{"text": prompt}], schema=BOARD_SCHEMA, temperature=0.2)
+    scene_of = {r["beat"]: r["scene"] for r in board}
+    fixes: dict[str, list] = {}
+    for row in reply.get("beats") or []:
+        beat = str(row.get("beat"))
+        if int(row.get("match") or 10) >= keep_above or beat not in scene_of:
+            continue
+        ranges = [(keyed[k][1], keyed[k][2]) for k in row.get("better") or [] if k in keyed and keyed[k][0] == scene_of[beat]]
+        if ranges:
+            fixes[beat] = ranges
+    return fixes

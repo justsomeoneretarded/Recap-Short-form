@@ -351,3 +351,14 @@ def test_shot_list_maps_sentences_to_their_own_scenes_moments():
                                                              {"beat": "b1", "moments": [2]}]})]})
     shots = g.shot_list(c, arc, voice)
     assert shots == {"b0": [(30, 35)], "b1": [(2, 6)]}  # a moment from another scene is never used for b0
+
+
+def test_pre_render_critic_repicks_shots_for_sentences_that_do_not_match():
+    arc = {"scenes": [{"clip_id": "c", "clip_start": 0, "clip_end": 40, "moments": [
+        {"start": 0, "end": 5, "what": "a man drinks tea"}, {"start": 20, "end": 26, "what": "he smashes the floor"}]}]}
+    edl = {"shots": [{"clip_id": "c", "start": 0, "end": 4, "beat": "b0", "audio": "duck"}]}
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "text": "He smashes the concrete floor."}]}
+    c = client({"gemini-3.5-flash-lite": [answer({"beats": [{"beat": "b0", "match": 2, "better": [1]}]})]})
+    assert g.critique_edit(c, arc, voice, edl) == {"b0": [(20, 26)]}
+    good = client({"gemini-3.5-flash-lite": [answer({"beats": [{"beat": "b0", "match": 8, "better": [1]}]})]})
+    assert g.critique_edit(good, arc, voice, edl) == {}

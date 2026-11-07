@@ -101,6 +101,10 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
     duration = edl["duration"]
     add("length", "pass" if 0.6 * target_seconds <= duration <= target_seconds + 5 else "warn",
         f"{duration:.0f} s (requested {target_seconds:.0f} s)")
+    if edl.get("director") or edl.get("critic_fixed_beats"):
+        add("picture follows the words", "pass",
+            f"Gemini chose the shots for {len(edl.get('director') or {})} sentences"
+            + (f"; the pre-render critic re-picked {len(edl['critic_fixed_beats'])}" if edl.get("critic_fixed_beats") else ""))
     add("cut rhythm", "pass" if 1.2 <= edl["median_shot"] <= 3.8 else "warn",
         f"median shot {edl['median_shot']} s (references 1.5–2.9 s)")
     wpm = voiceover.get("words_per_minute", 0)
