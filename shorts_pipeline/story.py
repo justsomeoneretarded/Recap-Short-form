@@ -64,7 +64,7 @@ Rules for each story:
   understands with one sentence of narration. Give its start and end as mm:ss movie times taken from the
   subtitle timeline below (the dialogue of that stretch must be in it). Beats with no dialogue: estimate from
   the surrounding lines.
-- search: how clip channels title an upload of that scene: movie title + 2-4 plain words (e.g. "John Wick gas
+- search: how clip channels title an upload of that scene: movie title (with the year if the title is common) + 2-4 plain words (e.g. "John Wick gas
   station scene", "Havoc club shootout scene"). No plot details or minor character names: nobody titles uploads so.
 - key_moment: the one moment of the beat to leave without narration (a reaction, a reveal), if any.
 - The story must make sense to someone who never saw the movie, and must not spoil the movie's ending.
@@ -74,10 +74,13 @@ Rules for each story:
 - ending_mode and ending_idea: how it ends (see above) and the last line idea, ideally looping to the opening.
 - Different stories must not share beats.
 Plan up to {count} different stories, best first.
-Also give broad_searches: 6-10 short, general searches people type to find ANY footage of this movie on YouTube,
-fitted to this movie's genre (for an action film things like action, fights, kills, best action, shootout; for a horror
-film scariest moments, jump scares; compilations, "all ... scenes", best moments). Movie title + 1-3 words; most of them
-WITHOUT the word "scene". Long compilations are welcome: the right seconds are cut out of them later.
+Also give broad_searches: 6-10 short, general searches people type to find ANY footage of this movie on YouTube.
+Fit them to what THIS movie actually contains, never to a genre template: an action film may get action, fights, kills,
+shootout, best action; a psychological thriller with no fights gets things like intense scene, hospital scene, sad scene,
+twist, ending; a horror film scariest moments, jump scares. Add compilations ("all ... scenes", best moments).
+Movie title + 1-3 words; most of them WITHOUT the word "scene"; about half of them with the release year after the title
+(e.g. "Fractured 2019 hospital scene") so YouTube tells this film apart from others with the same name.
+Long compilations are welcome: the right seconds are cut out of them later.
 
 PLOT:
 {plot}
@@ -362,7 +365,10 @@ def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, p
     for i, beat in enumerate(story["beats"]):
         ids = [c["id"] for c in candidates if i in (c.get("suggested_for") or [])] + likely.get(i, [])
         mine = [by_id[v] for v in dict.fromkeys(ids) if v in by_id]
-        mine.sort(key=lambda c: (c["id"] in used, (c.get("duration") or 0) > MAX_CHECK_SECONDS))
+        # Shorter uploads first (a focused scene clip); long uploads and compilations are still checked, and
+        # one compilation may serve several beats.
+        mine.sort(key=lambda c: (c["id"] in used and (c.get("duration") or 0) <= MAX_CHECK_SECONDS,
+                                 (c.get("duration") or 0) > MAX_CHECK_SECONDS))
         log(f"beat {beat['name']}: candidates {[c['id'] for c in mine[:per_beat]]}")
         for c in mine[:per_beat]:
             try:
