@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 
 from .media import probe
+from .edit import PUNCH_ZOOM
 from .reframe import filter_graph, lift_for, native_size, plan_shot, sample
 
 FPS = 60
@@ -245,6 +246,43 @@ def duplicate_frame_ratio(video: Path) -> float:
     return round(max(0.0, 1 - int(kept[-1]) / total), 3) if total and kept else 0.0
 
 
+MAX_FLASHES = 3.0   # flashes per second above which light strobes (the photosensitivity guideline limit)
+FLASH_STEP = 20.0   # mean-brightness jump (0-255) that counts as half a flash
+
+
+def flashes_in(lumas: list[float], fps: float) -> float:
+    """Most flashes in any one second: a flash is a brightness jump one way and back."""
+    if len(lumas) < 3 or fps <= 0:
+        return 0.0
+    changes = []  # (frame index, direction) of every big jump, merging runs in the same direction
+    for i in range(1, len(lumas)):
+        delta = lumas[i] - lumas[i - 1]
+        if abs(delta) >= FLASH_STEP:
+            sign = 1 if delta > 0 else -1
+            if changes and changes[-1][1] == sign and i - changes[-1][0] <= 2:
+                continue
+            changes.append((i, sign))
+    reversals = [changes[k][0] for k in range(1, len(changes)) if changes[k][1] != changes[k - 1][1]]
+    window = max(1, round(fps))
+    best = 0
+    for k, start in enumerate(reversals):
+        best = max(best, sum(1 for r in reversals[k:] if r - start < window))
+    return best / 2.0
+
+
+def flash_rate(source: Path, start: float, span: float) -> float:
+    """Flashes per second in the worst second of a stretch of footage (0 when it cannot be measured)."""
+    try:
+        out = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{max(0.1, span):.3f}",
+                              "-i", str(source), "-vf", "scale=96:-2,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
+                              "-an", "-f", "null", "-"], capture_output=True, text=True, timeout=120).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    lumas = [float(line.split("=", 1)[1]) for line in out.splitlines() if "YAVG=" in line]
+    fps = len(lumas) / span if span > 0 else 0.0
+    return flashes_in(lumas, fps)
+
+
 def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertical")) -> dict:
     """Framing plan and motion per shot, computed once (also shipped to parallel render machines)."""
     plans = {}
@@ -254,11 +292,18 @@ def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertic
         entry = {"active": active, "motion": motion(Path(shot["source"]), shot["start"], shot["end"] - shot["start"])}
         logo = bool(((screening.get(shot["clip_id"]) or {}).get("text") or {}).get("watermarks"))
         lift = lift_for(frames)
+        flashes = flash_rate(Path(shot["source"]), shot["start"], shot["end"] - shot["start"])
+        if flashes > MAX_FLASHES:
+            entry["flashes_per_second"] = round(flashes, 1)
         for aspect in aspects:
             size = SIZES[aspect]
             entry[aspect] = plan_shot(frames, active, size[0] / size[1])
             if lift:
                 entry[aspect]["lift"] = lift
+            if flashes > MAX_FLASHES:
+                entry[aspect]["deflicker"] = True
+            if shot.get("accent") == "punch" and entry[aspect]["mode"] != "stack":
+                entry[aspect]["punch"] = PUNCH_ZOOM if shot["duration"] >= 2.0 else PUNCH_ZOOM / 2
             if logo and entry[aspect]["mode"] == "fit":
                 entry[aspect]["trim"] = 0.08  # corner logo: fit shots lose 8 % at every edge
         plans[str(i)] = entry

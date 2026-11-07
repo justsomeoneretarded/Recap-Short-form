@@ -118,3 +118,23 @@ def test_one_big_face_is_never_stacked_twice(monkeypatch):
     monkeypatch.setattr(r, "faces", lambda frame: next(calls))
     plan = r.plan_shot(frames, (0.0, 0.0, 1.0, 1.0), 1080 / 1920)
     assert plan["mode"] == "track"
+
+
+def test_punch_in_only_when_asked():
+    assert r.punch_in({}, 1080, 1920, 2.0) == ""
+    assert "eval=frame" in r.punch_in({"punch": 0.08}, 1080, 1920, 2.0)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+@pytest.mark.parametrize("mode", ["track", "fit"])
+def test_punch_in_and_deflicker_keep_the_frame_size(tmp_path, mode):
+    src = tmp_path / "src.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24", "-t", "1",
+                    str(src)], check=True)
+    graph = r.filter_graph({"mode": mode, "punch": 0.08, "deflicker": True}, 640, 360, (0, 0, 1, 1), 540, 960, 1.0)
+    out = tmp_path / "out.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-filter_complex", graph, "-map", "[v]",
+                    str(out)], check=True)
+    dims = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                           "-of", "csv=p=0", str(out)], capture_output=True, text=True).stdout.strip()
+    assert dims == "540,960"

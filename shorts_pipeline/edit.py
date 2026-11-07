@@ -269,5 +269,52 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
     missing = total - sum(lengths)
     if missing > 0.5:  # never ship a Short whose picture is shorter than its voice
         raise ValueError(f"Edit for {arc.get('id')} leaves {missing:.1f} s of the {total:.1f} s timeline without footage")
-    return {"shots": shots, "duration": round(total, 3), "shot_count": len(shots),
+    accents = mark_accents(shots, arc, beats)
+    return {"shots": shots, "duration": round(total, 3), "shot_count": len(shots), "accents": accents,
             "median_shot": round(sorted(lengths)[len(lengths) // 2], 2) if lengths else 0.0}
+
+
+PUNCH_ZOOM = 0.08          # a slow push-in to 108 % over the shot
+PUNCH_MIN_SHOT = 1.2       # shorter shots are cuts, not moments
+PUNCH_GAP = 6.0            # seconds between two push-ins (more stops meaning anything)
+TURN_WORDS = ("reveal", "realis", "realiz", "turn", "twist", "threat", "climax", "return", "discover", "payoff")
+
+
+def mark_accents(shots: list[dict], arc: dict, beats: list[dict]) -> int:
+    """Slow push-in on the shots that carry a story's key moments (at most one per beat, spaced out).
+
+    A shot qualifies when what was watched there is a strong moment (intensity or story ≥ 8), when it
+    shows the beat's key moment, or when it ends a turning-point beat. Returns how many were marked.
+    """
+    scene_of = {b["id"]: b.get("scene") for b in beats}
+    scored = []
+    for i, shot in enumerate(shots):
+        if shot["duration"] < PUNCH_MIN_SHOT:
+            continue
+        scene_index = scene_of.get(shot.get("beat"))
+        scene = arc["scenes"][scene_index] if isinstance(scene_index, int) and scene_index < len(arc["scenes"]) else {}
+        if scene.get("clip_id") != shot["clip_id"]:
+            continue  # borrowed or filler footage: its moments belong to another scene
+        info = scene.get("beat") or {}
+        moment = _moment_at(scene.get("moments") or [], (shot["start"] + shot["end"]) / 2) or {}
+        score = 0.0
+        if max(moment.get("intensity", 0), moment.get("story", 0)) >= 8:
+            score += 2
+        if info.get("key_moment") and moment.get("what") and word_match(info["key_moment"], moment["what"]) >= 0.34:
+            score += 2
+        last_of_beat = i + 1 == len(shots) or shots[i + 1].get("beat") != shot.get("beat")
+        if last_of_beat and any(w in str(info.get("role", "")).lower() for w in TURN_WORDS):
+            score += 1.5
+        if score:
+            scored.append((score, i))
+    marked, beats_done = [], set()
+    for score, i in sorted(scored, key=lambda r: (-r[0], r[1])):
+        shot = shots[i]
+        if shot.get("beat") in beats_done:
+            continue
+        if any(abs(shots[j]["timeline_start"] - shot["timeline_start"]) < PUNCH_GAP for j in marked):
+            continue
+        shot["accent"] = "punch"
+        marked.append(i)
+        beats_done.add(shot.get("beat"))
+    return len(marked)

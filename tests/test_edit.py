@@ -81,3 +81,18 @@ def test_director_moments_play_in_its_order_under_their_sentence():
                         "text": "He smashes the floor."}]}
     edl = build_edl(arc, voice, {"c": "/c.mp4"}, {}, director={"b0": [(40.0, 42.0), (10.0, 12.0)]})
     assert [(s["start"], s["end"]) for s in edl["shots"]] == [(40.0, 42.0), (10.0, 12.0)]
+
+
+def test_key_moments_get_one_spaced_push_in():
+    from shorts_pipeline.edit import build_edl
+    scene = {"clip_id": "c", "clip_start": 0.0, "clip_end": 60.0, "peaks": [], "avoid": [],
+             "beat": {"role": "the reveal", "key_moment": "Viggo laughs on the phone"},
+             "moments": [{"start": 10.0, "end": 13.0, "what": "Viggo laughs on the phone", "intensity": 5, "story": 9},
+                         {"start": 20.0, "end": 23.0, "what": "a car drives", "intensity": 3, "story": 3}]}
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 3.0},
+                       {"id": "b1", "kind": "narration", "scene": 0, "timeline_start": 3.0, "duration": 3.0}]}
+    edl = build_edl({"id": "a", "scenes": [scene]}, voice, {"c": "/c.mp4"}, {},
+                    director={"b0": [(10.0, 13.0)], "b1": [(20.0, 23.0)]})
+    punched = [s for s in edl["shots"] if s.get("accent") == "punch"]
+    assert [s["start"] for s in punched] == [10.0]   # the strong moment; the second is too close in time anyway
+    assert edl["accents"] == 1

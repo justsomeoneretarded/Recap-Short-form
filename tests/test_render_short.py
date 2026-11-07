@@ -119,3 +119,13 @@ def test_dark_garbage_frames_are_rejected_too():
         for k in range(10):  # every output frame smeared into rows, like run 16's Conjuring shot
             Image.fromarray(np.repeat(base[k % 90:k % 90 + 1], 90, axis=0)).save(bad / f"{k + 1:08d}.png")
         assert not rs.rife_frames_ok(src, bad)[0]
+
+
+def test_strobing_light_is_counted_as_flashes_per_second():
+    from shorts_pipeline.render_short import flashes_in
+    strobe = [20, 200] * 12          # 24 fps, light on/off every frame: 11+ flashes in a second
+    assert flashes_in(strobe, 24) > 3
+    calm = [100 + (i % 3) for i in range(48)]
+    assert flashes_in(calm, 24) == 0
+    one_flash = [50] * 10 + [220, 220] + [50] * 12   # a single muzzle flash is fine
+    assert flashes_in(one_flash, 24) <= 1

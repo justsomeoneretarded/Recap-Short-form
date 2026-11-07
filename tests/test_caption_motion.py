@@ -110,3 +110,21 @@ def test_ffmpeg_renders_more_words_later_without_recentring(tmp_path):
     assert max(index%640 for index in later_pixels)>max(index%640 for index in early_pixels)+20
     assert 0<len(leaving_pixels)<len(later_pixels)*.7
     assert min(index%640 for index in leaving_pixels)>min(index%640 for index in early_pixels)+20
+
+
+def test_one_key_word_per_caption_is_gold_and_sentence_starts_are_not_names(tmp_path):
+    from shorts_pipeline.captions import HIGHLIGHT, highlight_index, _sentence_starts
+    words=[{"word":w,"start":i*.4,"end":i*.4+.3} for i,w in enumerate("They killed his dog. Then Viggo laughed.".split())]
+    starts=_sentence_starts(words)
+    assert highlight_index(words[:4],starts)==1                       # a power word beats everything else
+    assert highlight_index(words[4:],starts,offset=4)==1               # "Viggo" (a name), not "Then"
+    assert highlight_index([{"word":"They"},{"word":"walk"}],{0}) is None   # no forced highlight
+    assert highlight_index(words[:4],starts,{"dog."})==3               # the script's own emphasis wins
+    files=write_captions({"beats":[{"id":"b1","text":"They killed his dog.","timeline_start":0,"duration":2,
+                                    "words":words[:4]}]},tmp_path,1080,1920,max_words=3)
+    events=_events(files["ass"].read_text())
+    assert any(HIGHLIGHT+r"\alpha&HFF&" in e and "KILLED" in e for e in events)
+    assert json.loads((tmp_path/"caption-timing.json").read_text())["highlighted_cues"]>=1
+    plain=write_captions({"beats":[{"id":"b1","text":"They killed his dog.","timeline_start":0,"duration":2,
+                                    "words":words[:4]}]},tmp_path/"p",1080,1920,highlights=False)
+    assert HIGHLIGHT not in plain["ass"].read_text()

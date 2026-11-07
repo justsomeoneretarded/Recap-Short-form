@@ -193,6 +193,8 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
     base = f"[{label_in}]crop={aw}:{ah}:{ax}:{ay},setsar=1"
     if plan.get("lift"):  # dark footage: lift the shadows so it reads on a phone
         base += f",eq=gamma={plan['lift']:.2f}:contrast=1.04:saturation=1.05"
+    if plan.get("deflicker"):  # strobing light: smooth the brightness swings
+        base += ",deflicker=mode=pm:size=7"
     if plan["mode"] == "stack" and plan.get("layout") == "columns":  # 1:1: two people side by side
         tile_w = out_w // 2 // 2 * 2
         fw = min(aw, int(round(ah * tile_w / out_h / 2)) * 2)
@@ -226,7 +228,7 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
                 f"[bgsrc]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,crop={out_w}:{out_h},"
                 f"boxblur=24:2,eq=brightness=-0.10:saturation=0.85[bg];"
                 f"[fgsrc]scale={out_w}:-2:flags=lanczos[fg];"
-                f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[{label_out}]")
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2{punch_in(plan, out_w, out_h, duration)},setsar=1[{label_out}]")
     out_aspect = out_w / out_h
     cw = min(aw, int(round(ah * out_aspect / 2)) * 2)
     ch = min(ah, int(round(cw / out_aspect / 2)) * 2)
@@ -235,7 +237,18 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
     d = max(0.04, duration)
     x = f"max(0\\,min({aw - cw}\\,{left0:.2f}+({left1 - left0:.2f})*min(1\\,t/{d:.3f})))"
     return (f"{base},crop={cw}:{ch}:x='{x}':y={(ah - ch) // 2},"
-            f"scale={out_w}:{out_h}:flags=lanczos,setsar=1[{label_out}]")
+            f"scale={out_w}:{out_h}:flags=lanczos{punch_in(plan, out_w, out_h, duration)},setsar=1[{label_out}]")
+
+
+def punch_in(plan: dict, out_w: int, out_h: int, duration: float) -> str:
+    """A slow push-in (to 1 + punch over the shot, eased out) for key moments; '' for every other shot."""
+    zoom = float(plan.get("punch") or 0.0)
+    if zoom <= 0:
+        return ""
+    d = max(0.04, duration)
+    grow = f"(1+{zoom:.3f}*(1-pow(1-min(1\\,t/{d:.3f})\\,2)))"  # ease-out: fast start, gentle landing
+    return (f",scale=w='trunc({out_w}*{grow}/2)*2':h='trunc({out_h}*{grow}/2)*2':eval=frame:flags=bicubic,"
+            f"crop={out_w}:{out_h}")
 
 
 def native_size(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, out_h: int) -> tuple[int, int]:
