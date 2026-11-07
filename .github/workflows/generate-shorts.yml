@@ -24,6 +24,11 @@ on:
         type: choice
         options: [original, turbo, nano]
         default: original
+      max_stories:
+        description: Most Shorts to make from this movie
+        type: choice
+        options: ['1', '2', '3', '4', '5']
+        default: '5'
 
   workflow_call:  # the five-movie test runs this exact pipeline once per movie, side by side
     inputs:
