@@ -131,39 +131,31 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     plot = plot_file.read_text() if plot_file.exists() else ''
     google, hints, planned, found = gem.client(), None, [], None
     log = lambda m: print(f"[discover] {m}", file=sys.stderr, flush=True)  # noqa: E731
+    output = Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    from .arcs import attach_dialogue, build_arcs
+    from .screening import screen_candidates
+    stories, placed, screened, report = None, None, {}, {}
+
+    def screen_some(placed_clips: dict, first: set) -> dict:
+        return {r['id']: r for r in screen_candidates(placed_clips, youtube, Path(workdir).resolve(),
+                                                      top=max(screen or 0, len(first) + 2), movie=research['movie'],
+                                                      gemini=google, first=first)}
+
     if google is not None and transcript is not None:
-        # 1) general searches find what footage exists; 2) the story is planned from scenes those uploads
-        # contain; 3) each beat's own search adds targeted finds.
-        from .story import beat_searches, general_searches, plan_stories
+        # One unified runner: script first, adaptive footage hunt, then fallbacks (see hunt.py).
+        from . import hunt
         wanted = max(1, min(5, int(os.environ.get('MAX_STORIES') or 5)))
-        try:
-            broad = general_searches(google, research['movie'], plot)
-            log(f"general searches from Gemini: {broad}")
-        except gem.GeminiUnavailable as exc:
-            broad = []
-            log(f"no general searches from Gemini: {str(exc)[:120]}")
-        found = discover(research, youtube, **({'scene_hints': broad} if broad else {}))
-        # Where scene clips live: the good channels' own uploads of this movie, and playlists of its scenes,
-        # so the planner sees as much existing footage as possible.
-        from .discovery import expand
-        found['candidates'] += expand(youtube, research['movie'], found['candidates'], log=log)
-        try:
-            planned = plan_stories(google, research, transcript, plot, length, count=wanted + 1,
-                                   uploads=found['candidates'])
-            for story in planned:
-                log(f"story: {story['title']} — " + " → ".join(b['name'] for b in story['beats']))
-        except gem.GeminiUnavailable as exc:
-            log(f"no story plan (scene-by-scene stories instead): {str(exc)[:160]}")
-        targeted = [q for q in beat_searches(planned) if q not in found['queries']]
-        if targeted:
-            log(f"scene searches: {targeted}")
-            more = discover(research, youtube, scene_hints=targeted)
-            known = {c['id'] for c in found['candidates']}
-            found['candidates'] += [c for c in more['candidates'] if c['id'] not in known]
-            found['queries'] += [q for q in more['queries'] if q not in found['queries']]
-            found['rejected'] += more['rejected']
-            found['errors'] += more['errors']
-        hints = (broad or []) + targeted
+        result = hunt.run(google, research, transcript, plot, youtube, workdir, length=length, wanted=wanted,
+                          screen=screen_some if screen else None, footage=os.environ.get('SHORTS_FOOTAGE', 'auto'),
+                          use_whisper=use_whisper, log=log)
+        found, placed, screened, report, planned = (result['found'], result['placed'], result['screened'],
+                                                    result['report'], result['planned'])
+        hints = found['queries']
+        if result['arcs']:
+            attach_dialogue(result['arcs'], transcript)
+            stories = {'target_seconds': length, 'planned': planned, 'arcs': result['arcs'], 'hunt': report}
+        lap('story_and_footage')
     if found is None:
         if google is not None:  # the scenes people talk about most → better search words
             try:
@@ -172,81 +164,16 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
             except gem.GeminiUnavailable as exc:
                 log(f"no Gemini scene hints: {str(exc)[:160]}")
         found = discover(research, youtube, **({'scene_hints': hints} if hints else {}))
-    lap('search_and_rank')
-    confirmed, checked = {}, set()
-    if planned:
-        from .discovery import candidate_from_id
-        from .story import confirm_beats, missing_searches, suggest_links
-        known = {c['id']: c for c in found['candidates']}
-        for n, story in enumerate(planned[:wanted]):
-            try:  # Gemini + Google Search suggest real uploads per beat; each one is verified
-                for beat_index, ids in suggest_links(google, research['movie'], story).items():
-                    for vid in ids:
-                        if vid not in known:
-                            made = candidate_from_id(youtube, vid, research['movie'], story['beats'][beat_index]['search']
-                                                     if beat_index < len(story['beats']) else '')
-                            if not made:
-                                log(f"suggested link {vid} rejected (missing or failed checks)")
-                                continue
-                            known[vid] = made
-                            found['candidates'].insert(0, made)
-                        known[vid].setdefault('suggested_for', []).append(beat_index)
-            except gem.GeminiUnavailable as exc:
-                log(f"no suggested links: {str(exc)[:120]}")
-            # Gemini watches each beat's likeliest uploads and confirms the scene and its seconds; for the beats
-            # still missing it writes new searches (specific and general) and checks the new finds, twice more.
-            watched: set = set()
-            confirmed[n] = confirm_beats(google, story, found['candidates'], research['movie'], log=log, checked=watched)
-            for round_ in range(2):
-                missing = [i for i in range(len(story['beats'])) if i not in confirmed[n]]
-                if not missing:
-                    break
-                try:
-                    retry = missing_searches(google, research['movie'], story, missing, found['queries'])
-                except gem.GeminiUnavailable as exc:
-                    log(f"no new searches for missing beats: {str(exc)[:100]}")
-                    break
-                log(f"round {round_ + 2}: {len(missing)} beats missing; new searches {retry}")
-                if not retry:
-                    break
-                more = discover(research, youtube, scene_hints=retry)
-                have = {c['id'] for c in found['candidates']}
-                found['candidates'] += [c for c in more['candidates'] if c['id'] not in have]
-                found['queries'] += [q for q in more['queries'] if q not in found['queries']]
-                confirmed[n].update(confirm_beats(google, story, found['candidates'], research['movie'], log=log,
-                                                  only=set(missing), checked=watched))
-            checked |= {c['id'] for c in confirmed[n].values()}
-            log(f"story '{story['title']}': {len(confirmed[n])} of {len(story['beats'])} beats confirmed by watching")
-        # Confirmed uploads are placed and screened first (subtitles sharpen their cuts).
-        found['candidates'].sort(key=lambda c: c['id'] not in checked)
-        # Confirmed footage needs no wide net: place and screen it plus a few spares (each clip costs minutes).
-        top = len(checked) + 6 if len(checked) >= 3 else max(top, min(30, len(checked) + 2 * sum(len(st['beats']) for st in planned)))
-    placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
-    lap('download_and_place')
-    screened = {}
-    if screen:
-        from .screening import screen_candidates
-        screened = {r['id']: r for r in screen_candidates(placed, youtube, Path(workdir).resolve(),
-                                                          top=max(screen, top if planned else 0),
-                                                          movie=research['movie'], gemini=google, first=checked)}
-    lap('screen')
-    output = Path(output).resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    write_json(output/'screening.json', list(screened.values()))
-    from .arcs import attach_dialogue, build_arcs, units_from
-    stories = None
-    if planned:
-        from .story import stories_to_arcs
-        arcs = stories_to_arcs(planned, units_from(placed['clips'], screened), length, confirmed=confirmed,
-                               clips={c['id']: c for c in placed['clips']}, screening=screened)
-        if arcs:
-            if transcript is not None:
-                attach_dialogue(arcs, transcript)
-            stories = {'target_seconds': length, 'planned': planned, 'arcs': arcs}
-        print(f"[discover] planned stories with footage for enough beats: {len(arcs)} of {len(planned)}",
-              file=sys.stderr, flush=True)
-    if stories is None:
+        lap('search_and_rank')
+    if stories is None:  # the old scene-by-scene stories (no Gemini, or no story had footage)
+        if not placed or not placed.get('clips'):
+            placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
+            lap('download_and_place')
+        if screen and not screened:
+            screened = screen_some(placed, set())
+            lap('screen')
         stories = build_arcs(placed['clips'], screened, length, transcript)
+    write_json(output/'screening.json', list(screened.values()))
     write_json(output/'arcs.json', stories)
     write_json(output/'clips.json', {'movie': research['movie']['title'], 'queries': found['queries'],
                                      'placed': placed, 'rejected': found['rejected'], 'errors': found['errors'],
@@ -272,7 +199,7 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
                'clips': rows, 'timings_seconds': timings,
                'gemini': google.usage() if google is not None else 'off (no GEMINI_API_KEY)',
                'scene_hints': hints or [], 'planned_stories': planned,
-               'confirmed_beats': {str(k): v for k, v in confirmed.items()}}
+               'hunt': report}
     write_json(output/'summary.json', summary)
     return summary
 

@@ -132,3 +132,15 @@ def test_clips_are_downloaded_ahead_once_each(tmp_path):
     p.place_candidates(research, discovered, youtube, tmp_path, transcribe=lambda audio: [], comments_for=0)
     videos = [vid for kind, vid in youtube.calls if kind == "video"]
     assert sorted(videos) == [f"c{i}" for i in range(5)]  # prefetched, never twice
+
+
+def test_dialogue_drift_flags_sped_up_uploads():
+    from shorts_pipeline.placement import dialogue_drift
+    from shorts_pipeline.locate import MovieTranscript
+    lines = [f"{i+1}\n00:{(100+i*3)//60:02d}:{(100+i*3)%60:02d},000 --> 00:{(101+i*3)//60:02d}:{(101+i*3)%60:02d},500\n"
+             f"unique words number {i} alpha{i} beta{i} gamma{i}" for i in range(60)]
+    movie = MovieTranscript.from_subtitles("\n\n".join(lines))
+    plain = [w for w in movie.words]
+    assert dialogue_drift(movie, [(t - 100, w) for t, w in plain]) == 0.0
+    sped = [((t - 100) / 1.1, w) for t, w in plain]   # 10 % faster: the second half drifts
+    assert dialogue_drift(movie, sped) >= 4

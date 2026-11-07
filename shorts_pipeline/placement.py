@@ -80,9 +80,25 @@ def place_clip(candidate: dict, movie: MovieTranscript | None, youtube: YouTube,
             first = next(s for s in segments if s.get("matched"))
             result.update(matched=True, movie_start=first["movie_start"], movie_end=first["movie_end"],
                           confidence=first.get("confidence"))
+    if result.get("matched") and not candidate.get("compilation"):
+        drift = dialogue_drift(movie, words)
+        if drift is not None:
+            result["drift_seconds"] = drift
     if result.get("matched"):
         result["context"] = movie.context(result["movie_start"], result["movie_end"])
     return result
+
+
+def dialogue_drift(movie: MovieTranscript, words: list[tuple[float, str]]) -> float | None:
+    """How far the clip's first and second half disagree about where they are in the movie. A sped-up
+    or cut-up re-upload drifts; a plain clip does not (≈0). None when either half cannot be placed."""
+    if len(words) < 40:
+        return None
+    half = len(words) // 2
+    first, second = movie.locate(words[:half]), movie.locate(words[half:])
+    if not (first.get("matched") and second.get("matched")):
+        return None
+    return round(abs(first["offset_seconds"] - second["offset_seconds"]), 1)
 
 
 def _prefetch(youtube: YouTube, video_id: str, workdir: Path) -> None:

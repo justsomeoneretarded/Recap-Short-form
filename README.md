@@ -58,6 +58,17 @@ Add a free key from aistudio.google.com as the secret `GEMINI_API_KEY`. Gemini t
 | Covers | picks the strongest real frame and the cover words | frame sharpness/face scores |
 | Review | watches the finished Short: hook, clarity, picture-matches-words, pace, framing, ending, problems with timestamps, age-restriction risk | numeric checks only |
 
+**How a Short's story and footage are made (one unified runner, `shorts_pipeline/hunt.py`):**
+1. *Script first.* Gemini writes two full scripts (story spine, narration, what each scene must show, the
+   movie lines) from the plot and the timed subtitles, styled on the reference Shorts; each scene's time is
+   checked against the subtitles and a strict editor rewrites weak scripts. It never looks at the footage.
+2. *Footage hunt, cheapest proof first.* Gemini-written searches (general and per scene) → subtitle placement
+   proves dialogue scenes → only for scenes still missing: Google Search links, channels and playlists of
+   the movie (when footage is thin), Gemini watching to confirm, and new search rounds.
+3. *Fallbacks:* a missing scene becomes a line of context; too few scenes → the second script; no script
+   with footage → a story re-planned from the uploads that exist; then the older scene-by-scene stories.
+The **Footage** option (auto / plenty / rare) only forces the light or heavy hunt; auto decides by itself.
+
 Gemini is never required: when the key is missing, the daily quota is used up, the service is down or
 a request is blocked, every step falls back to the local tools and the run still finishes. Models are
 discovered from the API (newest Flash / Flash-Lite), not hardcoded; `SHORTS_GEMINI_<SMART|LIGHT|EMBED>_MODEL`

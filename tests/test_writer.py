@@ -236,3 +236,27 @@ def test_hook_repeated_as_first_narration_is_dropped_not_rejected():
         {"scene": 0, "kind": "narration", "text": "SWAT officers break open a wall! Bodies are inside."}]}
     clean = w.cleanup(script, brief)
     assert clean["beats"][0]["text"] == "Bodies are inside."
+
+
+def test_planned_script_is_the_first_draft_with_its_movie_lines():
+    from shorts_pipeline import writer as w
+    from shorts_pipeline.locate import MovieTranscript
+    transcript = MovieTranscript.from_subtitles("1\n00:12:05,000 --> 00:12:07,000\nShe is not for sale my friend.\n")
+    arc = {"id": "a", "movie_start": 720, "movie_end": 750, "short_seconds": 60,
+           "story": {"title": "The Mustang", "hook": "A gangster wants his car.", "ending_mode": "renewed_threat"},
+           "missing": [{"name": "basement", "narration": "He digs up his guns."}],
+           "scenes": [{"clip_id": "G", "clip_title": "t", "clip_start": 0, "clip_end": 30, "movie_start": 720,
+                       "movie_end": 750, "beat": {"name": "gas", "narration": "John pumps gas into his Mustang.",
+                                                  "movie_lines": ["She's not for sale, my friend."]}}]}
+    brief = w.build_brief(arc, {"movie": {"title": "John Wick", "year": 2014, "cast": []}}, transcript)
+    draft = w.planned_draft(arc, brief)
+    assert draft["hook"] == "A gangster wants his car." and draft["beats"][0]["text"].startswith("John pumps")
+    assert draft["beats"][1]["kind"] == "dialogue"
+    assert brief.data["events_without_footage"][0].startswith("basement")
+
+
+def test_narration_too_long_for_its_footage_is_flagged():
+    from shorts_pipeline import writer as w
+    brief = w.Brief({}, set(), {}, {0: 20})
+    script = {"title": "T", "hook": "h", "beats": [{"scene": 0, "kind": "narration", "text": "word " * 45}]}
+    assert any("too long for its footage" in i for i in w.check(script, brief)["issues"])

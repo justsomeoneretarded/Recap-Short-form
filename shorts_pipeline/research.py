@@ -26,7 +26,7 @@ TMDB = "https://api.themoviedb.org/3"
 TMDB_IMAGES = "https://image.tmdb.org/t/p/"
 WIKI = "https://en.wikipedia.org/w/api.php"
 OPENSUBTITLES = "https://api.opensubtitles.com/api/v1"
-RESEARCH_VERSION = 2
+RESEARCH_VERSION = 3  # +1: identity check
 
 
 class ResearchError(RuntimeError):
@@ -261,6 +261,35 @@ def opensubtitles_file(movie: dict, http: Http, key: str, target: Path) -> dict:
 
 # ----------------------------------------------------------------------- research
 
+def identity_check(movie: dict, query: "MovieQuery", subtitles_path: str | None) -> dict:
+    """Is this the film the user meant, and do the subtitles belong to it? Titles are shared by
+    many films ('Havoc', 'Fractured'): without a year the wrong one is easy to pick; a subtitle
+    file from another film or cut would place every clip wrongly."""
+    out: dict = {"warnings": []}
+    if not query.year:
+        out["warnings"].append(f"No year given: picked {movie.get('title')} ({movie.get('year')}); add the year "
+                               "if this is the wrong film.")
+    runtime = float(movie.get("runtime_minutes") or 0) * 60
+    if subtitles_path and runtime:
+        try:
+            from .locate import MovieTranscript
+            cues = MovieTranscript.from_subtitles(Path(subtitles_path).read_text(errors="ignore")).cues
+            last = cues[-1].end if cues else 0.0
+        except Exception:  # noqa: BLE001 - a broken file is reported, not fatal
+            last = 0.0
+        out["subtitle_end_minutes"] = round(last / 60, 1)
+        # Credits run past the last line, so subtitles end before the runtime; ending far later means
+        # another film or a longer cut, far earlier a partial file.
+        if last > runtime * 1.08:
+            out["subtitles_mismatch"] = True
+            out["warnings"].append(f"Subtitles end at {last / 60:.0f} min but the film runs {runtime / 60:.0f} min: "
+                                   "they belong to another film or cut and are not used.")
+        elif last < runtime * 0.6:  # a partial file still places the clips it covers
+            out["warnings"].append(f"Subtitles end at {last / 60:.0f} min of {runtime / 60:.0f}: partial file, "
+                                   "later scenes are found by watching.")
+    return out
+
+
 def research(movie_text: str, workdir: Path, *, http: Http | None = None,
              tmdb_token: str | None = None, subtitles_key: str | None = None) -> dict:
     """Resolve the movie and gather its story sources; cached per movie."""
@@ -294,7 +323,11 @@ def research(movie_text: str, workdir: Path, *, http: Http | None = None,
         subtitles = {"skipped": str(exc)}
     if not subtitles.get("path"):
         warnings.append(f"No full subtitle file ({subtitles.get('skipped')}); clips cannot be placed by dialogue.")
-    result = {"version": RESEARCH_VERSION, "query": {"title": query.title, "year": query.year},
+    identity = identity_check(movie, query, subtitles.get("path"))
+    warnings += identity["warnings"]
+    if identity.get("subtitles_mismatch"):  # another film's or a very different cut's subtitles: worse than none
+        subtitles = {"skipped": "subtitle file does not match the film's runtime", "rejected_path": subtitles.get("path")}
+    result = {"identity": identity, "version": RESEARCH_VERSION, "query": {"title": query.title, "year": query.year},
               "movie": movie, "wikipedia": {k: v for k, v in wiki.items() if k != "plot"},
               "plot_path": str(folder / "plot.txt"), "subtitles": subtitles, "warnings": warnings,
               "folder": str(folder)}

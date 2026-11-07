@@ -20,7 +20,7 @@ from .compilations import description_chapters
 
 # Words that mark a video as something other than a clean scene of the film.
 REJECT_TITLE = re.compile(
-    r"\b(trailer|teaser|tv spot|promo|review|reaction|reacts?|explained|explain|recap|summary|ending|"
+    r"\b(trailer|teaser|tv spot|promo|review|reaction|reacts?|explained|explain|recap|summary|ending explained|"
     r"breakdown|analysis|theory|easter eggs?|behind the scenes|making of|interview|press|premiere|"
     r"edit|amv|fmv|slowed|reverb|sped up|nightcore|lyrics?|soundtrack|ost|theme song|full movie|"
     r"fan ?made|concept|ai generated|parody|spoof|honest|pitch meeting|ranked|ranking|top \d+|"
@@ -68,7 +68,9 @@ def build_queries(movie: dict, scene_hints: list[str] | None = None, limit: int 
 def prefilter(entry: dict, movie: dict) -> str | None:
     """Return a reason to drop a search result before fetching its full metadata, else None."""
     title = entry.get("title") or ""
-    if REJECT_TITLE.search(title):
+    # The movie's own name never counts against it ("The Game", "The Interview", "Edit").
+    own = re.compile(r"\b" + r"\s+".join(map(re.escape, movie["title"].split())) + r"\b", re.I)
+    if REJECT_TITLE.search(own.sub(" ", title)):
         return "title marks non-scene content"
     duration = entry.get("duration") or 0
     if duration and (duration < 20 or duration > 45 * 60):
@@ -317,11 +319,13 @@ def _parallel(function, items: list) -> list:
 
 
 def discover(research: dict, youtube: YouTube, *, scene_hints: list[str] | None = None, per_query: int = 10,
-             max_full: int = 30) -> dict:
+             max_full: int = 30, only_hints: bool = False) -> dict:
     """Search, filter and rank candidates. Returns kept candidates (best first) and every rejection."""
     movie = research["movie"]
     official = {c["key"] for c in movie.get("clips", [])}
-    queries = build_queries(movie, scene_hints, limit=12 + len(scene_hints or []))
+    # only_hints: later search rounds run just their own queries, not the generic templates again
+    queries = list(dict.fromkeys(scene_hints or [])) if only_hints else \
+        build_queries(movie, scene_hints, limit=12 + len(scene_hints or []))
     max_full += 2 * len(scene_hints or [])
     found: dict[str, dict] = {}
     rejected: list[dict] = []
@@ -464,3 +468,11 @@ def expand(youtube, movie: dict, candidates: list[dict], *, log=lambda m: None, 
             made.append(cand)
     log(f"expanded search: {len(made)} new uploads kept of {len(fresh)} found")
     return made
+
+
+def coverage(candidates: list[dict]) -> int:
+    """How many clean scene uploads were found (720p+, a scene/clip-like title, at most 15 min): many
+    means a well-covered movie (the light hunt is enough), few means a new or rare one."""
+    return sum(1 for c in candidates
+               if ((c.get("signals") or {}).get("height") or 0) >= 720 and SCENE_CLIP.search(c.get("title") or "")
+               and 0 < (c.get("duration") or 0) <= 15 * 60)

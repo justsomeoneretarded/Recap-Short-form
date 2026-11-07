@@ -177,6 +177,9 @@ def narration_suspected(placement: dict | None, duration: float | None) -> bool:
     return words / duration >= 1.6 and share < 0.12 and not placement.get("matched")
 
 
+MAX_DRIFT = 3.0  # seconds; a plain scene clip stays within the placement's own rounding
+
+
 def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) -> dict:
     info = probe(video)
     frames = sample_frames(video, every=every, limit=90)
@@ -209,6 +212,9 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
         reasons.append("trailer-like cutting (average shot under 0.9 s)")
     if flip["mirrored"]:
         reasons.append("mirrored upload (on-screen text reads backwards)")
+    drift = (placement or {}).get("drift_seconds") or 0
+    if drift > MAX_DRIFT:  # sped up, slowed down or cut: dialogue and picture would not line up
+        reasons.append(f"altered upload (its dialogue drifts {drift:.0f} s against the movie)")
     if narration_suspected(placement, info["duration"]):
         reasons.append("speech does not match the movie's dialogue (narration or commentary)")
     if active["bars"]:

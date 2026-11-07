@@ -222,3 +222,29 @@ def test_confirm_round_only_checks_the_missing_beats_and_never_rewatches():
     cands = [{"id": "breakin0001", "title": "break in"}, {"id": "breakin0002", "title": "break in 2"}]
     got = st.confirm_beats(g, one_story(), cands, {"title": "John Wick", "year": 2014}, only={1}, checked=watched)
     assert list(got) == [1] and got[1]["id"] == "breakin0002" and (1, "breakin0002") in watched
+
+
+def test_beat_moves_to_where_its_movie_lines_really_are_and_invented_quotes_are_dropped():
+    transcript = MovieTranscript.from_subtitles("1\n00:12:05,000 --> 00:12:07,000\nShe is not for sale my friend\n")
+    story = {"beats": [{"name": "gas", "movie_start": 1500.0, "movie_end": 1530.0,
+                        "movie_lines": ["She's not for sale, my friend.", "A line nobody ever said in this film"]}]}
+    st.verify_times([story], transcript, 6000)
+    b = story["beats"][0]
+    assert b["movie_lines"] == ["She's not for sale, my friend."] and b["time_check"] == "moved to its lines"
+    assert b["movie_start"] <= 725 <= b["movie_end"]
+
+
+def test_editor_rewrites_weak_scripts_and_keeps_strong_ones():
+    story = one_story()
+    story["hook"] = "Old hook"
+    weak = FakeGemini([{"score": 5, "problems": ["flat hook"], "hook": "New hook", "narration": ["a", "b", "c"]}])
+    out = st.edit_script(weak, story, {"title": "John Wick", "year": 2014})
+    assert out["editor"]["rewritten"] and out["hook"] == "New hook" and out["beats"][1]["narration"] == "b"
+    strong = FakeGemini([{"score": 9, "problems": [], "hook": "x", "narration": ["a", "b", "c"]}])
+    assert st.edit_script(strong, story, {"title": "John Wick"})["hook"] == "Old hook"
+    assert "Example 1" in weak.calls[0][1][0]["text"]  # the user's reference Shorts are the style examples
+
+
+def test_style_examples_come_from_the_reference_transcripts():
+    text = st.style_examples()
+    assert "severing his own ring finger" in text and "[0.00" not in text

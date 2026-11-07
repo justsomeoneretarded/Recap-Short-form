@@ -124,7 +124,8 @@ def test_research_end_to_end_with_cache(tmp_path):
     assert [c["key"] for c in movie["clips"]] == ["clip1"]  # trailers and behind-the-scenes excluded
     assert movie["cast"][0]["photo"].endswith("/b.jpg")
     assert result["wikipedia"]["words"] > 5 and "Hutch" in open(result["plot_path"]).read()
-    assert result["subtitles"]["remaining_quota"] == 4 and result["warnings"] == []
+    assert result["subtitles"]["remaining_quota"] == 4  # the stub file is short: only a "partial file" note
+    assert all("partial file" in w for w in result["warnings"])
     downloads = sum(1 for c in session.calls if "/download" in c[1])
     again = r.research("Nobody (2021)", tmp_path, http=r.Http(session, pause=0), tmdb_token="t", subtitles_key="k")
     assert again["subtitles"]["path"] == result["subtitles"]["path"]
@@ -145,3 +146,13 @@ def test_http_sends_our_user_agent_not_the_library_default():
 def test_missing_tmdb_token_is_a_clear_error(tmp_path):
     with pytest.raises(r.ResearchError, match="TMDB_READ_TOKEN"):
         r.research("Nobody", tmp_path, http=r.Http(FakeSession([]), pause=0), tmdb_token="", subtitles_key="")
+
+
+
+def test_subtitles_from_a_longer_cut_or_another_film_are_not_used(tmp_path):
+    long_srt = tmp_path / "x.srt"
+    long_srt.write_text("1\n02:10:00,000 --> 02:10:02,000\nThe very end\n")
+    out = r.identity_check({"title": "Havoc", "runtime_minutes": 105}, r.MovieQuery("Havoc", 2025), str(long_srt))
+    assert out["subtitles_mismatch"] and "another film" in out["warnings"][0]
+    out = r.identity_check({"title": "Havoc", "year": 2025, "runtime_minutes": 105}, r.MovieQuery("Havoc"), None)
+    assert "No year given" in out["warnings"][0]

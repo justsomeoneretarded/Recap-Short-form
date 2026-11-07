@@ -29,6 +29,11 @@ on:
         type: choice
         options: ['1', '2', '3', '4', '5']
         default: '5'
+      footage:
+        description: How much YouTube footage the movie has (auto decides by itself)
+        type: choice
+        options: [auto, plenty, rare]
+        default: auto
 
   workflow_call:  # the five-movie test runs this exact pipeline once per movie, side by side
     inputs:
@@ -38,6 +43,7 @@ on:
       speech_model: {type: string, default: original}
       max_stories: {type: number, default: 5}
       tag: {type: string, default: '', description: Prefix for artifact names when several movies share one run}
+      footage: {type: string, default: auto}
 
 permissions:
   contents: read
@@ -85,6 +91,7 @@ jobs:
       MOVIE: ${{ needs.validate.outputs.movie }}
       LENGTH: ${{ needs.validate.outputs.length }}
       MAX_STORIES: ${{ needs.validate.outputs.stories }}
+      SHORTS_FOOTAGE: ${{ inputs.footage || 'auto' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

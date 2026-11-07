@@ -178,3 +178,21 @@ def test_good_channels_are_followed_and_playlists_searched(monkeypatch):
     new = d.expand(YT(), {"title": "Havoc", "year": 2025, "cast": []}, cands)
     assert {c["id"] for c in new} == {"c" * 11, "d" * 11}
     assert any(c["queries"][0].startswith("playlist") for c in new)
+
+
+def test_title_filter_spares_the_movies_own_name_and_ending_scenes():
+    from shorts_pipeline import discovery as d
+    game = {"title": "The Game", "year": 1997, "cast": []}
+    assert d.prefilter({"title": "The Game (1997) - Final Scene", "duration": 120}, game) is None
+    assert d.prefilter({"title": "The Game (1997) review", "duration": 120}, game)
+    frac = {"title": "Fractured", "year": 2019, "cast": []}
+    assert d.prefilter({"title": "Fractured (2019) ending scene", "duration": 120}, frac) is None
+    assert d.prefilter({"title": "Fractured ending explained", "duration": 120}, frac)
+
+
+def test_coverage_counts_clean_scene_uploads():
+    from shorts_pipeline import discovery as d
+    c = [{"title": "Havoc club fight scene", "duration": 180, "signals": {"height": 1080}},
+         {"title": "Havoc club fight scene", "duration": 180, "signals": {"height": 360}},
+         {"title": "Havoc review", "duration": 600, "signals": {"height": 1080}}]
+    assert d.coverage(c) == 1

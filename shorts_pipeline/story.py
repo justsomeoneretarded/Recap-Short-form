@@ -18,6 +18,7 @@ import re
 from .locate import MovieTranscript
 
 MIN_BEATS, MAX_BEATS = 3, 6
+WORDS_PER_SECOND = 2.9   # narration over a beat's footage (≈205 wpm, leaving room for movie lines and silences)
 MIN_BEAT_SECONDS, MAX_BEAT_SECONDS = 8.0, 45.0
 SUBTITLE_CHARS = 120_000   # whole-movie dialogue timeline (Gemini reads ~1M tokens)
 
@@ -29,7 +30,11 @@ STORY_SCHEMA = {"type": "object", "properties": {"stories": {"type": "array", "i
     "ending_mode": {"type": "string", "enum": ["renewed_threat", "reveal", "reflection", "thematic_payoff",
                                                 "resolved_payoff"]},
     "cold_open": {"type": "boolean"},
+    "hooks": {"type": "array", "items": {"type": "string"}},
+    "hook": {"type": "string"},
     "beats": {"type": "array", "items": {"type": "object", "properties": {
+        "narration": {"type": "string"},
+        "movie_lines": {"type": "array", "items": {"type": "string"}},
         "name": {"type": "string"},
         "role": {"type": "string"},
         "what_we_see": {"type": "string"},
@@ -37,8 +42,8 @@ STORY_SCHEMA = {"type": "object", "properties": {"stories": {"type": "array", "i
         "end": {"type": "string"},
         "search": {"type": "string"},
         "key_moment": {"type": "string"}},
-        "required": ["name", "role", "what_we_see", "start", "end", "search"]}}},
-    "required": ["title", "spine", "hook_idea", "ending_idea", "beats"]}},
+        "required": ["name", "role", "what_we_see", "start", "end", "search", "narration"]}}},
+    "required": ["title", "spine", "hook_idea", "ending_idea", "hooks", "hook", "beats"]}},
     "broad_searches": {"type": "array", "items": {"type": "string"}}},
     "required": ["stories", "broad_searches"]}
 
@@ -81,7 +86,22 @@ Rules for each story:
 - hook_idea: the opening line idea: the concrete act and the question it raises, or the stakes.
 - ending_mode and ending_idea: how it ends (see above) and the last line idea, ideally looping to the opening.
 - Different stories must not share beats.
+- SPOILERS: never reveal the film's final twist or its ending, even in a reveal ending (reveal only what this
+  stretch of the movie reveals).
+WRITE THE FULL SCRIPT NOW, like a great narrator (see the style examples):
+- hooks: 5 different opening lines (at most 14 words, a concrete visible act and the question it raises); hook: the
+  strongest of them, spoken first.
+- narration per beat: what the narrator says over that beat's footage, about {words_per_second} words per second of
+  the beat. Present tense, third person, short spoken sentences, cause and effect (but, so, then). Name what is ON
+  SCREEN in that beat; explain only what the picture cannot (who someone is, why it matters) in a few words. Never
+  read dialogue out, never quote, never "X says", no filler ("little did he know", "meanwhile", "stay tuned"), no
+  invented facts, no camera talk. Never repeat the hook.
+- movie_lines: at most 3 per story in total, each an exact short line from the subtitle timeline inside that beat,
+  played as the original audio at a confrontation or reveal.
 Plan up to {count} different stories, best first.
+
+STYLE EXAMPLES (narration of great recap Shorts about other movies; learn the voice and pacing, never copy):
+{examples}
 {broad_rules}
 
 {uploads}PLOT:
@@ -89,6 +109,26 @@ Plan up to {count} different stories, best first.
 
 SUBTITLE TIMELINE (mm:ss dialogue):
 {timeline}"""
+
+
+REFERENCE_EXAMPLES = ("V1", "V5")  # cold open + deadline; a dialogue-led fight story with a full payoff
+EXAMPLE_WORDS = 260
+
+
+def style_examples(names=REFERENCE_EXAMPLES, words: int = EXAMPLE_WORDS) -> str:
+    """Opening narration of the user's reference Shorts (their timestamps removed), as style examples."""
+    from pathlib import Path
+    folder = Path(__file__).resolve().parents[1] / "docs" / "reference-data" / "transcripts"
+    out = []
+    for name in names:
+        path = folder / f"{name}.md"
+        if not path.exists():
+            continue
+        lines = [re.sub(r"^\[[\d.–-]+\]\s*", "", l).strip() for l in path.read_text(errors="ignore").splitlines()
+                 if l.startswith("[")]
+        text = " ".join(l for l in lines if l)
+        out.append(f"Example {len(out) + 1}: " + " ".join(text.split()[:words]) + " …")
+    return "\n".join(out) or "(none available)"
 
 
 def _clock(seconds: float) -> str:
@@ -141,12 +181,16 @@ def clean_stories(raw: dict, runtime: float) -> list[dict]:
             beats.append({"name": str(b.get("name", ""))[:60], "role": str(b.get("role", ""))[:160],
                           "what_we_see": str(b.get("what_we_see", ""))[:300], "search": str(b.get("search", ""))[:90],
                           "key_moment": str(b.get("key_moment") or "")[:160],
+                          "narration": " ".join(str(b.get("narration") or "").split())[:1200],
+                          "movie_lines": [str(x)[:200] for x in (b.get("movie_lines") or [])][:3],
                           "movie_start": round(start, 1), "movie_end": round(end, 1)})
         if len(beats) >= MIN_BEATS:
             used += [(b["movie_start"], b["movie_end"]) for b in beats]
             stories.append({"title": str(story.get("title", ""))[:90], "spine": str(story.get("spine", ""))[:400],
                             "hook_idea": str(story.get("hook_idea", ""))[:200],
                             "ending_idea": str(story.get("ending_idea", ""))[:200],
+                            "hook": " ".join(str(story.get("hook") or "").split())[:160],
+                            "hooks": [str(h)[:160] for h in (story.get("hooks") or [])][:5],
                             "ending_mode": story.get("ending_mode") or "renewed_threat",
                             "cold_open": bool(story.get("cold_open")) and len(beats) > 1 and
                             beats[0]["movie_start"] > beats[1]["movie_start"], "beats": beats[:MAX_BEATS]})
@@ -187,6 +231,7 @@ def plan_stories(gemini, research: dict, transcript: MovieTranscript, plot: str,
     prompt = PLANNER.format(seconds=round(seconds), movie=f"{movie['title']} ({movie.get('year')})",
                             min_beats=MIN_BEATS, max_beats=MAX_BEATS, min_s=MIN_BEAT_SECONDS, max_s=MAX_BEAT_SECONDS,
                             count=count, plot=plot[:20000] or "(no plot)", timeline=timeline(transcript),
+                            words_per_second=WORDS_PER_SECOND, examples=style_examples(),
                             uploads=UPLOADS_NOTE.format(min_beats=MIN_BEATS, listing=listing) if listing else "",
                             broad_rules=BROAD_RULES)
     raw = gemini.generate("smart", [{"text": prompt}], schema=STORY_SCHEMA, temperature=0.5)
@@ -215,6 +260,9 @@ def beat_searches(stories: list[dict]) -> list[str]:
             if beat["search"] and beat["search"].lower() not in (q.lower() for q in out):
                 out.append(beat["search"])
     return out
+
+
+BEAT_KEYS = ("name", "role", "what_we_see", "key_moment", "narration", "movie_lines")
 
 
 def _offset(placement: dict, at: float) -> float | None:
@@ -252,7 +300,7 @@ def confirmed_scene(beat: dict, check: dict, clip: dict | None, report: dict | N
             "avoid": [r for r in (report or {}).get("avoid") or [] if r[1] > cs and r[0] < ce],
             "moments": [m for m in watch.get("moments") or [] if m["end"] > cs and m["start"] < ce],
             "alternates": [], "timed_by": timed, "confirmed": check.get("confidence"),
-            "beat": {k: beat[k] for k in ("name", "role", "what_we_see", "key_moment")}}
+            "beat": {k: beat.get(k) for k in BEAT_KEYS}}
 
 
 def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, confirmed: dict | None = None,
@@ -287,16 +335,19 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, 
                            "avoid": [r for r in best.avoid if r[1] > cs and r[0] < ce],
                            "moments": [m for m in best.moments if m["end"] > cs and m["start"] < ce],
                            "alternates": best.alternates, "timed_by": "subtitles",
-                           "beat": {k: beat[k] for k in ("name", "role", "what_we_see", "key_moment")}})
+                           "beat": {k: beat.get(k) for k in BEAT_KEYS}})
         if len(scenes) < MIN_BEATS:
             continue
+        found = {sc["beat"]["name"] for sc in scenes}
+        missing = [{"name": b["name"], "narration": b.get("narration", "")} for b in story["beats"] if b["name"] not in found]
         footage = sum(s["clip_end"] - s["clip_start"] for s in scenes)
         arcs.append({"id": f"arc{len(arcs) + 1}", "movie_start": min(x["movie_start"] for x in scenes),
                      "movie_end": max(x["movie_end"] for x in scenes), "footage_seconds": round(footage, 1), "score": 1.0,
                      "short_seconds": round(min(target_seconds, 0.85 * footage), 1),
                      "shorter_than_requested": 0.85 * footage < target_seconds, "planned": True,
                      "story": {k: story.get(k) for k in ("title", "spine", "hook_idea", "ending_idea", "ending_mode",
-                                                         "cold_open")},
+                                                         "cold_open", "hook")},
+                     "missing": missing,
                      "scenes": scenes})
     return arcs
 
@@ -326,8 +377,10 @@ def suggest_links(gemini, movie: dict, story: dict) -> dict[int, list[str]]:
 
 CHECK_SCHEMA = {"type": "object", "properties": {
     "shows_scene": {"type": "boolean"}, "confidence": {"type": "number"},
-    "start": {"type": "number"}, "end": {"type": "number"}, "why": {"type": "string"}},
-    "required": ["shows_scene", "confidence", "start", "end"]}
+    "start": {"type": "number"}, "end": {"type": "number"}, "why": {"type": "string"},
+    "original_audio": {"type": "boolean"}, "altered": {"type": "boolean"}},
+    "required": ["shows_scene", "confidence", "start", "end", "original_audio", "altered"]}
+SHORT_CLIP_SECONDS = 5 * 60   # short uploads are watched at 2 frames per second: brief actions are not missed
 
 
 def check_clip(gemini, video_id: str, movie: dict, beat: dict, duration: float | None = None) -> dict:
@@ -335,15 +388,23 @@ def check_clip(gemini, video_id: str, movie: dict, beat: dict, duration: float |
     prompt = (f"This should be footage from the movie {movie['title']} ({movie.get('year')}). Does it show this "
               f"scene: {beat['name']} — {beat['what_we_see']}? It must be the film's own footage of that scene "
               "(not a trailer, review, reaction or someone talking over it). If yes, give start and end in seconds "
-              "from the start of the video (numbers) covering exactly that scene, and how sure you are (0-1).")
+              "from the start of the video (numbers) covering exactly that scene, and how sure you are (0-1). "
+              f"original_audio: is the dialogue in the film's original language ({movie.get('original_language') or 'as released'}),"
+              " not dubbed? altered: is the picture mirrored, sped up, zoomed in with borders, or covered by "
+              "the uploader's own graphics or music?")
     video = {"fileData": {"fileUri": f"https://www.youtube.com/watch?v={video_id}"}}
+    if duration and duration <= SHORT_CLIP_SECONDS:
+        video["videoMetadata"] = {"fps": 2}
     reply = gemini.generate("light", [video, {"text": prompt}], schema=CHECK_SCHEMA, temperature=0.1, low_media=True)
     start, end = float(reply.get("start") or 0), float(reply.get("end") or 0)
     if duration:
         start, end = max(0.0, min(start, duration)), max(0.0, min(end, duration))
-    ok = bool(reply.get("shows_scene")) and end - start >= 3 and float(reply.get("confidence") or 0) >= 0.6
+    dubbed, altered = reply.get("original_audio") is False, bool(reply.get("altered"))
+    ok = (bool(reply.get("shows_scene")) and end - start >= 3 and float(reply.get("confidence") or 0) >= 0.6
+          and not dubbed and not altered)
+    why = ("dubbed audio; " if dubbed else "") + ("altered upload; " if altered else "") + str(reply.get("why") or "")
     return {"id": video_id, "ok": ok, "confidence": round(float(reply.get("confidence") or 0), 2),
-            "start": round(start, 1), "end": round(end, 1), "why": str(reply.get("why") or "")[:160]}
+            "start": round(start, 1), "end": round(end, 1), "why": why[:160]}
 
 
 MATCH_SCHEMA = {"type": "object", "properties": {"beats": {"type": "array", "items": {"type": "object", "properties": {
@@ -443,3 +504,78 @@ def missing_searches(gemini, movie: dict, story: dict, missing: list[int], tried
     reply = gemini.generate("light", [{"text": prompt}], schema=RETRY_SCHEMA, temperature=0.7)
     return [q for q in broad_searches({"broad_searches": reply.get("searches") or []}, movie["title"], limit=4 * per_beat)
             if q.lower() not in {t.lower() for t in tried}]
+
+
+# ======================================================================== script checks before any footage work
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", text.lower())
+
+
+def find_line(transcript: MovieTranscript, line: str) -> float | None:
+    """Movie time of the subtitle cue that best matches a quoted line (None if no cue is close)."""
+    want = set(_tokens(line))
+    if len(want) < 2:
+        return None
+    best, best_score = None, 0.0
+    for row in transcript.lines_between(0, 1e9):
+        have = set(_tokens(row["text"]))
+        score = len(want & have) / max(len(want), 1)
+        if score > best_score:
+            best, best_score = row["start"], score
+    return best if best_score >= 0.7 else None
+
+
+def verify_times(stories: list[dict], transcript: MovieTranscript, runtime: float = 0.0) -> list[dict]:
+    """Gemini sometimes gives a beat a time that is not where its scene is. A beat's movie lines are
+    looked up in the subtitles: the beat moves to where they really are; lines that exist nowhere
+    (invented quotes) are dropped."""
+    for story in stories:
+        for beat in story["beats"]:
+            found = [(line, find_line(transcript, line)) for line in beat.get("movie_lines") or []]
+            beat["movie_lines"] = [line for line, at in found if at is not None]
+            times = [at for _, at in found if at is not None]
+            beat["time_check"] = "no lines" if not found else "invented lines dropped" if not times else "ok"
+            if times:
+                length = beat["movie_end"] - beat["movie_start"]
+                centre = sorted(times)[len(times) // 2]
+                if not beat["movie_start"] - 20 <= centre <= beat["movie_end"] + 20:
+                    beat["movie_start"] = round(max(0.0, centre - length / 2), 1)
+                    beat["movie_end"] = round(min(runtime or 1e9, beat["movie_start"] + length), 1)
+                    beat["time_check"] = "moved to its lines"
+    return stories
+
+
+EDIT_SCHEMA = {"type": "object", "properties": {
+    "score": {"type": "integer"}, "problems": {"type": "array", "items": {"type": "string"}},
+    "hook": {"type": "string"},
+    "narration": {"type": "array", "items": {"type": "string"}}},
+    "required": ["score", "problems", "hook", "narration"]}
+
+
+def edit_script(gemini, story: dict, movie: dict, keep_above: int = 8) -> dict:
+    """A strict editor reads the script before any footage work: would a scroller keep watching?
+    Below `keep_above` it rewrites the hook and each beat's narration (same beats, same facts)."""
+    beats = [{"beat": b["name"], "role": b["role"], "shows": b["what_we_see"], "narration": b.get("narration", "")}
+             for b in story["beats"]]
+    prompt = (f"You are a strict editor of viral movie-recap YouTube Shorts. Script for {movie['title']} "
+              f"({movie.get('year')}), titled '{story['title']}'.\nHook: {story.get('hook')}\nBeats:\n" +
+              "\n".join(f"{i}. {json_dumps(b)}" for i, b in enumerate(beats)) +
+              "\n\nScore it 1-10 (would a scroller watch to the end?) and list its problems (weak hook, unclear who "
+              "or why, flat lines, filler, telling instead of showing, spoilers). Then give an improved hook and the "
+              "improved narration for every beat, in order, same facts and length, narrating what each beat shows. "
+              "Keep what already works.\nSTYLE EXAMPLES:\n" + style_examples())
+    reply = gemini.generate("smart", [{"text": prompt}], schema=EDIT_SCHEMA, temperature=0.4)
+    story = {**story, "editor": {"score": int(reply.get("score") or 0), "problems": (reply.get("problems") or [])[:6]}}
+    rewritten = [" ".join(str(n).split()) for n in reply.get("narration") or []]
+    if story["editor"]["score"] < keep_above and len(rewritten) == len(story["beats"]) and all(rewritten):
+        story["beats"] = [{**b, "narration": n} for b, n in zip(story["beats"], rewritten)]
+        if reply.get("hook"):
+            story["hook"] = " ".join(str(reply["hook"]).split())[:160]
+        story["editor"]["rewritten"] = True
+    return story
+
+
+def json_dumps(value) -> str:
+    import json
+    return json.dumps(value, ensure_ascii=False)
