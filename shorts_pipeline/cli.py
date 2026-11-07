@@ -178,7 +178,7 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
 
 
 def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2, model: str | None = None,
-              arc_index: int | None = None) -> dict:
+              arc_index: int | None = None, spare_every: int | None = None) -> dict:
     """discover folder (research.json, arcs.json, movie.srt, plot.txt) → scripts.json + scripts.md."""
     from .locate import MovieTranscript
     from .writer import Ollama, WRITER_MODEL, write_short
@@ -200,8 +200,12 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
     results, rejected, lines = [], [], [f"# {research['movie']['title']} ({research['movie']['year']}) — scripts", '']
     chosen = stories['arcs'][:max_arcs]
     if arc_index is not None:  # one story per machine: the workflow writes stories in parallel
-        chosen = chosen[arc_index:arc_index+1]
+        # With spares, a rejected story is replaced by the next unused one (index + every, + 2·every …),
+        # so a movie with one bad story still gets its Short.
+        chosen = stories['arcs'][arc_index::spare_every] if spare_every else chosen[arc_index:arc_index+1]
     for arc in chosen:
+        if spare_every and results:
+            break  # this machine's Short is written
         started = time.time()
         result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '', drafts=drafts)
         result['seconds_to_write'] = round(time.time()-started, 1)
@@ -580,6 +584,7 @@ def main(argv=None) -> int:
     pen.add_argument('--max-arcs',type=int,default=5)
     pen.add_argument('--drafts',type=int,default=2)
     pen.add_argument('--arc-index',type=int,default=None,help='Write only this story (0-based), for parallel machines')
+    pen.add_argument('--spare-every',type=int,default=None,help='If the story is rejected, try story index+N, index+2N …')
     pen.add_argument('--model',default=None,help='Ollama writer model (default qwen3:14b)')
     speak = sub.add_parser('voice', help='Voice the written scripts and make captions.')
     speak.add_argument('--discover',type=Path,default=Path('output/discover'))
@@ -637,7 +642,7 @@ def main(argv=None) -> int:
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='write':
             summary=run_write(args.source,args.output,max_arcs=args.max_arcs,drafts=args.drafts,model=args.model,
-                              arc_index=args.arc_index)
+                              arc_index=args.arc_index,spare_every=args.spare_every)
             print(json.dumps(summary,default=str,indent=2))
         elif args.command=='voice':
             summary=run_voice(args.discover,args.scripts,args.output,args.workdir,narrator=args.narrator,

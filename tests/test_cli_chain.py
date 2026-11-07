@@ -112,3 +112,25 @@ def test_footage_shipped_to_this_machine_is_used_without_youtube(tmp_path, monke
     (tmp_path / "footage").mkdir()
     (tmp_path / "footage" / "abc123.mp4").write_bytes(b"x")
     assert cli._footage(["abc123"], {}, tmp_path) == {"abc123": str(tmp_path / "footage" / "abc123.mp4")}
+
+
+def test_rejected_story_is_replaced_by_a_spare(tmp_path, monkeypatch):
+    import json as _json
+    from shorts_pipeline import cli, writer, gemini
+    source = tmp_path / "discover"
+    source.mkdir()
+    (source / "research.json").write_text(_json.dumps({"movie": {"title": "M", "year": 2000}}))
+    arcs = [{"id": f"arc{i + 1}", "movie_start": 0, "movie_end": 60, "scenes": []} for i in range(4)]
+    (source / "arcs.json").write_text(_json.dumps({"arcs": arcs}))
+    monkeypatch.setattr(gemini, "client", lambda: None)
+    tried = []
+
+    def fake_write(arc, *a, **k):
+        tried.append(arc["id"])
+        bad = arc["id"] == "arc1"
+        return {"arc": arc["id"], "script": {"title": "T", "hook": "h", "beats": []}, "rejected": bad,
+                "rejected_because": ["names not in the brief"] if bad else [],
+                "check": {"issues": [], "total_words": 1, "target_words": 1, "score": 1}, "dialogue_lines": {}}
+    monkeypatch.setattr(writer, "write_short", fake_write)
+    out = cli.run_write(source, tmp_path / "write", arc_index=0, spare_every=2)
+    assert tried == ["arc1", "arc3"] and [s["arc"] for s in out["scripts"]] == ["arc3"]

@@ -75,6 +75,7 @@ jobs:
     timeout-minutes: 80
     outputs:
       slots: ${{ steps.stories.outputs.slots }}
+      every: ${{ steps.stories.outputs.every }}
     env:
       HF_HOME: ${{ github.workspace }}/work/huggingface
       SHORTS_CPU_THREADS: '4'
@@ -132,7 +133,7 @@ jobs:
           count = min(limit, len(json.load(open("output/discover/arcs.json")).get("arcs", [])))
           if not count:
               raise SystemExit("No story could be built from the clips; see output/discover/summary.json")
-          open(os.environ["GITHUB_OUTPUT"], "a").write(f"slots={json.dumps(list(range(count)))}\n")
+          open(os.environ["GITHUB_OUTPUT"], "a").write(f"slots={json.dumps(list(range(count)))}\nevery={count}\n")
           print("Stories to write:", count)
           EOF
       - uses: actions/upload-artifact@v4
@@ -185,7 +186,7 @@ jobs:
           name: ${{ inputs.tag }}discover
           path: output/discover
       - name: Write this story's script (Gemini, or 2 local drafts judged and fixed)
-        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 5 --drafts 2 --arc-index ${{ matrix.slot }}
+        run: python -u -m shorts_pipeline write --from output/discover --output output/write --max-arcs 5 --drafts 2 --arc-index ${{ matrix.slot }} --spare-every ${{ needs.discover.outputs.every }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.tag }}write-part-${{ matrix.slot }}
