@@ -63,7 +63,8 @@ Rules for each story:
   understands with one sentence of narration. Give its start and end as mm:ss movie times taken from the
   subtitle timeline below (the dialogue of that stretch must be in it). Beats with no dialogue: estimate from
   the surrounding lines.
-- search: what a person would type on YouTube to find a clip of exactly that scene (movie title + 2-6 words).
+- search: how clip channels title an upload of that scene: movie title + 2-4 plain words (e.g. "John Wick gas
+  station scene", "Havoc club shootout scene"). No plot details or minor character names: nobody titles uploads so.
 - key_moment: the one moment of the beat to leave without narration (a reaction, a reveal), if any.
 - The story must make sense to someone who never saw the movie, and must not spoil the movie's ending.
 - cold_open: true if the FIRST beat is a striking moment taken from later in the story (shown first, then the
@@ -289,15 +290,62 @@ def check_clip(gemini, video_id: str, movie: dict, beat: dict, duration: float |
             "start": round(start, 1), "end": round(end, 1), "why": str(reply.get("why") or "")[:160]}
 
 
+MATCH_SCHEMA = {"type": "object", "properties": {"beats": {"type": "array", "items": {"type": "object", "properties": {
+    "beat": {"type": "integer"}, "uploads": {"type": "array", "items": {"type": "integer"}}},
+    "required": ["beat", "uploads"]}}}, "required": ["beats"]}
+_STOP = set("the a an of and in on at to with scene clip movie film official hd 4k 1080p full best epic".split())
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _STOP and len(w) > 2}
+
+
+def likely_uploads(gemini, story: dict, candidates: list[dict], movie: dict) -> dict[int, list[str]]:
+    """Which found uploads probably show which beat, judged from their titles (one text request; word
+    overlap when Gemini cannot answer). Which search found an upload says little: generic searches
+    find most of the real scene clips."""
+    pool = [c for c in candidates if c.get("id")][:40]
+    title_words = set(_words(movie.get("title", "")))
+    ranked: dict[int, list[str]] = {}
+    for i, beat in enumerate(story["beats"]):  # fallback: shared words between the beat and the title
+        want = _words(f"{beat['name']} {beat['what_we_see']} {beat['search']}") - title_words
+        scored = sorted(((len(want & _words(c.get("title", ""))), c["id"]) for c in pool), reverse=True)
+        ranked[i] = [vid for score, vid in scored if score > 0][:3]
+    if gemini is None or not pool:
+        return ranked
+    listing = "\n".join(f"{n}. {c.get('title', '')[:90]} ({int(c.get('duration') or 0)} s)" for n, c in enumerate(pool))
+    beats = "\n".join(f"{i}. {b['name']}: {b['what_we_see']}" for i, b in enumerate(story["beats"]))
+    prompt = (f"YouTube uploads found for {movie['title']} ({movie.get('year')}):\n{listing}\n\nScenes:\n{beats}\n\n"
+              "For each scene, list the upload numbers most likely to contain that scene, best first (at most 3), "
+              "judging by title and length. Long uploads (compilations, all scenes, first minutes) may contain several "
+              "scenes. Skip reviews, reactions, recaps, trailers and interviews. Empty list if none fits.")
+    try:
+        from .gemini import GeminiUnavailable
+        reply = gemini.generate("light", [{"text": prompt}], schema=MATCH_SCHEMA, temperature=0.1)
+    except GeminiUnavailable:
+        return ranked
+    for row in reply.get("beats") or []:
+        i = int(row.get("beat", -1))
+        if 0 <= i < len(story["beats"]):
+            picks = [pool[n]["id"] for n in row.get("uploads") or [] if isinstance(n, int) and 0 <= n < len(pool)]
+            ranked[i] = list(dict.fromkeys(picks + ranked.get(i, [])))[:4]
+    return ranked
+
+
 def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, per_beat: int = 3,
                   log=lambda m: None) -> dict[int, dict]:
-    """For each beat, watch its likeliest uploads (its own search results first, then Gemini's
-    links) until one is confirmed. Wrong uploads are dropped before anything is downloaded."""
+    """For each beat, watch its likeliest uploads (judged from all titles found, plus Gemini's
+    suggested links) until one is confirmed. Wrong uploads are dropped before anything is downloaded."""
     from .gemini import GeminiUnavailable
     confirmed: dict[int, dict] = {}
+    by_id = {c["id"]: c for c in candidates if c.get("id")}
+    likely = likely_uploads(gemini, story, candidates, movie)
+    used: set[str] = set()
     for i, beat in enumerate(story["beats"]):
-        mine = [c for c in candidates if beat["search"] in (c.get("queries") or []) or i in (c.get("suggested_for") or [])]
-        mine.sort(key=lambda c: ((c.get("duration") or 0) > MAX_CHECK_SECONDS, i not in (c.get("suggested_for") or [])))
+        ids = [c["id"] for c in candidates if i in (c.get("suggested_for") or [])] + likely.get(i, [])
+        mine = [by_id[v] for v in dict.fromkeys(ids) if v in by_id]
+        mine.sort(key=lambda c: (c["id"] in used, (c.get("duration") or 0) > MAX_CHECK_SECONDS))
+        log(f"beat {beat['name']}: candidates {[c['id'] for c in mine[:per_beat]]}")
         for c in mine[:per_beat]:
             try:
                 result = check_clip(gemini, c["id"], movie, beat, c.get("duration"))
@@ -308,5 +356,6 @@ def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, p
                 f"{result['start']}-{result['end']}s ({result['why'][:80]})")
             if result["ok"]:
                 confirmed[i] = result
+                used.add(c["id"])
                 break
     return confirmed

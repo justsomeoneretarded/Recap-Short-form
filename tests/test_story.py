@@ -102,15 +102,16 @@ def test_suggested_links_are_parsed_from_the_answer():
 
 def test_beats_are_confirmed_by_watching_before_any_download():
     story = one_story()
-    candidates = [{"id": "wrongclip01", "queries": ["John Wick gas station"], "duration": 200},
-                  {"id": "rightclip01", "queries": ["John Wick gas station"], "duration": 150},
-                  {"id": "breakin0001", "queries": [], "suggested_for": [1], "duration": 120}]
-    g = FakeGemini([{"shows_scene": False, "confidence": 0.9, "start": 0, "end": 0},
+    candidates = [{"id": "wrongclip01", "title": "John Wick gas station Mustang", "duration": 200},
+                  {"id": "rightclip01", "title": "John Wick gas station scene", "duration": 150},
+                  {"id": "breakin0001", "title": "something", "suggested_for": [1], "duration": 120}]
+    g = FakeGemini([{"beats": [{"beat": 0, "uploads": [0, 1]}]},
+                    {"shows_scene": False, "confidence": 0.9, "start": 0, "end": 0},
                     {"shows_scene": True, "confidence": 0.9, "start": 12, "end": 41},
                     {"shows_scene": True, "confidence": 0.4, "start": 5, "end": 30}])  # too unsure
     confirmed = st.confirm_beats(g, story, candidates, {"title": "John Wick", "year": 2014})
     assert confirmed == {0: {"id": "rightclip01", "ok": True, "confidence": 0.9, "start": 12.0, "end": 41.0, "why": ""}}
-    assert "youtube.com/watch?v=wrongclip01" in g.calls[0][1][0]["fileData"]["fileUri"]
+    assert "youtube.com/watch?v=wrongclip01" in g.calls[1][1][0]["fileData"]["fileUri"]
 
 
 def test_confirmed_scene_uses_subtitles_with_dialogue_and_gemini_when_silent():
@@ -143,3 +144,15 @@ def test_silent_scene_lines_are_never_played_out_of_sync():
          "timed_by": "gemini"}]}
     brief = w.build_brief(arc, {"movie": {"title": "John Wick", "year": 2014, "cast": []}}, transcript)
     assert brief.lines and not any(l["playable"] for l in brief.lines.values())
+
+
+
+def test_scene_clips_found_by_generic_searches_are_matched_by_title():
+    story = one_story()
+    found = [{"id": "club", "title": "Havoc (2025) | Brutal Club Fight Scene", "queries": ["Havoc 2025 fight scene"]},
+             {"id": "gas", "title": "John Wick - Gas Station Scene (HD)", "queries": ["John Wick scene"]}]
+    ranked = st.likely_uploads(None, story, found, {"title": "John Wick"})  # no Gemini: shared words
+    assert ranked[0] == ["gas"]
+    g = FakeGemini([{"beats": [{"beat": 1, "uploads": [0]}, {"beat": 9, "uploads": [1]}]}])
+    ranked = st.likely_uploads(g, story, found, {"title": "John Wick", "year": 2014})
+    assert ranked[1][0] == "club" and ranked[0] == ["gas"]
