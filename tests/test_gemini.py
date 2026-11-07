@@ -5,6 +5,11 @@ import pytest
 from shorts_pipeline import gemini as g
 
 
+@pytest.fixture(autouse=True)
+def _no_spacing(monkeypatch):
+    monkeypatch.setattr(g, "MIN_GAP", 0.0)
+
+
 class Reply:
     def __init__(self, status=200, data=None, text=None, headers=None):
         self.status_code = status
@@ -74,7 +79,7 @@ def test_per_minute_limit_waits_and_retries():
     c = g.Client("k", session=Session({"gemini-3.5-flash": [
         Reply(429, text='{"error": {"details": [{"retryDelay": "7s"}]}}'), answer({"ok": True})]}), sleep=waits.append)
     assert c.generate("smart", [{"text": "x"}], schema={"type": "object"}) == {"ok": True}
-    assert waits == [8.0]
+    assert waits == [61.0]  # a full minute: the per-minute window is fresh again
 
 
 def test_daily_quota_moves_to_the_next_model_then_gives_up():
@@ -163,7 +168,7 @@ def test_writer_falls_back_to_the_local_model_for_good_when_quota_ends():
 
 
 def test_scene_hints_from_search():
-    c = client({"gemini-3.5-flash": [answer('Sure! {"scenes": ["border crossing shootout", "dinner table", "x"]}')]})
+    c = client({"gemini-3.5-flash-lite": [answer('Sure! {"scenes": ["border crossing shootout", "dinner table", "x"]}')]})
     hints = g.scene_hints(c, {"title": "Sicario", "year": 2015})
     assert hints == ["border crossing shootout", "dinner table"]
     assert c.session.posts[-1][1]["tools"] == [{"google_search": {}}]
@@ -229,7 +234,8 @@ def test_writer_brief_shows_what_is_on_screen_and_asks_for_extras():
     assert "cover_words" not in w.schema_for(object())["properties"]
 
 
-def test_zero_or_daily_limits_are_never_retried_and_minute_limits_cool_down():
+def test_zero_or_daily_limits_are_never_retried_and_minute_limits_cool_down(monkeypatch):
+    monkeypatch.setattr(g, "MINUTE_RETRIES", 0)
     zero = Reply(429, text='{"error": {"message": "Quota exceeded for metric: generate_content_free_tier_requests, limit: 0", '
                           '"details": [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}, '
                           '{"retryDelay": "40s"}]}}')
@@ -243,3 +249,12 @@ def test_zero_or_daily_limits_are_never_retried_and_minute_limits_cool_down():
     assert c.cooldown["gemini-2.5-flash"] > 0 and waits == []  # no long waits: next model straight away
     assert c.chain("smart")[0] == "gemini-3.5-flash-lite"      # the model that answered is tried first
     assert "limit is 0" in c.usage()["errors"]["gemini-3.5-flash"]
+
+
+def test_google_message_names_the_limit():
+    text = json.dumps({"error": {"message": "You exceeded your current quota.", "details": [{"violations": [
+        {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "10",
+         "quotaDimensions": {"model": "gemini-3.6-flash"}}]}]}})
+    said = g.google_message(text)
+    assert "PerMinute" in said and "= 10" in said and "gemini-3.6-flash" in said
+    assert g.quota_problem(text)[1] is False

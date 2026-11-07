@@ -24,6 +24,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -35,6 +36,9 @@ SAFETY = [{"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in (
     "HARM_CATEGORY_DANGEROUS_CONTENT")]  # movie violence is described, not promoted
 MAX_WAIT = 65.0        # longest per-minute rate-limit wait before giving up on Gemini for a request
 MAX_MODELS_PER_REQUEST = 6
+MINUTE_WAIT = float(os.environ.get("SHORTS_GEMINI_MINUTE_WAIT", "60"))  # wait after a per-minute limit
+MINUTE_RETRIES = int(os.environ.get("SHORTS_GEMINI_MINUTE_RETRIES", "2"))  # same model, after waiting
+MIN_GAP = float(os.environ.get("SHORTS_GEMINI_MIN_GAP", "6"))  # seconds between this job's requests
 MAX_VIDEO_SECONDS = 20 * 60
 
 
@@ -95,6 +99,7 @@ class Client:
         self.exhausted: set[str] = set()      # no quota left today (or not available) for this key
         self.cooldown: dict[str, float] = {}   # per-minute limit hit: usable again after this time
         self.good: dict[str, str] = {}         # the model that last answered, per role: tried first
+        self.last_call = 0.0
         self._models: dict[str, list[str]] | None = None
 
     # ------------------------------------------------------------------ plumbing
@@ -141,8 +146,13 @@ class Client:
         """One request with retries. Daily quota → model marked exhausted; per-minute → wait."""
         if len(self.calls) >= self.max_calls:
             raise GeminiUnavailable(f"this job's Gemini budget ({self.max_calls} requests) is spent")
-        for attempt in range(4):
-            started = time.time()
+        minute_waits = 0
+        for attempt in range(6):
+            # Space requests out (all of this job's calls share the key's per-minute limit with the other jobs).
+            gap = MIN_GAP - (time.time() - self.last_call)
+            if gap > 0:
+                self.sleep(gap)
+            started = self.last_call = time.time()
             reply = self._http("POST", f"{API}/v1beta/models/{model}:{method}", json=body)
             row = {"model": model, "method": method, "status": reply.status_code, "seconds": round(time.time() - started, 1)}
             self.calls.append(row)
@@ -154,14 +164,17 @@ class Client:
             text = reply.text[:4000]
             if reply.status_code == 429:
                 wait, daily, why = quota_problem(text)
-                row["error"] = why
+                row["error"], row["google_says"] = why, google_message(text)
+                print(f"[gemini] {model}: {why} — Google: {row['google_says'][:300]}", file=sys.stderr, flush=True)
                 if daily:  # nothing left today for this key on this model: never ask it again
                     self.exhausted.add(model)
                     raise _Exhausted(f"{model}: {why}")
-                self.cooldown[model] = time.time() + wait
-                if attempt == 0 and wait <= 15:  # a short per-minute pause: wait once, same model
-                    self.sleep(wait + 1)
+                if minute_waits < MINUTE_RETRIES:
+                    # Per-minute limit: a full minute guarantees a fresh window; then the same model again.
+                    minute_waits += 1
+                    self.sleep(max(wait, MINUTE_WAIT) + 1)
                     continue
+                self.cooldown[model] = time.time() + max(wait, MINUTE_WAIT)
                 raise _Exhausted(f"{model}: {why}")
             if reply.status_code in (500, 502, 503, 504) and attempt < 3:
                 self.sleep(4 * 2 ** attempt)
@@ -278,7 +291,7 @@ class Client:
         errors = {}
         for call in self.calls:
             if call.get("error"):
-                errors.setdefault(call["model"], call["error"])
+                errors.setdefault(call["model"], f"{call['error']} — Google: {call.get('google_says', '')[:300]}")
         return {"requests": len(self.calls), "by_model": models, "exhausted": sorted(self.exhausted), "errors": errors,
                 "seconds": round(sum(c["seconds"] for c in self.calls), 1), "models": chosen}
 
@@ -310,6 +323,19 @@ def client() -> Client | None:
 def _retry_delay(text: str) -> float | None:
     found = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', text)
     return float(found.group(1)) if found else 30.0
+
+
+def google_message(text: str) -> str:
+    """Google's own words about the limit (which quota, which model, its value), for the logs."""
+    try:
+        error = json.loads(text).get("error", {})
+    except (ValueError, AttributeError):
+        return text[:400]
+    parts = [str(error.get("message", ""))[:400]]
+    for detail in error.get("details") or []:
+        for v in detail.get("violations") or []:
+            parts.append(f"{v.get('quotaId', '')} = {v.get('quotaValue', '?')} ({(v.get('quotaDimensions') or {}).get('model', '')})")
+    return " | ".join(p for p in parts if p)
 
 
 def quota_problem(text: str) -> tuple[float, bool, str]:
@@ -576,7 +602,7 @@ def scene_hints(gemini: Client, movie: dict, limit: int = 8) -> list[str]:
               "people talk about and rewatch most (fights, reveals, famous lines, shocking moments). For each, give a "
               "2-6 word phrase someone would type on YouTube to find that scene, without the movie title. "
               'Answer only as JSON: {"scenes": ["...", "..."]}')
-    text = gemini.generate("smart", [{"text": prompt}], tools=[{"google_search": {}}], temperature=0.3)
+    text = gemini.generate("light", [{"text": prompt}], tools=[{"google_search": {}}], temperature=0.3)  # keep the scarce Flash quota for writing
     try:
         data = _parse_json(text) if isinstance(text, str) else text
     except _BadRequest as exc:
