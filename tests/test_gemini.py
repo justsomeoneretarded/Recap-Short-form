@@ -389,3 +389,12 @@ def test_quota_gate_stops_the_run_when_only_the_light_model_is_left(monkeypatch)
     with pytest.raises(SystemExit, match="after 08:00 UTC"):
         cli.quota_gate(c)
     assert cli.quota_gate(client({"gemini-3.5-flash": [answer("ok")]})) == "gemini-3.5-flash"
+
+
+def test_light_work_never_spends_the_smart_models_quota():
+    busy = Reply(429, text=DAILY)
+    c = client({"gemini-3.5-flash-lite": [busy]})
+    assert all("lite" in m for m in c.chain("light"))
+    with pytest.raises(g.GeminiUnavailable):
+        c.generate("light", [{"text": "x"}])
+    assert all("lite" in m for m, _ in c.session.posts)

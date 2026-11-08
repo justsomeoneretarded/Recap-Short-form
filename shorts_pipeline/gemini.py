@@ -165,13 +165,13 @@ class Client:
         return self._models
 
     def chain(self, role: str) -> list[str]:
-        """Models to try for a role: its own models, then (for smart) the lighter ones."""
+        """Models to try for a role: its own models, then (for smart only) the lighter ones."""
         models = self.models()
         names = list(models.get(role, []))
         if role == "smart":
             names += models.get("light", [])
-        elif role == "light":
-            names += models.get("smart", [])
+        # Light work (watching clips, matching titles, searches) never falls back to the smart models: their
+        # small free daily limit is kept for writing. A busy light model is waited for instead.
         if self.good.get(role) in names:
             names.insert(0, self.good[role])
         now = time.time()

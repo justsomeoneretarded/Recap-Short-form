@@ -203,8 +203,8 @@ def test_long_confirmed_stretch_is_capped_and_soft_uploads_are_not_watched():
     scene = st.confirmed_scene(beat_, {"id": "x", "start": 29.0, "end": 174.0, "confidence": 0.9}, None, None)
     assert scene["clip_end"] - scene["clip_start"] <= st.MAX_BEAT_SECONDS
     g = FakeGemini([{"beats": [{"beat": 0, "uploads": [0, 1]}]}, {"shows_scene": True, "confidence": 0.9, "start": 1, "end": 20}])
-    cands = [{"id": "soft", "title": "gas station 354p", "signals": {"height": 354}},
-             {"id": "sharp", "title": "gas station", "signals": {"height": 1080}}]
+    cands = [{"id": "soft", "title": "John Wick gas station 354p", "signals": {"height": 354}},
+             {"id": "sharp", "title": "John Wick gas station", "signals": {"height": 1080}}]
     confirmed = st.confirm_beats(g, one_story(), cands, {"title": "John Wick", "year": 2014})
     assert confirmed[0]["id"] == "sharp"
 
@@ -219,7 +219,7 @@ def test_confirm_round_only_checks_the_missing_beats_and_never_rewatches():
     watched = {(1, "breakin0001")}
     g = FakeGemini([{"beats": [{"beat": 1, "uploads": [0, 1]}]},
                     {"shows_scene": True, "confidence": 0.8, "start": 2, "end": 30}])
-    cands = [{"id": "breakin0001", "title": "break in"}, {"id": "breakin0002", "title": "break in 2"}]
+    cands = [{"id": "breakin0001", "title": "John Wick break in"}, {"id": "breakin0002", "title": "John Wick break in 2"}]
     got = st.confirm_beats(g, one_story(), cands, {"title": "John Wick", "year": 2014}, only={1}, checked=watched)
     assert list(got) == [1] and got[1]["id"] == "breakin0002" and (1, "breakin0002") in watched
 
@@ -248,3 +248,19 @@ def test_editor_rewrites_weak_scripts_and_keeps_strong_ones():
 def test_style_examples_come_from_the_reference_transcripts():
     text = st.style_examples()
     assert "severing his own ring finger" in text and "[0.00" not in text
+
+
+def test_uploads_of_other_films_are_never_watched_for_a_beat():
+    movie = {"title": "The Equalizer 2", "year": 2018}
+    assert st.names_movie("The Equalizer 2 (2018) - Trap House Scene", movie)
+    assert st.names_movie("EQUALIZER II final fight", movie)
+    assert not st.names_movie("Training Day (2001) - Denzel Washington scene", movie)
+    assert not st.names_movie("The Equalizer (2014) hardware store", movie)   # the first film, not this one
+
+
+def test_editor_flags_a_mash_up_of_two_subplots():
+    g = FakeGemini([{"score": 7, "problems": ["two stories"], "hook": "h", "narration": ["a", "b", "c"],
+                     "one_storyline": False}])
+    story = {"title": "t", "hook": "h", "beats": [{"name": n, "role": "r", "what_we_see": "w", "narration": "x y z"}
+                                                  for n in ("bankers", "miles", "gun")]}
+    assert st.edit_script(g, story, {"title": "The Equalizer 2", "year": 2018})["editor"]["one_storyline"] is False

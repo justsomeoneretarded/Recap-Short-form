@@ -102,3 +102,41 @@ def test_a_script_missing_its_attack_scene_loses_to_a_complete_one():
     b = {"n": 1, "ok": True, "rank": script_rank(miles, {0, 1, 2, 3, 4})}
     ranked = rank_results([a, b], wanted=1)
     assert ranked[0]["n"] == 1 and ranked[0]["ok"] and not ranked[1]["ok"]
+
+
+class ScreeningHunt(FakeHunt):
+    """Before screening every listed beat has footage; screening then rejects the clips of `rejected`."""
+
+    def __init__(self, placeable, rejected):
+        super().__init__(placeable)
+        self.rejected = rejected
+
+    def units(self, screened=None):
+        keep = [t for t in self.placeable if not (screened and t in self.rejected)]
+        return [Unit(f"u{t}", "u", 0, 40, t - 5, t + 35, 0.5, 1080) for t in keep]
+
+
+def test_a_script_that_loses_scenes_in_screening_gives_way_to_the_spare_without_a_replan(monkeypatch):
+    fake = ScreeningHunt(placeable=[720, 1020, 1320, 1800, 3000, 3300, 3600], rejected={1320, 1800})
+    plans = []
+    monkeypatch.setattr(h, "plan_scripts", lambda *a, **k: plans.append(k.get("uploads") is not None) or
+                        [script("A"), script("B", (("x", 3000), ("y", 3300), ("z", 3600)))])
+    monkeypatch.setattr(st, "general_searches", lambda *a, **k: [])
+    monkeypatch.setattr(st, "likely_uploads", lambda *a, **k: {})
+    monkeypatch.setattr(st, "suggest_links", lambda *a, **k: {})
+    monkeypatch.setattr(st, "missing_searches", lambda *a, **k: [])
+    monkeypatch.setattr(st, "confirm_beats", lambda *a, **k: {})
+    screen = lambda placed, first: {"bad": {"accept": False, "reasons": ["burned-in subtitles inside the picture"]}}
+    out = h.run(None, fake.research, None, "", None, "/tmp", length=150, wanted=1, screen=screen, hunt=fake)
+    assert plans == [False]                                   # no mash-up re-plan
+    assert out["report"]["path"] == "script" and out["arcs"][0]["story"]["title"] == "B"
+
+
+def test_mash_up_scripts_are_dropped_before_the_hunt(monkeypatch):
+    stories = [dict(script("mash"), editor={"one_storyline": False}), script("one")]
+    monkeypatch.setattr(st, "plan_stories", lambda *a, **k: stories)
+    monkeypatch.setattr(st, "verify_times", lambda *a, **k: None)
+    monkeypatch.setattr(st, "edit_script", lambda g, story, movie: story)
+    kept = h.plan_scripts(None, {"movie": {"title": "John Wick", "runtime_minutes": 101}}, None, "", 150, 2,
+                          log=lambda m: None)
+    assert [s["title"] for s in kept] == ["one"]

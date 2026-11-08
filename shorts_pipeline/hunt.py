@@ -44,11 +44,14 @@ def plan_scripts(google, research: dict, transcript, plot: str, length: float, c
             story = edit_script(google, story, movie)
         except gem.GeminiUnavailable as exc:
             log(f"no editor pass for '{story['title']}': {str(exc)[:100]}")
-        edited.append(story)
         editor = story.get("editor") or {}
         log(f"script: {story['title']} — " + " → ".join(b['name'] for b in story['beats']) +
             f" | editor {editor.get('score', '?')}/10{' (rewritten)' if editor.get('rewritten') else ''}" +
             f" | times: {[b.get('time_check') for b in story['beats']]}")
+        if editor.get("one_storyline") is False:  # separate subplots stitched together: never made
+            log(f"script dropped: '{story['title']}' joins separate subplots")
+            continue
+        edited.append(story)
     return edited
 
 
@@ -238,19 +241,29 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
     if hunt.thin():
         hunt.widen()
     rounds = 1 if footage == "plenty" else 2
-    results = []
-    for n, story in enumerate(planned):
-        # Spare scripts are hunted only while the scripts so far miss scenes; then the best ones win.
-        if sum(1 for r in results if r["ok"] and r["complete"]) >= wanted:
-            break
-        confirmed, covered = hunt.footage_for(story, rounds=rounds)
-        have = covered | set(confirmed)
-        results.append({"n": n, "confirmed": confirmed, "ok": len(have) >= 3,
-                        "complete": len(have) >= len(story["beats"]), "rank": script_rank(story, have)})
-    results = rank_results(results, wanted)
-    for r in results:
-        log(f"script {r['n'] + 1} '{planned[r['n']]['title']}': rank {r['rank']}{'' if r['ok'] else ' (too few scenes)'}")
+    results: list[dict] = []
+
+    def hunt_scripts(stop_when_complete: bool) -> None:
+        for n, story in enumerate(planned):
+            if any(r["n"] == n for r in results):
+                continue
+            # Spare scripts are hunted only while the scripts so far miss scenes.
+            if stop_when_complete and sum(1 for r in results if r["ok"] and r["complete"]) >= wanted:
+                break
+            confirmed, covered = hunt.footage_for(story, rounds=rounds)
+            have = covered | set(confirmed)
+            results.append({"n": n, "confirmed": confirmed, "ok": len(have) >= 3, "scenes_before": len(have),
+                            "complete": len(have) >= len(story["beats"]), "rank": script_rank(story, have)})
+
+    hunt_scripts(True)
+    # Footage counts only once it passes screening: every script with enough scenes is screened and cut,
+    # then the best of what really remains wins.
     arcs, screened = _arcs(hunt, planned, results, length, screen)
+    if len(arcs) < wanted and len(results) < len(planned):  # screening cost scenes: hunt the spare scripts too
+        log("screening rejected footage the chosen script needed: hunting the spare scripts")
+        hunt_scripts(False)
+        arcs, screened = _arcs(hunt, planned, results, length, screen)
+    arcs = best_arcs(arcs, planned, wanted, results, screened, log)
     report["path"] = "script"
     if not arcs and hunt.found["candidates"]:
         # Every script lacked footage: plan from the footage that exists instead.
@@ -265,8 +278,10 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
         results = []
         for n, story in enumerate(replanned):
             confirmed, covered = hunt.footage_for(story, rounds=0)
-            results.append({"n": n, "confirmed": confirmed, "ok": len(covered | set(confirmed)) >= 3})
+            results.append({"n": n, "confirmed": confirmed, "ok": len(covered | set(confirmed)) >= 3,
+                            "scenes_before": len(covered | set(confirmed))})
         arcs, screened = _arcs(hunt, replanned, results, length, screen)
+        arcs = best_arcs(arcs, replanned, wanted, results, screened, log)
         planned = replanned
     if not arcs:
         report["path"] = "scene-by-scene (no story had footage)"
@@ -278,6 +293,37 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
                           "missing": [m["name"] for m in a.get("missing", [])], "found_by": a["found_by"]} for a in arcs]
     return {"arcs": arcs, "planned": planned, "found": hunt.found, "placed": hunt.placed, "screened": screened,
             "report": report}
+
+
+def best_arcs(arcs: list[dict], stories: list[dict], wanted: int, results: list[dict], screened: dict, log) -> list[dict]:
+    """Arcs ranked by the scenes that survived screening (a missing action scene costs most); the best `wanted`.
+    Logs, per script, its scenes before and after screening and what screening rejected."""
+    keep = [r for r in results if r["ok"]]
+    rejected = {cid: "; ".join(row.get("reasons") or ["rejected"]) for cid, row in (screened or {}).items()
+                if row.get("accept") is False}
+    scored = []
+    for arc in arcs:
+        r = keep[arc["story_index"]] if arc.get("story_index") is not None and arc["story_index"] < len(keep) else None
+        story = stories[r["n"]] if r else None
+        if story is None:
+            continue
+        names = {s["beat"]["name"] for s in arc["scenes"]}
+        have = {i for i, b in enumerate(story["beats"]) if b["name"] in names}
+        rank = script_rank(story, have)
+        scored.append((rank, r["n"], arc))
+        log(f"script {r['n'] + 1} '{story['title']}': {r.get('scenes_before', '?')} scenes found, "
+            f"{len(arc['scenes'])} after screening, rank {rank}")
+    for r in keep:
+        if not any(n == r["n"] for _, n, _ in scored):
+            log(f"script {r['n'] + 1} '{stories[r['n']]['title']}': {r.get('scenes_before', '?')} scenes found, "
+                f"under 3 after screening")
+    if rejected:
+        log("screening rejected: " + "; ".join(f"{cid}: {why}" for cid, why in list(rejected.items())[:8]))
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    out = [arc for _, _, arc in scored[:wanted]]
+    for i, arc in enumerate(out):
+        arc["id"] = f"arc{i + 1}"
+    return out
 
 
 def _arcs(hunt: Hunt, stories: list[dict], results: list[dict], length: float, screen) -> tuple[list, dict]:

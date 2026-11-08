@@ -69,6 +69,9 @@ What the best channels do (from the reference Shorts):
   punctuate the story at confrontations.
 - The ending fits the story: a renewed threat, an ironic reveal, a reflection, a thematic payoff or a full payoff.
 Rules for each story:
+- ONE STORYLINE: one conflict carried by the same main characters from the first beat to the last, each beat
+  causing the next. Never join separate subplots or side missions into one story (e.g. a side job the hero does
+  for a stranger and the main revenge plot are two different stories, not one).
 - A spine of {min_beats}-{max_beats} beats in movie order, each one CAUSING the next: e.g. a want or offer,
   a refusal, the consequence, the escalation, the realisation of who they messed with, the turn or return.
 - The beats may be far apart in the movie. Pick each beat for what it does in the story, never just for action.
@@ -99,7 +102,9 @@ WRITE THE FULL SCRIPT NOW, like a great narrator (see the style examples):
   than this makes a Short far shorter than asked.
 - narration per beat: what the narrator says over that beat's footage, about {words_per_second} words per second of
   the beat. Present tense, third person, short spoken sentences, cause and effect (but, so, then). Name what is ON
-  SCREEN in that beat; explain only what the picture cannot (who someone is, why it matters) in a few words. Never
+  SCREEN in that beat; explain only what the picture cannot (who someone is, why it matters) in a few words.
+  Backstory and events from other parts of the movie get at most one short clause: the viewer is watching
+  THIS beat's footage while it is said. Never
   read dialogue out, never quote, never "X says", no filler ("little did he know", "meanwhile", "stay tuned"), no
   invented facts, no camera talk. Never repeat the hook.
 - mood: the music mood of this story (tense, action, dark, sad, mysterious or triumphant).
@@ -225,7 +230,8 @@ def broad_searches(raw: dict, title: str, limit: int = 10) -> list[str]:
 UPLOADS_NOTE = """FOOTAGE THAT EXISTS: these uploads of the movie were found on YouTube (title, length). A beat is only
 usable if one of them shows it, so build every story from scenes these uploads very likely contain (their titles name
 the scene, or a long compilation of that kind of scene). A beat no upload shows will be dropped, and a story with fewer
-than {min_beats} usable beats is lost.
+than {min_beats} usable beats is lost. Still ONE storyline: never stitch unrelated subplots together just because
+uploads of them exist; a shorter story about one conflict beats a longer mash-up.
 {listing}
 
 """
@@ -354,7 +360,7 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, 
         found = {sc["beat"]["name"] for sc in scenes}
         missing = [{"name": b["name"], "narration": b.get("narration", "")} for b in story["beats"] if b["name"] not in found]
         footage = sum(s["clip_end"] - s["clip_start"] for s in scenes)
-        arcs.append({"id": f"arc{len(arcs) + 1}", "movie_start": min(x["movie_start"] for x in scenes),
+        arcs.append({"id": f"arc{len(arcs) + 1}", "story_index": n, "movie_start": min(x["movie_start"] for x in scenes),
                      "movie_end": max(x["movie_end"] for x in scenes), "footage_seconds": round(footage, 1), "score": 1.0,
                      "short_seconds": round(min(target_seconds, 0.85 * footage), 1),
                      "shorter_than_requested": 0.85 * footage < target_seconds, "planned": True,
@@ -462,7 +468,18 @@ def likely_uploads(gemini, story: dict, candidates: list[dict], movie: dict) -> 
     return ranked
 
 
-def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, per_beat: int = 3,
+NUMERALS = {"2": "ii", "3": "iii", "4": "iv", "5": "v", "6": "vi"}
+
+
+def names_movie(title: str, movie: dict) -> bool:
+    """An upload is only watched for a beat when its title names this movie (every word of the movie's
+    title, '2' or 'II'): clips of other films never cost a Gemini request."""
+    have = set(re.findall(r"[a-z0-9]+", (title or "").lower()))
+    need = [w for w in re.findall(r"[a-z0-9]+", str(movie.get("title", "")).lower()) if w not in {"the", "a", "an", "of"}]
+    return bool(need) and all(w in have or NUMERALS.get(w) in have for w in need)
+
+
+def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, per_beat: int = 2,
                   log=lambda m: None, only: set | None = None, checked: set | None = None) -> dict[int, dict]:
     """For each beat, watch its likeliest uploads (judged from all titles found, plus Gemini's
     suggested links) until one is confirmed. Wrong uploads are dropped before anything is downloaded."""
@@ -477,7 +494,7 @@ def confirm_beats(gemini, story: dict, candidates: list[dict], movie: dict, *, p
             continue
         ids = [c["id"] for c in candidates if i in (c.get("suggested_for") or [])] + likely.get(i, [])
         ids = [v for v in ids if (i, v) not in checked]
-        mine = [by_id[v] for v in dict.fromkeys(ids) if v in by_id
+        mine = [by_id[v] for v in dict.fromkeys(ids) if v in by_id and names_movie(by_id[v].get("title", ""), movie)
                 and ((by_id[v].get("signals") or {}).get("height") or 1080) >= 720]  # soft uploads fail screening
         # Shorter uploads first (a focused scene clip); long uploads and compilations are still checked, and
         # one compilation may serve several beats.
@@ -562,8 +579,9 @@ def verify_times(stories: list[dict], transcript: MovieTranscript, runtime: floa
 EDIT_SCHEMA = {"type": "object", "properties": {
     "score": {"type": "integer"}, "problems": {"type": "array", "items": {"type": "string"}},
     "hook": {"type": "string"},
-    "narration": {"type": "array", "items": {"type": "string"}}},
-    "required": ["score", "problems", "hook", "narration"]}
+    "narration": {"type": "array", "items": {"type": "string"}},
+    "one_storyline": {"type": "boolean"}},
+    "required": ["score", "problems", "hook", "narration", "one_storyline"]}
 
 
 def edit_script(gemini, story: dict, movie: dict, keep_above: int = 8) -> dict:
@@ -577,9 +595,12 @@ def edit_script(gemini, story: dict, movie: dict, keep_above: int = 8) -> dict:
               "\n\nScore it 1-10 (would a scroller watch to the end?) and list its problems (weak hook, unclear who "
               "or why, flat lines, filler, telling instead of showing, spoilers). Then give an improved hook and the "
               "improved narration for every beat, in order, same facts and length, narrating what each beat shows. "
-              "Keep what already works.\nSTYLE EXAMPLES:\n" + style_examples())
+              "Keep what already works. one_storyline: true only if every beat belongs to ONE conflict of the same "
+              "main characters, each beat causing the next; false if it joins separate subplots or side missions."
+              "\nSTYLE EXAMPLES:\n" + style_examples())
     reply = gemini.generate("smart", [{"text": prompt}], schema=EDIT_SCHEMA, temperature=0.4)
-    story = {**story, "editor": {"score": int(reply.get("score") or 0), "problems": (reply.get("problems") or [])[:6]}}
+    story = {**story, "editor": {"score": int(reply.get("score") or 0), "problems": (reply.get("problems") or [])[:6],
+                                 "one_storyline": reply.get("one_storyline") is not False}}
     rewritten = [" ".join(str(n).split()) for n in reply.get("narration") or []]
     if story["editor"]["score"] < keep_above and len(rewritten) == len(story["beats"]) and all(rewritten):
         # A tighter rewrite may not shorten a beat: the narration has to fill its footage.
