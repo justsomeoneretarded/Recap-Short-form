@@ -916,3 +916,188 @@ def critique_edit(gemini: Client, arc: dict, voiceover: dict, edl: dict, keep_ab
         if ranges:
             fixes[beat] = ranges
     return fixes
+
+
+# ======================================================================== the real pictures under every clause
+
+SHEET_COLUMNS = 6
+TILE_WIDTH = 256
+MAX_FRAMES_PER_SCENE = 60
+
+
+def _frames(video: str, start: float, end: float, step: float, folder: Path) -> list[tuple[float, Path]]:
+    """Frames every `step` seconds of [start, end] (clip clock), as small JPEGs."""
+    import subprocess
+    folder.mkdir(parents=True, exist_ok=True)
+    pattern = folder / "f%04d.jpg"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{max(0.5, end - start):.3f}",
+                    "-i", str(video), "-vf", f"fps=1/{step:.3f},scale={TILE_WIDTH}:-2", "-q:v", "5", str(pattern)],
+                   capture_output=True, timeout=300)
+    files = sorted(folder.glob("f*.jpg"))
+    return [(round(start + step * (i + 0.5), 2), f) for i, f in enumerate(files) if start + step * (i + 0.5) <= end]
+
+
+def _sheet(frames: list[tuple[float, Path]], label: str):
+    """One labelled grid image: every tile shows its clip second."""
+    from PIL import Image, ImageDraw
+    tiles = [Image.open(path).convert("RGB") for _, path in frames]
+    if not tiles:
+        return None
+    tw, th = tiles[0].size
+    cols = min(SHEET_COLUMNS, len(tiles))
+    rows = -(-len(tiles) // cols)
+    sheet = Image.new("RGB", (cols * tw, rows * th + 22), (0, 0, 0))
+    draw = ImageDraw.Draw(sheet)
+    draw.text((4, 4), label, fill=(255, 255, 0))
+    for n, ((t, _), tile) in enumerate(zip(frames, tiles)):
+        x, y = (n % cols) * tw, 22 + (n // cols) * th
+        sheet.paste(tile.resize((tw, th)), (x, y))
+        draw.rectangle([x, y, x + 52, y + 16], fill=(0, 0, 0))
+        draw.text((x + 3, y + 2), f"{t:.1f}s", fill=(255, 255, 255))
+    return sheet
+
+
+def frame_sheets(arc: dict, footage: dict, work: Path) -> list[dict]:
+    """Per scene of the story: labelled contact sheets of its footage, one frame per second or so
+    (longer scenes sample more sparsely). [{'scene', 'times', 'image'}]; [] when no frame could be made."""
+    sheets = []
+    for i, scene in enumerate(arc.get("scenes") or []):
+        video = footage.get(scene["clip_id"])
+        if not video:
+            continue
+        span = scene["clip_end"] - scene["clip_start"]
+        step = max(1.0, span / MAX_FRAMES_PER_SCENE)
+        frames = _frames(video, scene["clip_start"], scene["clip_end"], step, Path(work) / f"scene{i}")
+        image = _sheet(frames, f"SCENE {i}: {str(scene.get('clip_title', ''))[:60]}")
+        if image is not None:
+            sheets.append({"scene": i, "times": [t for t, _ in frames], "image": image})
+    return sheets
+
+
+def _image_part(image) -> dict:
+    import io
+    buffer = io.BytesIO()
+    image.convert("RGB").save(buffer, "JPEG", quality=78)
+    return {"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(buffer.getvalue()).decode()}}
+
+
+PICK_SCHEMA = {"type": "object", "properties": {"slots": {"type": "array", "items": {"type": "object", "properties": {
+    "id": {"type": "string"}, "start": {"type": "number"}, "end": {"type": "number"},
+    "match": {"type": "integer"}, "shown": {"type": "boolean"}},
+    "required": ["id", "start", "end", "match", "shown"]}}}, "required": ["slots"]}
+
+
+def slot_rows(arc: dict, voiceover: dict, slots: dict[str, list[dict]], only: set | None = None) -> list[dict]:
+    """The clauses to place: id 'beat#k', its scene, its seconds and its words."""
+    scene_of = {b["id"]: b.get("scene") for b in voiceover.get("beats") or []}
+    rows = []
+    for beat_id, beat_slots in slots.items():
+        for k, slot in enumerate(beat_slots):
+            sid = f"{beat_id}#{k}"
+            if only is None or sid in only:
+                rows.append({"id": sid, "scene": scene_of.get(beat_id), "seconds": round(slot["end"] - slot["start"], 1),
+                             "says": slot["text"][:200]})
+    return rows
+
+
+def pick_frames(gemini: Client, arc: dict, voiceover: dict, slots: dict[str, list[dict]], sheets: list[dict], *,
+                only: set | None = None, avoid: dict | None = None) -> dict[str, dict]:
+    """Gemini looks at the contact sheets and chooses, for every clause, the seconds of its scene that show
+    what is said. {slot id: {'start', 'end', 'match', 'shown'}} in clip seconds, each stretch as long as its
+    clause (shorter only when the scene ends). `avoid`: earlier choices that scored low."""
+    rows = slot_rows(arc, voiceover, slots, only)
+    have = {s["scene"] for s in sheets}
+    rows = [r for r in rows if r["scene"] in have]
+    if not rows:
+        return {}
+    parts: list[dict] = []
+    for s in sheets:
+        parts += [{"text": f"Scene {s['scene']} contact sheet (each tile is labelled with its clip second):"},
+                  _image_part(s["image"])]
+    note = ""
+    if avoid:
+        note = ("\nThese earlier choices did NOT show what was said; choose different seconds for them: " +
+                json.dumps({k: [round(v["start"], 1), round(v["end"], 1)] for k, v in avoid.items()}))
+    parts.append({"text": (
+        "You are the editor of a movie-recap Short. Each clause of narration below is spoken over footage of ITS OWN "
+        "scene. Looking at the contact sheets, choose for every clause the stretch of its scene (start and end in "
+        "clip seconds, read from the tile labels) that SHOWS what the clause says: the person, the action, the "
+        "object. The stretch should last about the clause's seconds. Within a scene, clauses usually move forward in "
+        "time; never give two clauses the same seconds unless nothing else fits. match: 1-10, how well your stretch "
+        "shows the words. shown: false when nothing in the scene shows it (then pick the closest stretch)." + note +
+        "\nCLAUSES:\n" + json.dumps(rows, ensure_ascii=False))})
+    reply = gemini.generate("smart", parts, schema=PICK_SCHEMA, temperature=0.2, low_media=True)
+    bounds = {i: (sc["clip_start"], sc["clip_end"]) for i, sc in enumerate(arc.get("scenes") or [])}
+    want = {r["id"]: r for r in rows}
+    out: dict[str, dict] = {}
+    for row in reply.get("slots") or []:
+        sid = str(row.get("id"))
+        if sid not in want:
+            continue
+        lo, hi = bounds.get(want[sid]["scene"], (0.0, 0.0))
+        try:
+            start, end = float(row.get("start")), float(row.get("end"))
+        except (TypeError, ValueError):
+            continue
+        start = min(max(start, lo), hi)
+        length = want[sid]["seconds"]
+        if not math.isfinite(start) or hi - start < 0.5:
+            continue
+        end = min(hi, start + length)  # as long as the clause (shorter only where the scene ends)
+        out[sid] = {"start": round(start, 2), "end": round(end, 2), "match": int(row.get("match") or 0),
+                    "shown": row.get("shown") is not False}
+    return out
+
+
+def picks_to_director(picks: dict[str, dict], slots: dict[str, list[dict]]) -> dict[str, list[tuple[float, float]]]:
+    """Per beat, its clauses' stretches in clause order (what `edit.build_edl` plays first)."""
+    out: dict[str, list[tuple[float, float]]] = {}
+    for beat_id, beat_slots in slots.items():
+        ranges = [(picks[f"{beat_id}#{k}"]["start"], picks[f"{beat_id}#{k}"]["end"])
+                  for k in range(len(beat_slots)) if f"{beat_id}#{k}" in picks]
+        if len(ranges) == len(beat_slots):  # all or nothing: a partial list would shift the cuts
+            out[beat_id] = ranges
+    return out
+
+
+CHECK_SCHEMA_CUTS = {"type": "object", "properties": {"slots": {"type": "array", "items": {"type": "object", "properties": {
+    "id": {"type": "string"}, "match": {"type": "integer"}, "problem": {"type": "string"}},
+    "required": ["id", "match"]}}}, "required": ["slots"]}
+
+
+def check_cuts(gemini: Client, voiceover: dict, slots: dict[str, list[dict]], edl: dict, footage: dict,
+               work: Path) -> dict[str, dict]:
+    """Before rendering: the middle frame of every shot under each clause, judged against the clause's words.
+    {slot id: {'match', 'problem'}}."""
+    starts = {b["id"]: b["timeline_start"] for b in voiceover.get("beats") or []}
+    frames, labels = [], []
+    folder = Path(work) / "check"
+    for n, shot in enumerate(edl.get("shots") or []):
+        if shot.get("audio") == "full" or shot.get("beat") not in slots:
+            continue
+        at = shot["timeline_start"] + shot["duration"] / 2 - starts[shot["beat"]]
+        k = next((i for i, s in enumerate(slots[shot["beat"]]) if s["start"] - 0.01 <= at < s["end"] + 0.01), None)
+        source = shot.get("source") or footage.get(shot["clip_id"])
+        if k is None or not source:
+            continue
+        middle = (shot["start"] + shot["end"]) / 2
+        got = _frames(source, middle - 0.25, middle + 0.25, 0.5, folder / f"shot{n}")
+        if got:
+            frames.append((float(n), got[0][1]))
+            labels.append((f"{shot['beat']}#{k}", n))
+    if not frames:
+        return {}
+    sheet = _sheet(frames, "SHOTS (tile label = shot number)")
+    by_slot: dict[str, list[int]] = {}
+    for sid, n in labels:
+        by_slot.setdefault(sid, []).append(n)
+    rows = [{"id": sid, "says": slots[sid.split("#")[0]][int(sid.split("#")[1])]["text"][:200], "shots": shots}
+            for sid, shots in by_slot.items()]
+    reply = gemini.generate("light", [
+        {"text": "Shots of a movie-recap Short, before rendering (tile label = shot number):"}, _image_part(sheet),
+        {"text": "For every clause of narration below, score 1-10 how well its shots show what it says at that moment "
+                 "(the person, the action, the object). problem: what is wrong, if anything.\nCLAUSES:\n" +
+                 json.dumps(rows, ensure_ascii=False)}], schema=CHECK_SCHEMA_CUTS, temperature=0.1, low_media=True)
+    known = set(by_slot)
+    return {str(r.get("id")): {"match": int(r.get("match") or 0), "problem": str(r.get("problem") or "")[:160]}
+            for r in reply.get("slots") or [] if str(r.get("id")) in known}

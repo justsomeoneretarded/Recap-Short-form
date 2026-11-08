@@ -398,3 +398,43 @@ def test_light_work_never_spends_the_smart_models_quota():
     with pytest.raises(g.GeminiUnavailable):
         c.generate("light", [{"text": "x"}])
     assert all("lite" in m for m, _ in c.session.posts)
+
+
+class Picker:
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+
+    def generate(self, role, parts, **kw):
+        self.calls.append((role, [p.get("text", "")[:60] for p in parts if "text" in p]))
+        return self.replies.pop(0)
+
+
+def test_pick_frames_keeps_valid_stretches_as_long_as_their_clause():
+    arc = {"scenes": [{"clip_id": "A", "clip_start": 10.0, "clip_end": 40.0}]}
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0}]}
+    slots = {"b0": [{"start": 0.0, "end": 3.0, "text": "He opens the trunk,"},
+                    {"start": 3.0, "end": 6.0, "text": "finds the guns."}]}
+    from PIL import Image
+    sheets = [{"scene": 0, "times": [10.5], "image": Image.new("RGB", (64, 36))}]
+    picker = Picker([{"slots": [{"id": "b0#0", "start": 12, "end": 30, "match": 8, "shown": True},
+                                {"id": "b0#1", "start": 39.8, "end": 50, "match": 7, "shown": True},   # runs off the scene
+                                {"id": "zz#9", "start": 1, "end": 2, "match": 9, "shown": True}]}])
+    picks = g.pick_frames(picker, arc, voice, slots, sheets)
+    assert picks["b0#0"] == {"start": 12.0, "end": 15.0, "match": 8, "shown": True}   # trimmed to the clause
+    assert "b0#1" not in picks and "zz#9" not in picks                                # under 0.5 s left / unknown
+    assert g.picks_to_director(picks, slots) == {}                                     # all clauses or none
+    picks["b0#1"] = {"start": 20.0, "end": 23.0, "match": 6, "shown": True}
+    assert g.picks_to_director(picks, slots) == {"b0": [(12.0, 15.0), (20.0, 23.0)]}
+
+
+def test_contact_sheet_labels_real_frames(tmp_path):
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("needs ffmpeg")
+    video = tmp_path / "v.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24", "-t", "6",
+                    str(video)], check=True)
+    sheets = g.frame_sheets({"scenes": [{"clip_id": "A", "clip_start": 1.0, "clip_end": 5.0, "clip_title": "t"}]},
+                            {"A": str(video)}, tmp_path / "w")
+    assert len(sheets) == 1 and 3 <= len(sheets[0]["times"]) <= 5 and sheets[0]["image"].size[0] > 256

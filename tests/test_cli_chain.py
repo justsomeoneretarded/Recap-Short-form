@@ -134,3 +134,30 @@ def test_rejected_story_is_replaced_by_a_spare(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "write_short", fake_write)
     out = cli.run_write(source, tmp_path / "write", arc_index=0, spare_every=2)
     assert tried == ["arc1", "arc3"] and [s["arc"] for s in out["scripts"]] == ["arc3"]
+
+
+def test_picture_edit_repicks_weak_clauses_once(monkeypatch, tmp_path):
+    from shorts_pipeline import cli
+    from shorts_pipeline import gemini as gem
+    text = "He opens the trunk, finds the guns. He drives away."
+    words = [{"word": w, "start": i * 0.5, "end": i * 0.5 + 0.4} for i, w in enumerate(text.split())]
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 6.0,
+                        "text": text, "words": words}]}
+    arc = {"id": "a", "scenes": [{"clip_id": "A", "clip_start": 0.0, "clip_end": 60.0, "peaks": []}]}
+    calls = []
+    monkeypatch.setattr(gem, "client", lambda: object())
+    monkeypatch.setattr(gem, "frame_sheets", lambda *a, **k: [{"scene": 0, "times": [1.0], "image": None}])
+
+    def pick(google, arc_, voice_, slots, sheets, only=None, avoid=None):
+        calls.append(sorted(only) if only else "all")
+        ids = sorted(only) if only else [f"b0#{k}" for k in range(len(slots["b0"]))]
+        base = 30.0 if only else 5.0
+        return {sid: {"start": base + 4 * n, "end": base + 4 * n + (slots["b0"][int(sid[-1])]["end"] - slots["b0"][int(sid[-1])]["start"]),
+                      "match": 9 if only else 7, "shown": True} for n, sid in enumerate(ids)}
+    monkeypatch.setattr(gem, "pick_frames", pick)
+    monkeypatch.setattr(gem, "check_cuts", lambda *a, **k: {"b0#0": {"match": 3, "problem": "no trunk"},
+                                                           "b0#1": {"match": 8, "problem": ""}})
+    director, report, fixed = cli._picture_edit(arc, voice, {"A": "a.mp4"}, {}, None, tmp_path / "a")
+    assert calls == ["all", ["b0#0"]] and fixed == ["b0"]
+    assert director["b0"][0][0] == 30.0                         # the weak clause got its better stretch
+    assert {r["clause"]: r["match"] for r in report}["b0#0"] == 9

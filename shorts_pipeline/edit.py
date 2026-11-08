@@ -4,9 +4,11 @@
 - Movie-line beats play their exact clip window, picture and sound in sync.
 - Narration beats take the footage between the previous and the next movie line. When there
   is more footage than voice, the most interesting pieces are kept (Most Replayed and
-  comment peaks, then evenly spread), cut on the clip's own shot changes, 1.3–2.8 s each
-  (reference median 1.5–2.9 s). When there is less, the footage is gently slowed (≥0.8x)
-  and then the scene's unused earlier footage fills in.
+  comment peaks, then evenly spread), cut on the clip's own shot changes. When there is less,
+  the footage is gently slowed (≥0.8x) and then the scene's unused earlier footage fills in.
+- Cuts follow the narration: every narration beat is split into clause slots (sentence and
+  clause ends, from the voice's word timings), 1.5–4.5 s each, and every slot gets its own
+  footage, so the picture changes when the story does.
 - When Gemini watched the clips, each narration beat prefers the pieces that show what the
   sentence talks about (embedding or word match against the moment descriptions), strong
   moments over weak ones, and skips dead moments (nothing happening).
@@ -17,7 +19,9 @@ import re
 import subprocess
 from pathlib import Path
 
-MIN_SHOT, MAX_SHOT = 1.3, 2.8  # reference Shorts: median shot 1.5–2.9 s
+MIN_SHOT, MAX_SHOT = 1.3, 2.8  # pieces cut from the footage (reference Shorts: median shot 1.5–2.9 s)
+SLOT_MIN, SLOT_MAX = 1.5, 4.5  # one clause of narration on screen: merged when shorter, split when longer
+CLAUSE_END = (".", "!", "?", ";", ":", ",", "—", "–")
 MIN_SPEED = 0.8
 
 
@@ -180,6 +184,76 @@ def in_order(pieces: list[tuple[float, float]], need: float) -> list[tuple[float
     return out
 
 
+def clause_slots(beat: dict, length: float) -> list[dict]:
+    """The beat's narration cut into clause slots: [{'start', 'end', 'text'}] in beat seconds covering
+    [0, length]. Splits at sentence and clause ends (word timings from the voice), merges slots under
+    SLOT_MIN into a neighbour and halves slots over SLOT_MAX."""
+    words = [w for w in beat.get("words") or [] if str(w.get("word", "")).strip()]
+    length = max(0.0, float(length))
+    groups: list[list[dict]] = []
+    current: list[dict] = []
+    for w in words:
+        current.append(w)
+        if str(w["word"]).rstrip("\"')”’").endswith(CLAUSE_END):
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    slots = []
+    for i, g in enumerate(groups):
+        start = 0.0 if i == 0 else float(g[0]["start"])
+        end = length if i == len(groups) - 1 else float(groups[i + 1][0]["start"])
+        if end > start:
+            slots.append({"start": start, "end": min(end, length), "text": " ".join(str(w["word"]) for w in g)})
+    if not slots:
+        slots = [{"start": 0.0, "end": length, "text": str(beat.get("text", ""))}] if length > 0 else []
+    merged: list[dict] = []
+    for slot in slots:  # too short to read as its own shot: joins the clause before it
+        if merged and (slot["end"] - slot["start"] < SLOT_MIN or merged[-1]["end"] - merged[-1]["start"] < SLOT_MIN):
+            merged[-1] = {"start": merged[-1]["start"], "end": slot["end"], "text": merged[-1]["text"] + " " + slot["text"]}
+        else:
+            merged.append(dict(slot))
+    out: list[dict] = []
+    for slot in merged:  # too long for one shot: halves (or more)
+        span = slot["end"] - slot["start"]
+        parts = max(1, int(-(-span // SLOT_MAX)))
+        for k in range(parts):
+            out.append({"start": round(slot["start"] + span * k / parts, 3),
+                        "end": round(slot["start"] + span * (k + 1) / parts, 3),
+                        "text": slot["text"] if parts == 1 else f"{slot['text']} ({k + 1}/{parts})"})
+    return out
+
+
+def beat_slots(voiceover: dict) -> dict[str, list[dict]]:
+    """Clause slots of every narration beat, over the time until the next beat starts."""
+    beats = voiceover.get("beats") or []
+    out = {}
+    for i, beat in enumerate(beats):
+        if beat.get("kind") == "dialogue":
+            continue
+        gap = (beats[i + 1]["timeline_start"] - beat["timeline_start"]) if i + 1 < len(beats) else beat["duration"]
+        out[beat["id"]] = clause_slots(beat, gap)
+    return out
+
+
+def _slot_picks(pieces: list[tuple[float, float]], slots: list[dict], speed: float, peaks, moments, similar,
+                choose_fn) -> list[tuple[float, float]]:
+    """Footage per clause slot, moving forward through the scene: each slot's pieces add up to the slot's
+    length, so the cuts land on the clause boundaries."""
+    picked: list[tuple[float, float]] = []
+    for slot in slots:
+        need = (slot["end"] - slot["start"]) * speed
+        last = picked[-1][1] if picked else None
+        unused = [p for p in pieces if not any(min(p[1], q[1]) - max(p[0], q[0]) > 0.05 for q in picked)]
+        ahead = [p for p in unused if last is None or p[0] >= last - 0.05]
+        pool = ahead if sum(e - s for s, e in ahead) >= need - 0.05 else unused
+        got = choose_fn(pool, need, peaks, moments=moments, text=slot.get("text", ""), similar=similar)
+        if not got:
+            break
+        picked += got
+    return picked
+
+
 def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | None = None, similar=None,
               director: dict | None = None) -> dict:
     """Shots on the output timeline: {clip_id, source, start, end, speed, timeline_start, duration, audio}."""
@@ -233,8 +307,14 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
             available = sum(e - s for s, e in pieces)
             speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
             need = gap * speed
-            picked = choose(pieces, need, scene.get("peaks", []), moments=scene.get("moments"), text=beat.get("text", ""),
-                            similar=similar)
+            slots = clause_slots(beat, gap)
+            # One stretch of footage per clause, when the voice's word times say where the clauses are and the
+            # scene has footage to spare (a tight scene keeps every second instead).
+            if len(slots) > 1 and beat.get("words") and available >= need + 1.0:
+                picked = _slot_picks(pieces, slots, speed, scene.get("peaks", []), scene.get("moments"), similar, choose)
+            else:
+                picked = choose(pieces, need, scene.get("peaks", []), moments=scene.get("moments"),
+                                text=beat.get("text", ""), similar=similar)
         cursor = start_t
         for s, e in picked:
             length = (e - s) / speed

@@ -107,7 +107,16 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
     duration = edl["duration"]
     add("length", "pass" if 0.6 * target_seconds <= duration <= target_seconds + 5 else "warn",
         f"{duration:.0f} s (requested {target_seconds:.0f} s)")
-    if edl.get("director") or edl.get("critic_fixed_beats"):
+    picture = edl.get("picture_check") or []
+    if picture:  # Gemini judged the real frames under every clause
+        scores = [r["match"] for r in picture if r.get("match")]
+        average = sum(scores) / max(1, len(scores))
+        unseen = [r["says"][:60] for r in picture if not r.get("shown")]
+        add("picture follows the words", "pass" if average >= 7 and not unseen else "warn",
+            f"Gemini looked at the frames: {len(picture)} clauses, average match {average:.1f}/10"
+            + (f"; re-picked {len(edl.get('critic_fixed_beats') or [])} beats" if edl.get("critic_fixed_beats") else "")
+            + (f"; no footage shows: {' | '.join(unseen[:3])}" if unseen else ""))
+    elif edl.get("director") or edl.get("critic_fixed_beats"):
         add("picture follows the words", "pass",
             f"Gemini chose the shots for {len(edl.get('director') or {})} sentences"
             + (f"; the pre-render critic re-picked {len(edl['critic_fixed_beats'])}" if edl.get("critic_fixed_beats") else ""))

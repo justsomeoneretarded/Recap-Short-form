@@ -542,15 +542,20 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         arc = arcs[voiceover['arc']]
         footage = _footage([s['clip_id'] for s in arc['scenes']], screened, workdir)
         cuts = {s['clip_id']: shot_changes(Path(footage[s['clip_id']]), s['clip_start'], s['clip_end']) for s in arc['scenes']}
-        director = _director(arc, voiceover)
         similar = _similarity(arc, voiceover)
+        # Gemini looks at the real frames: it picks the seconds under every clause, then checks the cut.
+        director, picture, fixes = _picture_edit(arc, voiceover, footage, cuts, similar, output/voiceover['arc'])
+        if not director:  # no frames or no Gemini: the moments it described when it watched the clips
+            director = _director(arc, voiceover)
         edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
-        fixes = _critic_fixes(arc, voiceover, edl)  # sentences whose shots do not show what is said
-        if fixes:
-            director = {**director, **fixes}
-            edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
+        if not picture:
+            fixes = _critic_fixes(arc, voiceover, edl)  # sentences whose shots do not show what is said
+            if fixes:
+                director = {**director, **fixes}
+                edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
         edl['director'] = {k: [list(r) for r in v] for k, v in director.items()}
         edl['critic_fixed_beats'] = sorted(fixes)
+        edl['picture_check'] = picture
         plans = plan_shots(edl, screened)
         for shot in edl['shots']:
             shot.pop('source', None)  # machine-specific; each render machine downloads its own copy
@@ -560,6 +565,66 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         rows.append({'arc': voiceover['arc'], 'shots': edl['shot_count'],
                      'moving_shots': sum(1 for p in plans.values() if p['motion'] >= 2.5)})
     return {'planned': rows}
+
+
+def _picture_edit(arc: dict, voiceover: dict, footage: dict, cuts: dict, similar, work: Path):
+    """(director, per-clause picture report, re-picked beats) from the real frames:
+    1. contact sheets of every scene, 2. Gemini picks the seconds under every clause, 3. the cut is built
+    and the middle frame of every shot is judged against its clause, 4. clauses scoring under 6 are
+    re-picked once. ({}, [], []) without Gemini or frames."""
+    import shutil
+    import tempfile
+    from . import gemini as gem
+    from .edit import beat_slots, build_edl
+    google = gem.client()
+    if google is None:
+        return {}, [], []
+    slots = beat_slots(voiceover)
+    if not slots:
+        return {}, [], []
+    temp = Path(tempfile.mkdtemp(prefix='frames-', dir=work.parent if work.parent.exists() else None))
+    try:
+        sheets = gem.frame_sheets(arc, footage, temp)
+        if not sheets:
+            return {}, [], []
+        picks = gem.pick_frames(google, arc, voiceover, slots, sheets)
+        director = gem.picks_to_director(picks, slots)
+        if not director:
+            return {}, [], []
+        edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
+        checked = gem.check_cuts(google, voiceover, slots, edl, footage, temp)
+        weak = {sid: picks[sid] for sid, row in checked.items() if row['match'] < 6 and sid in picks}
+        fixed = []
+        if weak:
+            again = gem.pick_frames(google, arc, voiceover, slots, sheets, only=set(weak), avoid=weak)
+            better = {sid: row for sid, row in again.items() if row['match'] > weak[sid]['match']}
+            if better:
+                picks.update(better)
+                director = gem.picks_to_director(picks, slots)
+                fixed = sorted({sid.split('#')[0] for sid in better})
+                for sid in better:
+                    checked[sid] = {'match': better[sid]['match'], 'problem': 're-picked'}
+        report = []
+        for beat_id, beat_slots_ in slots.items():
+            for k, slot in enumerate(beat_slots_):
+                sid = f'{beat_id}#{k}'
+                if sid in picks:
+                    report.append({'clause': sid, 'says': slot['text'][:160], 'seconds': [picks[sid]['start'], picks[sid]['end']],
+                                   'match': (checked.get(sid) or {}).get('match', picks[sid]['match']),
+                                   'shown': picks[sid]['shown'], 'problem': (checked.get(sid) or {}).get('problem', '')})
+        scores = [r['match'] for r in report if r['match']]
+        print(f"Picture edit: {len(report)} clauses placed from the frames, average match "
+              f"{sum(scores) / max(1, len(scores)):.1f}/10, {len(weak)} re-picked, "
+              f"{sum(1 for r in report if not r['shown'])} not shown by any footage", file=sys.stderr)
+        return director, report, fixed
+    except gem.GeminiUnavailable as exc:
+        print(f'No picture edit (moments or the edit pick the shots): {str(exc)[:120]}', file=sys.stderr)
+        return {}, [], []
+    except Exception as exc:  # noqa: BLE001 - frames are a bonus; never lose the Short over them
+        print(f'No picture edit: {type(exc).__name__}: {str(exc)[:120]}', file=sys.stderr)
+        return {}, [], []
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
 
 
 def _critic_fixes(arc: dict, voiceover: dict, edl: dict) -> dict:
@@ -583,6 +648,7 @@ def _director(arc: dict, voiceover: dict) -> dict:
     from . import gemini as gem
     google = gem.client()
     if google is None or not any(s.get('moments') for s in arc['scenes']):
+        print('No director pass: no scene was watched by Gemini (the edit picks shots itself)', file=sys.stderr)
         return {}
     try:
         return gem.shot_list(google, arc, voiceover)

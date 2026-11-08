@@ -110,3 +110,29 @@ def test_flash_forward_hook_shows_its_scene_first_and_the_scene_still_plays_in_f
     later = [s for s in shots if s["beat"] == "b2"]
     hook_end = max(s["end"] for s in shots if s["beat"] == "b0")
     assert later and later[0]["start"] < hook_end   # the scene plays again from early on, not only after the hook's shots
+
+
+def _words(text, start=0.0, step=0.35):
+    return [{"word": w, "start": round(start + i * step, 3), "end": round(start + i * step + 0.3, 3)}
+            for i, w in enumerate(text.split())]
+
+
+def test_clause_slots_follow_sentences_merge_short_and_split_long():
+    text = ("He walks into the bar, orders a drink. Nobody moves. Then the man in the corner reaches for "
+            "a gun hidden under his coat while the bartender looks away from them all.")
+    slots = e.clause_slots({"text": text, "words": _words(text)}, 12.0)
+    assert slots[0]["start"] == 0.0 and slots[-1]["end"] == 12.0
+    assert all(b["start"] == a["end"] for a, b in zip(slots, slots[1:]))          # no gaps, no overlaps
+    assert all(e.SLOT_MIN - 0.01 <= s["end"] - s["start"] <= e.SLOT_MAX + 0.01 for s in slots[:-1])
+    assert "Nobody moves." in " ".join(s["text"] for s in slots)
+
+
+def test_narration_is_cut_on_its_clause_boundaries():
+    text = "He opens the trunk, finds the guns. He loads them one by one. Then he drives to the house."
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 9.0,
+                        "text": text, "words": _words(text, step=0.5)}]}
+    arc = {"id": "a", "scenes": [{"clip_id": "A", "clip_start": 0.0, "clip_end": 60.0, "peaks": []}]}
+    edl = e.build_edl(arc, voice, {"A": "a.mp4"})
+    cut_times = {round(s["timeline_start"], 2) for s in edl["shots"]}
+    for slot in e.clause_slots(voice["beats"][0], 9.0):
+        assert round(slot["start"], 2) in cut_times                                  # a cut on every clause start
