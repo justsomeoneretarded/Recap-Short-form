@@ -99,6 +99,7 @@ class Client:
         self.max_calls = max_calls if max_calls is not None else int(os.environ.get("SHORTS_GEMINI_MAX_CALLS", "80"))
         self.calls: list[dict] = []
         self.exhausted: set[str] = set()      # no quota left today (or not available) for this key
+        self.never_free: set[str] = set()     # free limit is 0 for this key: skipped on every day
         self.cooldown: dict[str, float] = {}   # per-minute limit hit: usable again after this time
         self.good: dict[str, str] = {}         # the model that last answered, per role: tried first
         self.last_call = 0.0
@@ -121,6 +122,8 @@ class Client:
             data = json.loads(self.state_file.read_text()) if self.state_file and self.state_file.exists() else {}
         except (OSError, ValueError):
             data = {}
+        self.never_free |= set(data.get("never_free") or [])
+        self.exhausted |= self.never_free
         if data.get("day") == self._quota_day():
             self.exhausted |= set(data.get("exhausted") or [])
 
@@ -129,7 +132,8 @@ class Client:
             return
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps({"day": self._quota_day(), "exhausted": sorted(self.exhausted)}))
+            self.state_file.write_text(json.dumps({"day": self._quota_day(), "exhausted": sorted(self.exhausted - self.never_free),
+                                                   "never_free": sorted(self.never_free)}))
         except OSError:
             pass
 
@@ -199,6 +203,8 @@ class Client:
                 print(f"[gemini] {model}: {why} — Google: {row['google_says'][:300]}", file=sys.stderr, flush=True)
                 if daily:  # nothing left today for this key on this model: never ask it again
                     self.exhausted.add(model)
+                    if why.startswith("free limit is 0"):
+                        self.never_free.add(model)  # not a daily limit: this key never gets this model
                     self._save_state()
                     raise _Exhausted(f"{model}: {why}")
                 pause = max(wait, MINUTE_WAIT) + 1
@@ -220,6 +226,23 @@ class Client:
                 raise _Exhausted(f"{model}: not available ({text[:160]})")
             raise _BadRequest(f"{model}: HTTP {reply.status_code} {text[:300]}")
         raise _Exhausted(f"{model}: no answer after retries")
+
+    def smart_ready(self) -> str | None:
+        """The first smart model that still answers today (one tiny request), or None when only the light
+        models are left. Models already known to be used up are not asked again."""
+        light = set(self.models().get("light", []))
+        for model in self.models().get("smart", []):
+            if model in self.exhausted or model in light:
+                continue
+            body = {"contents": [{"role": "user", "parts": [{"text": "Reply with the word ok."}]}],
+                    "generationConfig": {"temperature": 0, "maxOutputTokens": 4}}
+            try:
+                self._post(model, "generateContent", body)
+                self.good["smart"] = model
+                return model
+            except (_Exhausted, _BadRequest):
+                continue
+        return None
 
     # ------------------------------------------------------------------ generation
     def generate(self, role: str, parts: list[dict], *, system: str | None = None, schema: dict | None = None,

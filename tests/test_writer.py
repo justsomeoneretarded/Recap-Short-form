@@ -260,3 +260,24 @@ def test_narration_too_long_for_its_footage_is_flagged():
     brief = w.Brief({}, set(), {}, {0: 20})
     script = {"title": "T", "hook": "h", "beats": [{"scene": 0, "kind": "narration", "text": "word " * 45}]}
     assert any("too long for its footage" in i for i in w.check(script, brief)["issues"])
+
+
+def test_hook_about_a_later_scene_plays_over_that_scene():
+    from shorts_pipeline.writer import hook_scene
+    arc = {"scenes": [{"beat": {"name": "Autopsy", "what_we_see": "Robert reads the autopsy files with Dave",
+                                "key_moment": "the wound under the rib"}},
+                      {"beat": {"name": "Cab", "what_we_see": "a hitman attacks Robert in his car"}},
+                      {"beat": {"name": "Redial", "what_we_see": "Robert redials the phone and Dave's phone rings",
+                                "key_moment": "Dave's phone rings on the counter"}}]}
+    assert hook_scene("He redials the dead assassin's phone and his best friend's phone rings.", arc) == 2
+    assert hook_scene("Nobody expected what came next.", arc) == 0
+    assert hook_scene("anything", {**arc, "story": {"hook_beat_name": "Cab"}}) == 1
+
+
+def test_a_script_well_under_its_footage_length_is_flagged_and_extended():
+    b = brief()
+    short = {"title": "t", "hook": "He walks in.", "ending": "reveal",
+             "beats": [{"scene": 0, "kind": "narration", "text": "John fights in the library."},
+                       {"scene": 1, "kind": "narration", "text": "A doctor helps him."}]}
+    report = w.check(short, b)
+    assert any(i.startswith("script too short") for i in report["issues"]) and w.needs_fix(report)

@@ -74,6 +74,12 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
     def add(name: str, status: str, detail: str) -> None:
         checks.append({"check": name, "status": status, "detail": detail})
 
+    writers = sorted({str(c.get("model") or "") for c in (result.get("model_calls") or []) if c.get("model")})
+    if writers:  # which model wrote the script: a light model limits quality
+        light = all("lite" in w or not w.startswith("gemini") for w in writers)
+        add("script model", "warn" if light else "pass",
+            ", ".join(writers) + (" — made with a light model; quality limited" if light else ""))
+
     for aspect, out in render.items():
         if out.get("duration") is not None:
             short = edl["duration"] - float(out["duration"])

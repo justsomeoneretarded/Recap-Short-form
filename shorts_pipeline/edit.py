@@ -243,7 +243,7 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
                           "audio": "duck", "beat": beat["id"]})
             used.setdefault(clip_id, []).append((s, e))
             cursor += length
-        if picked:
+        if picked and not beat.get("flash_forward"):  # the flash-forward scene is played again in its place
             scene_cursor[beat["scene"]] = picked[-1][1]
         # Not enough fresh footage between the movie lines: fill with more real footage (rest of this
         # scene, then the story's other scenes) — never by freezing or over-stretching one shot.

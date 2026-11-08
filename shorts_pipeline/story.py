@@ -33,6 +33,7 @@ STORY_SCHEMA = {"type": "object", "properties": {"stories": {"type": "array", "i
     "mood": {"type": "string", "enum": ["tense", "action", "dark", "sad", "mysterious", "triumphant"]},
     "hooks": {"type": "array", "items": {"type": "string"}},
     "hook": {"type": "string"},
+    "hook_beat": {"type": "integer"},
     "beats": {"type": "array", "items": {"type": "object", "properties": {
         "narration": {"type": "string"},
         "movie_lines": {"type": "array", "items": {"type": "string"}},
@@ -91,7 +92,11 @@ Rules for each story:
   stretch of the movie reveals).
 WRITE THE FULL SCRIPT NOW, like a great narrator (see the style examples):
 - hooks: 5 different opening lines (at most 14 words, a concrete visible act and the question it raises); hook: the
-  strongest of them, spoken first.
+  strongest of them, spoken first. hook_beat: the index (0 = first) of the beat whose picture the hook describes;
+  when it is a later beat, that moment is shown first as a flash-forward and the story then starts from beat 0.
+- LENGTH: the Short is about {seconds} seconds. The beats' stretches together must last at least that long, and
+  each beat's narration must fill its stretch (a 30-second beat gets about 75-85 words). A script far shorter
+  than this makes a Short far shorter than asked.
 - narration per beat: what the narrator says over that beat's footage, about {words_per_second} words per second of
   the beat. Present tense, third person, short spoken sentences, cause and effect (but, so, then). Name what is ON
   SCREEN in that beat; explain only what the picture cannot (who someone is, why it matters) in a few words. Never
@@ -186,6 +191,10 @@ def clean_stories(raw: dict, runtime: float) -> list[dict]:
                           "narration": " ".join(str(b.get("narration") or "").split())[:1200],
                           "movie_lines": [str(x)[:200] for x in (b.get("movie_lines") or [])][:3],
                           "movie_start": round(start, 1), "movie_end": round(end, 1)})
+        raw_beats = story.get("beats") or []
+        hook_beat = story.get("hook_beat")
+        hook_name = (str((raw_beats[hook_beat] or {}).get("name", ""))[:60]
+                     if isinstance(hook_beat, int) and 0 <= hook_beat < len(raw_beats) else "")
         if len(beats) >= MIN_BEATS:
             used += [(b["movie_start"], b["movie_end"]) for b in beats]
             stories.append({"title": str(story.get("title", ""))[:90], "spine": str(story.get("spine", ""))[:400],
@@ -195,6 +204,7 @@ def clean_stories(raw: dict, runtime: float) -> list[dict]:
                             "hooks": [str(h)[:160] for h in (story.get("hooks") or [])][:5],
                             "ending_mode": story.get("ending_mode") or "renewed_threat",
                             "mood": story.get("mood") or "tense",
+                            "hook_beat_name": hook_name if any(b["name"] == hook_name for b in beats) else "",
                             "cold_open": bool(story.get("cold_open")) and len(beats) > 1 and
                             beats[0]["movie_start"] > beats[1]["movie_start"], "beats": beats[:MAX_BEATS]})
     return stories
@@ -349,7 +359,7 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, 
                      "short_seconds": round(min(target_seconds, 0.85 * footage), 1),
                      "shorter_than_requested": 0.85 * footage < target_seconds, "planned": True,
                      "story": {k: story.get(k) for k in ("title", "spine", "hook_idea", "ending_idea", "ending_mode",
-                                                         "cold_open", "hook", "mood")},
+                                                         "cold_open", "hook", "mood", "hook_beat_name")},
                      "missing": missing,
                      "scenes": scenes})
     return arcs
@@ -572,9 +582,14 @@ def edit_script(gemini, story: dict, movie: dict, keep_above: int = 8) -> dict:
     story = {**story, "editor": {"score": int(reply.get("score") or 0), "problems": (reply.get("problems") or [])[:6]}}
     rewritten = [" ".join(str(n).split()) for n in reply.get("narration") or []]
     if story["editor"]["score"] < keep_above and len(rewritten) == len(story["beats"]) and all(rewritten):
-        story["beats"] = [{**b, "narration": n} for b, n in zip(story["beats"], rewritten)]
+        # A tighter rewrite may not shorten a beat: the narration has to fill its footage.
+        story["beats"] = [{**b, "narration": n if len(n.split()) >= 0.85 * len(str(b.get("narration") or "").split())
+                           else b.get("narration", "")} for b, n in zip(story["beats"], rewritten)]
         if reply.get("hook"):
-            story["hook"] = " ".join(str(reply["hook"]).split())[:160]
+            new_hook = " ".join(str(reply["hook"]).split())[:160]
+            if new_hook != story.get("hook"):
+                story["hook_beat_name"] = ""  # the new hook may show another beat: matched by its words later
+            story["hook"] = new_hook
         story["editor"]["rewritten"] = True
     return story
 

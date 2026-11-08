@@ -362,3 +362,30 @@ def test_pre_render_critic_repicks_shots_for_sentences_that_do_not_match():
     assert g.critique_edit(c, arc, voice, edl) == {"b0": [(20, 26)]}
     good = client({"gemini-3.5-flash-lite": [answer({"beats": [{"beat": "b0", "match": 8, "better": [1]}]})]})
     assert g.critique_edit(good, arc, voice, edl) == {}
+
+
+ZERO = '{"error": {"message": "Quota exceeded for metric: generate_content_free_tier_requests, limit: 0"}}'
+
+
+def test_models_with_a_zero_free_limit_are_skipped_on_later_days_too(tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    monkeypatch.setenv("SHORTS_GEMINI_STATE", str(state))
+    c = client({"gemini-3.5-flash": [Reply(429, text=ZERO)], "gemini-2.5-flash": [answer("ok")]})
+    assert c.smart_ready() == "gemini-2.5-flash"
+    saved = json.loads(state.read_text())
+    assert saved["never_free"] == ["gemini-3.5-flash"]
+    saved["day"] = "2000-01-01"  # the next day: daily limits are forgotten, a zero limit is not
+    state.write_text(json.dumps(saved))
+    later = client({"gemini-2.5-flash": [answer("ok")]})
+    assert later.smart_ready() == "gemini-2.5-flash"
+    assert [m for m, _ in later.session.posts] == ["gemini-2.5-flash"]
+
+
+def test_quota_gate_stops_the_run_when_only_the_light_model_is_left(monkeypatch):
+    from shorts_pipeline import cli
+    day = Reply(429, text=DAILY)
+    c = client({"gemini-3.5-flash": [day], "gemini-2.5-flash": [day]})
+    assert c.smart_ready() is None
+    with pytest.raises(SystemExit, match="after 08:00 UTC"):
+        cli.quota_gate(c)
+    assert cli.quota_gate(client({"gemini-3.5-flash": [answer("ok")]})) == "gemini-3.5-flash"

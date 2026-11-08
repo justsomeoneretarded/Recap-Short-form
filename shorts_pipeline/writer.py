@@ -314,6 +314,10 @@ def build_brief(arc: dict, research: dict, transcript: MovieTranscript | None, p
 
 # ---------------------------------------------------------------------------- checks
 
+SHORT_SCRIPT = 0.85    # under this share of the word target the script is extended
+TOO_SHORT_AFTER_FIX = 0.75  # still under this after the fixes: a fresh full draft may replace it
+
+
 def check(script: dict, brief: Brief) -> dict:
     """Automatic quality checks; returns per-scene word counts and a 0–1 score."""
     issues: list[str] = []
@@ -378,6 +382,8 @@ def check(script: dict, brief: Brief) -> dict:
         issues.append("narration too long for its footage: " + ", ".join(long_scenes[:4]))
     total = sum(words.values())
     target = sum(brief.budgets.values())
+    if target and total < SHORT_SCRIPT * target:  # the Short's length follows the narration
+        issues.append(f"script too short ({total} of about {target} words): add narration to the scenes under budget")
     budget_fit = max(0.0, 1 - abs(total - target) / max(1, target))
     score = max(0.0, budget_fit - 0.12 * len(issues) - 0.03 * len(off))
     return {"issues": issues, "scene_words": words, "off_budget": off, "total_words": total,
@@ -427,8 +433,9 @@ def fix(llm, brief: Brief, script: dict, report: dict) -> dict:
     if not needs_fix(report):
         return script
     problems = list(report["issues"])
-    if report["total_words"] < 0.5 * max(1, report["target_words"]):
-        problems += [f"scene {s} has {w} words, needs about {b}" for s, (w, b) in report["off_budget"].items()]
+    if report["total_words"] < SHORT_SCRIPT * max(1, report["target_words"]):
+        problems += [f"scene {s} has {w} words, needs about {b} (say more about what is on screen there)"
+                     for s, (w, b) in report["off_budget"].items() if w < b]
     extra = ("Here is a draft. Keep what works and its dialogue beats, but fix these problems:\n- " + "\n- ".join(problems) +
              "\nDRAFT:\n" + json.dumps(script, ensure_ascii=False))
     return llm.chat(system_for(llm), _user(brief, extra), schema_for(llm), temperature=0.4, seed=303,
@@ -519,6 +526,28 @@ def planned_draft(arc: dict, brief: Brief) -> dict | None:
             "beats": beats}
 
 
+def hook_scene(hook: str, arc: dict) -> int:
+    """The scene whose picture the hook describes. A hook about a later scene (the redial, the gun to the
+    chest) plays over that scene's footage, a flash-forward, instead of over the first scene's.
+    The planner names the beat (hook_beat_name); otherwise the hook is matched to each scene's words."""
+    from .edit import word_match
+    scenes = arc.get("scenes") or []
+    named = ((arc.get("story") or {}).get("hook_beat_name") or "").strip().lower()
+    if named:
+        for i, scene in enumerate(scenes):
+            if str((scene.get("beat") or {}).get("name", "")).strip().lower() == named:
+                return i
+    if not hook or len(scenes) < 2:
+        return 0
+    scores = []
+    for scene in scenes:
+        info = scene.get("beat") or {}
+        what = " ".join(str(info.get(k) or "") for k in ("what_we_see", "key_moment"))
+        scores.append(max(word_match(hook, what), 0.8 * word_match(hook, str(info.get("narration") or ""))))
+    best = max(range(len(scenes)), key=lambda i: scores[i])
+    return best if best and scores[best] >= 0.34 and scores[best] > scores[0] + 0.15 else 0
+
+
 def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, llm, *, plot: str = "",
                 drafts: int = 2, picture_check=None) -> dict:
     big = (getattr(llm, "context_tokens", None) or 0) >= 100_000
@@ -560,6 +589,15 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
         fixed_check = check(fixed, brief)
         if fixed_check["score"] >= final_check["score"]:
             final, final_check = fixed, fixed_check
+    if best.get("planned") and final_check["total_words"] < TOO_SHORT_AFTER_FIX * max(1, final_check["target_words"]):
+        try:  # the planned script stayed far too short for its footage: a fresh full draft may be better
+            fresh = cleanup(draft(llm, brief, 0), brief)
+            fresh_check = check(fresh, brief)
+            if fresh_check["total_words"] > final_check["total_words"] and fresh_check["score"] >= final_check["score"] - 0.05 \
+                    and not any(is_serious(i) for i in fresh_check["issues"]):
+                final, final_check = fresh, fresh_check
+        except (RuntimeError, ValueError, KeyError):
+            pass
     picture_notes: list[str] = []
     if picture_check is not None:  # say what the viewer sees: sentences about unseen action are rewritten once
         try:
@@ -575,6 +613,7 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
                     final, final_check = fixed, fixed_check
             except (RuntimeError, ValueError, KeyError):
                 pass
+    final["hook_scene"] = hook_scene(final.get("hook") or "", arc)
     serious = [i for i in final_check["issues"] if is_serious(i)]
     rejected = bool(serious) or final_check["score"] < 0.25
     return {"arc": arc["id"], "script": final, "check": final_check, "brief": brief.data,

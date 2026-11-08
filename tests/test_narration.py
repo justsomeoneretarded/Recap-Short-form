@@ -145,3 +145,10 @@ def test_long_pauses_are_shortened_and_the_voice_is_untouched(tmp_path):
     assert abs(len(tight) / rate - (0.05 + .5 + KEEP_PAUSE + .6 + .15 + .4 + 0.05)) < 0.05
     # word times follow: the third word started at 2.35 s in the take
     assert abs(shift_times(2.35, removed) - (0.05 + .5 + KEEP_PAUSE + .6 + .15)) < 0.05
+
+
+def test_hook_beat_uses_the_scene_it_describes_as_a_flash_forward():
+    from shorts_pipeline.narration import voice_beats
+    beats = voice_beats({"script": {"hook": "His friend's phone rings.", "hook_scene": 2,
+                                    "beats": [{"scene": 0, "kind": "narration", "text": "It starts with a body."}]}})
+    assert beats[0]["scene"] == 2 and beats[0]["flash_forward"] and beats[1]["scene"] == 0

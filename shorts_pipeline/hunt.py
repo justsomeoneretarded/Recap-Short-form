@@ -18,6 +18,7 @@ how many clean scene uploads the first searches find.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -188,6 +189,32 @@ class Hunt:
         return confirmed, covered
 
 
+ACTION = re.compile(r"\b(crime|attack|ambush|kill|killing|murder|fight|shoot|shootout|stab|chase|escape|rescue|"
+                    r"break[- ]in|theft|steal|explosion|assault|hit|inciting|breach|gunfight)", re.I)
+
+
+def script_rank(story: dict, have: set) -> float:
+    """How good a script will look on screen with the footage found: share of its scenes with footage,
+    minus a heavy cost for each turning-point ACTION scene without footage (a story that has to talk
+    about its attack instead of showing it), plus a little for the editor's score."""
+    beats = story.get("beats") or []
+    if not beats:
+        return 0.0
+    share = sum(1 for i in range(len(beats)) if i in have) / len(beats)
+    lost_action = sum(1 for i, b in enumerate(beats) if i not in have
+                      and ACTION.search(f"{b.get('role', '')} {b.get('what_we_see', '')}"))
+    editor = float((story.get("editor") or {}).get("score") or 6)
+    return round(10 * share - 3 * lost_action + 0.3 * editor, 2)
+
+
+def rank_results(results: list[dict], wanted: int) -> list[dict]:
+    """Usable scripts best first (only the best `wanted` stay usable); unusable ones after them."""
+    usable = sorted((r for r in results if r["ok"]), key=lambda r: (-r["rank"], r["n"]))
+    for r in usable[wanted:]:
+        r["ok"] = False
+    return usable + [r for r in results if r not in usable]
+
+
 def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *, length: float, wanted: int,
         screen, footage: str = "auto", use_whisper: bool = True, log=_log, hunt: Hunt | None = None) -> dict:
     """Script first → hunt → fallbacks. Returns {'arcs', 'planned', 'found', 'placed', 'screened', 'report'};
@@ -213,10 +240,16 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
     rounds = 1 if footage == "plenty" else 2
     results = []
     for n, story in enumerate(planned):
-        if sum(1 for r in results if r["ok"]) >= wanted:
+        # Spare scripts are hunted only while the scripts so far miss scenes; then the best ones win.
+        if sum(1 for r in results if r["ok"] and r["complete"]) >= wanted:
             break
         confirmed, covered = hunt.footage_for(story, rounds=rounds)
-        results.append({"n": n, "confirmed": confirmed, "ok": len(covered | set(confirmed)) >= 3})
+        have = covered | set(confirmed)
+        results.append({"n": n, "confirmed": confirmed, "ok": len(have) >= 3,
+                        "complete": len(have) >= len(story["beats"]), "rank": script_rank(story, have)})
+    results = rank_results(results, wanted)
+    for r in results:
+        log(f"script {r['n'] + 1} '{planned[r['n']]['title']}': rank {r['rank']}{'' if r['ok'] else ' (too few scenes)'}")
     arcs, screened = _arcs(hunt, planned, results, length, screen)
     report["path"] = "script"
     if not arcs and hunt.found["candidates"]:

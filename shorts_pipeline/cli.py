@@ -107,6 +107,27 @@ def run_research(movie: str, workdir: Path, output: Path | None = None) -> dict:
     return result
 
 
+LIGHT_ONLY = ("Gemini's smart models have used their free daily limit (only the light model is left, which writes "
+              "weak scripts). Nothing was made. Run again after 08:00 UTC, when Google resets the free limits.")
+
+
+def quota_gate(google) -> str:
+    """Stop a run at the start when only the light Gemini model is left: a Short written by it is not worth
+    an hour of machines. Returns the smart model that answered."""
+    from . import gemini as gem
+    if not hasattr(google, 'smart_ready'):
+        return 'unknown'
+    try:
+        smart = google.smart_ready()
+    except gem.GeminiUnavailable as exc:  # model list unreachable: let the run use its fallbacks
+        print(f"[discover] quota check skipped: {str(exc)[:120]}", file=sys.stderr, flush=True)
+        return 'unknown'
+    if smart is None:
+        print(f"::error::{LIGHT_ONLY}", flush=True)
+        raise SystemExit(LIGHT_ONLY)
+    return smart
+
+
 def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_whisper: bool = True,
                  screen: int = 0, length: float = 150) -> dict:
     """Movie name → ranked, placed clip list (clips.json) plus a short summary."""
@@ -133,6 +154,9 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
     log = lambda m: print(f"[discover] {m}", file=sys.stderr, flush=True)  # noqa: E731
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    if google is not None and os.environ.get('SHORTS_ALLOW_LIGHT') != '1':
+        smart = quota_gate(google)
+        log(f"smart Gemini model for this run: {smart}")
     from .arcs import attach_dialogue, build_arcs
     from .screening import screen_candidates
     stories, placed, screened, report = None, None, {}, {}

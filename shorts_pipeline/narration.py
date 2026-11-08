@@ -85,7 +85,10 @@ def voice_beats(result: dict) -> list[dict]:
     script = result["script"]
     beats: list[dict] = []
     hook = speakable((script.get("hook") or "").strip())
-    pending: dict | None = {"kind": "narration", "scene": 0, "text": hook, "delivery": "punchy_hook"} if hook else None
+    hook_at = script.get("hook_scene") if isinstance(script.get("hook_scene"), int) and script.get("hook_scene", 0) >= 0 else 0
+    pending: dict | None = {"kind": "narration", "scene": hook_at, "text": hook, "delivery": "punchy_hook"} if hook else None
+    if pending and hook_at:
+        pending["flash_forward"] = True  # the hook shows a later scene first, then the story starts from its cause
     for beat in script.get("beats", []):
         if beat.get("kind") == "dialogue":
             line = result.get("dialogue_lines", {}).get(beat.get("line"))

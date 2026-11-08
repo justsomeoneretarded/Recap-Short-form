@@ -96,3 +96,17 @@ def test_key_moments_get_one_spaced_push_in():
     punched = [s for s in edl["shots"] if s.get("accent") == "punch"]
     assert [s["start"] for s in punched] == [10.0]   # the strong moment; the second is too close in time anyway
     assert edl["accents"] == 1
+
+
+def test_flash_forward_hook_shows_its_scene_first_and_the_scene_still_plays_in_full_later():
+    arc = {"id": "a", "scenes": [{"clip_id": "A", "clip_start": 0.0, "clip_end": 30.0, "peaks": []},
+                                 {"clip_id": "B", "clip_start": 100.0, "clip_end": 130.0, "peaks": []}]}
+    voice = {"beats": [
+        {"id": "b0", "kind": "narration", "scene": 1, "timeline_start": 0.0, "duration": 3.0, "flash_forward": True},
+        {"id": "b1", "kind": "narration", "scene": 0, "timeline_start": 3.0, "duration": 6.0},
+        {"id": "b2", "kind": "narration", "scene": 1, "timeline_start": 9.0, "duration": 6.0}]}
+    shots = e.build_edl(arc, voice, {"A": "a.mp4", "B": "b.mp4"})["shots"]
+    assert shots[0]["clip_id"] == "B" and shots[0]["timeline_start"] == 0.0
+    later = [s for s in shots if s["beat"] == "b2"]
+    hook_end = max(s["end"] for s in shots if s["beat"] == "b0")
+    assert later and later[0]["start"] < hook_end   # the scene plays again from early on, not only after the hook's shots

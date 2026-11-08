@@ -91,3 +91,14 @@ def test_plenty_never_widens(monkeypatch):
     fake = FakeHunt(placeable=[720], found_count=2, footage="plenty")
     run(monkeypatch, fake)
     assert "expand" not in fake.calls
+
+
+def test_a_script_missing_its_attack_scene_loses_to_a_complete_one():
+    from shorts_pipeline.hunt import rank_results, script_rank
+    traitor = {"beats": [{"role": "the inciting crime", "what_we_see": "two men stab her"}] +
+                        [{"role": "talk", "what_we_see": "they talk"}] * 4, "editor": {"score": 6}}
+    miles = {"beats": [{"role": "deadline", "what_we_see": "a gun is handed over"}] * 5, "editor": {"score": 6}}
+    a = {"n": 0, "ok": True, "rank": script_rank(traitor, {1, 2, 3, 4})}   # the hotel killing has no footage
+    b = {"n": 1, "ok": True, "rank": script_rank(miles, {0, 1, 2, 3, 4})}
+    ranked = rank_results([a, b], wanted=1)
+    assert ranked[0]["n"] == 1 and ranked[0]["ok"] and not ranked[1]["ok"]
