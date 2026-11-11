@@ -101,6 +101,8 @@ WRITE THE FULL SCRIPT NOW, like a great narrator (see the style examples):
 - SHAPE (like the reference Shorts): 5-6 beats of about 18-28 seconds each, together at least {seconds} seconds.
   Each beat's narration fills its stretch but stays short: about 45-70 words, never more. Across the Short use at
   least 3 short original movie lines (movie_lines) at the confrontations: they punctuate the story.
+- BRIDGES: every beat after the first opens with how we got there, in a few words ("To find her killer, McCall...",
+  "Days later...", "The phone leads him to..."), so the viewer never jumps between scenes without a link.
 - ARC: hook, setup, escalation, the turn, and a CLIFFHANGER. The story stops before the film's climax: never use
   the final act (the last ~15% of the movie), never show how the final fight or the main conflict ends. End on the
   moment the stakes peak (like a man digging up his guns: the viewer must want to watch the movie).

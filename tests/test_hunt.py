@@ -34,7 +34,7 @@ class FakeHunt(h.Hunt):
         return [Unit(f"u{t}", "u", 0, 40, t - 5, t + 35, 0.5, 1080) for t in self.placeable]
 
 
-def run(monkeypatch, fake, *, confirm=None):
+def run(monkeypatch, fake, *, confirm=None, length=150):
     monkeypatch.setattr(h, "plan_scripts", lambda *a, **k: [script("A"), script("B", (("x", 3000), ("y", 3300), ("z", 3600)))])
     monkeypatch.setattr(st, "general_searches", lambda *a, **k: ["John Wick action"])
     monkeypatch.setattr(st, "likely_uploads", lambda g, story, c, m: {i: [c[i % len(c)]["id"]] for i in range(len(story["beats"]))})
@@ -46,7 +46,7 @@ def run(monkeypatch, fake, *, confirm=None):
         watched.append(sorted(only or []))
         return confirm(story, only) if confirm else {}
     monkeypatch.setattr(st, "confirm_beats", fake_confirm)
-    out = h.run(None, fake.research, None, "", None, "/tmp", length=150, wanted=1, screen=lambda placed, first: {},
+    out = h.run(None, fake.research, None, "", None, "/tmp", length=length, wanted=1, screen=lambda placed, first: {},
                 hunt=fake)
     return out, watched
 
@@ -64,7 +64,7 @@ def test_rare_movie_widens_and_watches_only_the_missing_beats(monkeypatch):
     fake = FakeHunt(placeable=[720], found_count=3)
     confirm = lambda story, only: {i: {"id": f"v{i:010d}", "ok": True, "confidence": 0.9, "start": 2.0, "end": 30.0}
                                    for i in only if i in (1, 2)}
-    out, watched = run(monkeypatch, fake, confirm=confirm)
+    out, watched = run(monkeypatch, fake, confirm=confirm, length=120)   # 3 scenes of 30 s: enough for 120 s
     assert watched[0] == [1, 2, 3]                                       # beat 0 was proven by subtitles
     assert "expand" in fake.calls and "more searches" in fake.calls      # beat 3 still missing → wider hunt
     arc = out["arcs"][0]
@@ -127,7 +127,7 @@ def test_a_script_that_loses_scenes_in_screening_gives_way_to_the_spare_without_
     monkeypatch.setattr(st, "missing_searches", lambda *a, **k: [])
     monkeypatch.setattr(st, "confirm_beats", lambda *a, **k: {})
     screen = lambda placed, first: {"bad": {"accept": False, "reasons": ["burned-in subtitles inside the picture"]}}
-    out = h.run(None, fake.research, None, "", None, "/tmp", length=150, wanted=1, screen=screen, hunt=fake)
+    out = h.run(None, fake.research, None, "", None, "/tmp", length=120, wanted=1, screen=screen, hunt=fake)
     assert plans == [False]                                   # no mash-up re-plan
     assert out["report"]["path"] == "script" and out["arcs"][0]["story"]["title"] == "B"
 
@@ -140,3 +140,11 @@ def test_mash_up_scripts_are_dropped_before_the_hunt(monkeypatch):
     kept = h.plan_scripts(None, {"movie": {"title": "John Wick", "runtime_minutes": 101}}, None, "", 150, 2,
                           log=lambda m: None)
     assert [s["title"] for s in kept] == ["one"]
+
+
+def test_half_a_story_or_too_little_footage_is_never_made(monkeypatch):
+    assert not h.usable({"beats": [{}] * 6}, {0, 1, 2})          # 3 of 6 scenes (run 38)
+    assert h.usable({"beats": [{}] * 6}, {0, 1, 2, 3, 4})
+    fake = FakeHunt(placeable=[720, 1020, 1320])                   # 3 of 4 scenes, about 90 s of footage
+    out, _ = run(monkeypatch, fake, length=150)                    # a 150 s Short needs at least 105 s
+    assert out["arcs"] == []

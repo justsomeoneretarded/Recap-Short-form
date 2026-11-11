@@ -196,6 +196,17 @@ ACTION = re.compile(r"\b(crime|attack|ambush|kill|killing|murder|fight|shoot|sho
                     r"break[- ]in|theft|steal|explosion|assault|hit|inciting|breach|gunfight)", re.I)
 
 
+USABLE_SHARE = 0.7    # a script needs footage for most of its scenes, and footage for most of the requested length
+
+
+def usable(story: dict, have: set) -> bool:
+    """Enough of the story has footage: at least 3 scenes and 70% of them (a 6-scene script needs 5).
+    Half a story makes a short Short full of jumps."""
+    import math
+    n = len(story.get("beats") or [])
+    return len(have) >= max(3, math.ceil(USABLE_SHARE * n))
+
+
 def script_rank(story: dict, have: set) -> float:
     """How good a script will look on screen with the footage found: share of its scenes with footage,
     minus a heavy cost for each turning-point ACTION scene without footage (a story that has to talk
@@ -252,18 +263,19 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
                 break
             confirmed, covered = hunt.footage_for(story, rounds=rounds)
             have = covered | set(confirmed)
-            results.append({"n": n, "confirmed": confirmed, "ok": len(have) >= 3, "scenes_before": len(have),
+            results.append({"n": n, "confirmed": confirmed, "ok": usable(story, have), "scenes_before": len(have),
                             "complete": len(have) >= len(story["beats"]), "rank": script_rank(story, have)})
 
     hunt_scripts(True)
     # Footage counts only once it passes screening: every script with enough scenes is screened and cut,
     # then the best of what really remains wins.
     arcs, screened = _arcs(hunt, planned, results, length, screen)
-    if len(arcs) < wanted and len(results) < len(planned):  # screening cost scenes: hunt the spare scripts too
-        log("screening rejected footage the chosen script needed: hunting the spare scripts")
+    arcs = best_arcs(arcs, planned, wanted, results, screened, log, length)
+    if len(arcs) < wanted and len(results) < len(planned):  # too little left of the scripts so far: the spares
+        log("the scripts so far lack footage (after screening): hunting the spare scripts")
         hunt_scripts(False)
         arcs, screened = _arcs(hunt, planned, results, length, screen)
-    arcs = best_arcs(arcs, planned, wanted, results, screened, log)
+        arcs = best_arcs(arcs, planned, wanted, results, screened, log, length)
     report["path"] = "script"
     if not arcs and hunt.found["candidates"]:
         # Every script lacked footage: plan from the footage that exists instead.
@@ -278,10 +290,10 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
         results = []
         for n, story in enumerate(replanned):
             confirmed, covered = hunt.footage_for(story, rounds=0)
-            results.append({"n": n, "confirmed": confirmed, "ok": len(covered | set(confirmed)) >= 3,
+            results.append({"n": n, "confirmed": confirmed, "ok": usable(story, covered | set(confirmed)),
                             "scenes_before": len(covered | set(confirmed))})
         arcs, screened = _arcs(hunt, replanned, results, length, screen)
-        arcs = best_arcs(arcs, replanned, wanted, results, screened, log)
+        arcs = best_arcs(arcs, replanned, wanted, results, screened, log, length)
         planned = replanned
     if not arcs:
         report["path"] = "scene-by-scene (no story had footage)"
@@ -295,8 +307,10 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
             "report": report}
 
 
-def best_arcs(arcs: list[dict], stories: list[dict], wanted: int, results: list[dict], screened: dict, log) -> list[dict]:
+def best_arcs(arcs: list[dict], stories: list[dict], wanted: int, results: list[dict], screened: dict, log,
+              length: float = 0.0) -> list[dict]:
     """Arcs ranked by the scenes that survived screening (a missing action scene costs most); the best `wanted`.
+    An arc with too few of its scenes left, or with footage for under 70% of the requested length, is dropped.
     Logs, per script, its scenes before and after screening and what screening rejected."""
     keep = [r for r in results if r["ok"]]
     rejected = {cid: "; ".join(row.get("reasons") or ["rejected"]) for cid, row in (screened or {}).items()
@@ -310,13 +324,20 @@ def best_arcs(arcs: list[dict], stories: list[dict], wanted: int, results: list[
         names = {s["beat"]["name"] for s in arc["scenes"]}
         have = {i for i, b in enumerate(story["beats"]) if b["name"] in names}
         rank = script_rank(story, have)
-        scored.append((rank, r["n"], arc))
+        footage = sum(sc["clip_end"] - sc["clip_start"] for sc in arc["scenes"])
         log(f"script {r['n'] + 1} '{story['title']}': {r.get('scenes_before', '?')} scenes found, "
-            f"{len(arc['scenes'])} after screening, rank {rank}")
+            f"{len(arc['scenes'])} after screening, {footage:.0f} s of footage, rank {rank}")
+        if not usable(story, have):
+            log(f"script {r['n'] + 1}: too few of its scenes left after screening")
+            continue
+        if length and footage < USABLE_SHARE * length:
+            log(f"script {r['n'] + 1}: footage for only {footage:.0f} s of a {length:.0f} s Short")
+            continue
+        scored.append((rank, r["n"], arc))
     for r in keep:
         if not any(n == r["n"] for _, n, _ in scored):
             log(f"script {r['n'] + 1} '{stories[r['n']]['title']}': {r.get('scenes_before', '?')} scenes found, "
-                f"under 3 after screening")
+                f"too few left after screening")
     if rejected:
         log("screening rejected: " + "; ".join(f"{cid}: {why}" for cid, why in list(rejected.items())[:8]))
     scored.sort(key=lambda row: (-row[0], row[1]))

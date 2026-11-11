@@ -596,17 +596,28 @@ def _picture_edit(arc: dict, voiceover: dict, footage: dict, cuts: dict, similar
         sheets = gem.frame_sheets(arc, footage, temp)
         if not sheets:
             return {}, [], []
-        picks = gem.pick_frames(google, arc, voiceover, slots, sheets)
+        picks = _scene_picks(google, arc, voiceover, slots, sheets, footage, temp)
         director = gem.picks_to_director(picks, slots)
         if not director:
             return {}, [], []
         edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
-        checked = gem.check_cuts(google, voiceover, slots, edl, footage, temp)
+        try:
+            checked = gem.check_cuts(google, voiceover, slots, edl, footage, temp)
+        except gem.GeminiUnavailable as exc:  # the picks stand; only the second look is missing
+            print(f'No cut check: {str(exc)[:120]}', file=sys.stderr)
+            checked = {}
         weak = {sid: picks[sid] for sid, row in checked.items()
                 if sid in picks and (row['match'] < 6 or not picks[sid]['shown'])}
         fixed = []
         if weak:
-            again = gem.pick_frames(google, arc, voiceover, slots, sheets, only=set(weak), avoid=weak)
+            try:
+                scene_of = {b['id']: b.get('scene') for b in voiceover.get('beats') or []}
+                needed = {scene_of.get(sid.split('#')[0]) for sid in weak}
+                again = gem.pick_frames(google, arc, voiceover, slots, [x for x in sheets if x['scene'] in needed],
+                                        only=set(weak), avoid=weak)
+            except gem.GeminiUnavailable as exc:
+                print(f'No re-pick: {str(exc)[:120]}', file=sys.stderr)
+                again = {}
             better = {sid: row for sid, row in again.items() if row['match'] > weak[sid]['match']}
             if better:
                 picks.update(better)
@@ -639,6 +650,31 @@ def _picture_edit(arc: dict, voiceover: dict, footage: dict, cuts: dict, similar
         return {}, [], []
     finally:
         shutil.rmtree(temp, ignore_errors=True)
+
+
+def _scene_picks(google, arc: dict, voiceover: dict, slots: dict, sheets: list, footage: dict, work: Path) -> dict:
+    """Gemini picks the seconds under every clause one scene at a time (a request per scene stays small);
+    a scene that fails is tried once more with half the frames, and a scene that still fails keeps the
+    edit's own choice for its clauses instead of losing the picture edit for the whole Short."""
+    from . import gemini as gem
+    scene_of = {b['id']: b.get('scene') for b in voiceover.get('beats') or []}
+    picks: dict = {}
+    for sheet in sheets:
+        i = sheet['scene']
+        mine = {f'{beat_id}#{k}' for beat_id, beat_slots in slots.items() if scene_of.get(beat_id) == i
+                for k in range(len(beat_slots))}
+        if not mine:
+            continue
+        for attempt, use in enumerate(([sheet], None)):
+            try:
+                if use is None:  # second try: half the frames
+                    use = gem.frame_sheets(arc, footage, work, max_frames=gem.MAX_FRAMES_PER_SCENE // 2, only=i)
+                picks.update(gem.pick_frames(google, arc, voiceover, slots, use, only=mine))
+                break
+            except gem.GeminiUnavailable as exc:
+                print(f'Scene {i}: no picture pick ({"retrying smaller" if attempt == 0 else "edit picks"}): '
+                      f'{str(exc)[:100]}', file=sys.stderr)
+    return picks
 
 
 def _critic_fixes(arc: dict, voiceover: dict, edl: dict) -> dict:

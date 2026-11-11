@@ -149,15 +149,34 @@ def test_picture_edit_repicks_weak_clauses_once(monkeypatch, tmp_path):
     monkeypatch.setattr(gem, "frame_sheets", lambda *a, **k: [{"scene": 0, "times": [1.0], "image": None}])
 
     def pick(google, arc_, voice_, slots, sheets, only=None, avoid=None):
-        calls.append(sorted(only) if only else "all")
-        ids = sorted(only) if only else [f"b0#{k}" for k in range(len(slots["b0"]))]
-        base = 30.0 if only else 5.0
+        calls.append("repick" if avoid else "scene")
+        ids = sorted(only)
+        base = 30.0 if avoid else 5.0
         return {sid: {"start": base + 4 * n, "end": base + 4 * n + (slots["b0"][int(sid[-1])]["end"] - slots["b0"][int(sid[-1])]["start"]),
-                      "match": 9 if only else 7, "shown": True} for n, sid in enumerate(ids)}
+                      "match": 9 if avoid else 7, "shown": True} for n, sid in enumerate(ids)}
     monkeypatch.setattr(gem, "pick_frames", pick)
     monkeypatch.setattr(gem, "check_cuts", lambda *a, **k: {"b0#0": {"match": 3, "problem": "no trunk"},
                                                            "b0#1": {"match": 8, "problem": ""}})
     director, report, fixed = cli._picture_edit(arc, voice, {"A": "a.mp4"}, {}, None, tmp_path / "a")
-    assert calls == ["all", ["b0#0"]] and fixed == ["b0"]
+    assert calls == ["scene", "repick"] and fixed == ["b0"]       # one request per scene, then one re-pick
     assert director["b0"][0][0] == 30.0                         # the weak clause got its better stretch
     assert {r["clause"]: r["match"] for r in report}["b0#0"] == 9
+
+
+def test_one_scene_failing_keeps_the_picture_edit_of_the_others(monkeypatch, tmp_path):
+    from shorts_pipeline import cli
+    from shorts_pipeline import gemini as gem
+    voice = {"beats": [{"id": "b0", "scene": 0}, {"id": "b1", "scene": 1}]}
+    slots = {"b0": [{"start": 0, "end": 3, "text": "a"}], "b1": [{"start": 0, "end": 3, "text": "b"}]}
+    tried = []
+
+    def pick(google, arc_, voice_, slots_, sheets, only=None, avoid=None):
+        tried.append(sorted(only))
+        if "b0#0" in only:
+            raise gem.GeminiUnavailable("network: read timed out")
+        return {"b1#0": {"start": 1.0, "end": 4.0, "match": 8, "shown": True}}
+    monkeypatch.setattr(gem, "pick_frames", pick)
+    monkeypatch.setattr(gem, "frame_sheets", lambda *a, **k: [{"scene": k.get("only"), "times": [], "image": None}])
+    picks = cli._scene_picks(object(), {}, voice, slots, [{"scene": 0}, {"scene": 1}], {}, tmp_path)
+    assert tried == [["b0#0"], ["b0#0"], ["b1#0"]]                 # scene 0 retried smaller, then given up
+    assert list(picks) == ["b1#0"]

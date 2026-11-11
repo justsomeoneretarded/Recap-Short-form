@@ -292,3 +292,12 @@ def test_a_numbered_word_is_not_a_name_and_one_odd_word_never_rejects_a_script()
         {"scene": 0, "kind": "narration", "text": "John fights while Zorblax watches."}]}
     issues = w.check(odd, b)["issues"]
     assert any(i.startswith("one word not in the brief") for i in issues) and not any(w.is_serious(i) for i in issues)
+
+
+def test_cleanup_drops_a_sentence_repeated_in_other_words():
+    b = brief()
+    script = {"title": "t", "hook": "h", "ending": "reveal", "beats": [
+        {"scene": 0, "kind": "narration", "text": "John stands outside the library and waits for the killers."},
+        {"scene": 1, "kind": "narration", "text": "John stands outside the library, waiting for the killers. The doctor runs."}]}
+    texts = [x["text"] for x in w.cleanup(script, b)["beats"]]
+    assert texts[1] == "The doctor runs."

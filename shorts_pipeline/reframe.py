@@ -142,6 +142,10 @@ def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> 
                 return {"mode": "track", "x_start": round(centre, 4), "x_end": round(centre, 4), "window": round(win, 4),
                         "reason": "follows the main face"}
             rows = output_aspect < 0.8
+            if rows:  # 9:16: a split-screen of two squashed tiles reads badly on a phone; follow the bigger face
+                centre = min(1 - win / 2, max(win / 2, float(np.median(biggest))))
+                return {"mode": "track", "x_start": round(centre, 4), "x_end": round(centre, 4), "window": round(win, 4),
+                        "reason": "two people far apart: follows the bigger face (no split-screen in 9:16)"}
             frac = window_fraction(active_aspect, STACK_TILE_ASPECT if rows else SIDE_TILE_ASPECT)
             clamp = lambda c: round(min(1 - frac / 2, max(frac / 2, c)), 4)  # noqa: E731
             pairs = [p for p in people if len(p) >= 2]

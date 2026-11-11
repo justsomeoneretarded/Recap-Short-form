@@ -141,7 +141,7 @@ class Client:
     def _http(self, method: str, url: str, **kwargs):
         headers = {"x-goog-api-key": self.key, **kwargs.pop("headers", {})}
         try:
-            return self.session.request(method, url, headers=headers, timeout=kwargs.pop("timeout", 300), **kwargs)
+            return self.session.request(method, url, headers=headers, timeout=kwargs.pop("timeout", 600), **kwargs)
         except Exception as exc:  # noqa: BLE001 - network trouble means "use the fallback"
             raise GeminiUnavailable(f"network: {str(exc)[:160]}") from exc
 
@@ -945,8 +945,8 @@ def critique_edit(gemini: Client, arc: dict, voiceover: dict, edl: dict, keep_ab
 # ======================================================================== the real pictures under every clause
 
 SHEET_COLUMNS = 6
-TILE_WIDTH = 256
-MAX_FRAMES_PER_SCENE = 60
+TILE_WIDTH = 192
+MAX_FRAMES_PER_SCENE = 30   # a sheet per scene stays small enough to answer in well under a minute
 
 
 def _frames(video: str, start: float, end: float, step: float, folder: Path) -> list[tuple[float, Path]]:
@@ -981,17 +981,19 @@ def _sheet(frames: list[tuple[float, Path]], label: str):
     return sheet
 
 
-def frame_sheets(arc: dict, footage: dict, work: Path) -> list[dict]:
+def frame_sheets(arc: dict, footage: dict, work: Path, *, max_frames: int = MAX_FRAMES_PER_SCENE,
+                 only: int | None = None) -> list[dict]:
     """Per scene of the story: labelled contact sheets of its footage, one frame per second or so
     (longer scenes sample more sparsely). [{'scene', 'times', 'image'}]; [] when no frame could be made."""
     sheets = []
     for i, scene in enumerate(arc.get("scenes") or []):
         video = footage.get(scene["clip_id"])
-        if not video:
+        if not video or (only is not None and i != only):
             continue
         span = scene["clip_end"] - scene["clip_start"]
-        step = max(1.0, span / MAX_FRAMES_PER_SCENE)
-        frames = _frames(video, scene["clip_start"], scene["clip_end"], step, Path(work) / f"scene{i}")
+        step = max(1.0, span / max(1, max_frames))
+        folder = Path(work) / f"scene{i}-{max_frames}"
+        frames = _frames(video, scene["clip_start"], scene["clip_end"], step, folder)
         image = _sheet(frames, f"SCENE {i}: {str(scene.get('clip_title', ''))[:60]}")
         if image is not None:
             sheets.append({"scene": i, "times": [t for t, _ in frames], "image": image})

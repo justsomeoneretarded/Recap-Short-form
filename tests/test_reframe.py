@@ -73,10 +73,11 @@ def test_no_shape_uses_blurred_bars(monkeypatch):
     import numpy as np
     from shorts_pipeline import reframe as r
     frames = [np.zeros((270, 480, 3), dtype=np.uint8)] * 4
-    # two equal faces far apart → stacked; a clearly bigger face → followed
+    # two equal faces far apart → 9:16 follows one face (no split-screen), square shows both side by side;
+    # a clearly bigger face → followed
     monkeypatch.setattr(r, "faces", lambda f: [(0.10, 0.3, 0.22, 0.5), (0.78, 0.3, 0.90, 0.5)])
     plan = r.plan_shot(frames, (0, 0, 1, 1), 1080 / 1920)
-    assert plan["mode"] == "stack" and plan["x_top"] < 0.5 < plan["x_bottom"]
+    assert plan["mode"] == "track"
     square = r.plan_shot(frames, (0, 0, 1, 1), 1.0)  # square: the two people side by side, no blur
     assert square["mode"] == "stack" and square["layout"] == "columns"
     monkeypatch.setattr(r, "faces", lambda f: [(0.10, 0.2, 0.30, 0.6), (0.80, 0.4, 0.86, 0.5)])

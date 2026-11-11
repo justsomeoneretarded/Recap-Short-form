@@ -66,3 +66,9 @@ def test_short_clips_are_shown_whole_long_ones_around_the_scene():
     scene = {"clip_start": 400.0, "clip_end": 420.0}
     assert al.window(scene, 240.0) == (0.0, 240.0)
     assert al.window(scene, 1800.0) == (340.0, 480.0)
+
+
+def test_a_rewrite_that_repeats_another_sentence_is_refused():
+    others = ["McCall stands outside the house and waits.", "Dave smiles at him."]
+    assert not al.acceptable("Dave smiles at him.", "McCall stands outside the house, waiting.", set(), others)
+    assert al.acceptable("Dave smiles at him.", "Dave looks down at the phone.", set(), others)

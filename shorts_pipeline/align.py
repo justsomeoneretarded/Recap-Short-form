@@ -62,9 +62,22 @@ def scene_sentences(script: dict) -> dict[int, list[tuple[int, int, str]]]:
     return out
 
 
-def acceptable(original: str, rewrite: str, allowed: set[str]) -> bool:
-    """A rewrite keeps the script's facts: no new names, no quotes, about the same length."""
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z']+", (text or "").lower()) if len(w) > 2}
+
+
+def too_similar(a: str, b: str, limit: float = 0.6) -> bool:
+    """Two sentences that share most of their words: the narrator would seem to repeat himself."""
+    wa, wb = _words(a), _words(b)
+    return bool(wa and wb) and len(wa & wb) / min(len(wa), len(wb)) >= limit
+
+
+def acceptable(original: str, rewrite: str, allowed: set[str], others: list[str] | None = None) -> bool:
+    """A rewrite keeps the script's facts: no new names, no quotes, about the same length, and it does not
+    repeat another sentence of the script."""
     rewrite = " ".join(str(rewrite or "").split())
+    if any(too_similar(rewrite, other) for other in others or [] if other != original):
+        return False
     if not rewrite or re.search(r"[\"“”]", rewrite):
         return False
     n_old, n_new = len(original.split()), len(rewrite.split())
@@ -159,7 +172,9 @@ def align_story(gemini, arc: dict, result: dict, footage: dict, work: Path, *, p
                 continue
             b, k, original = sentences[n]
             rewrite = " ".join(str(s.get("rewrite") or "").split())
-            if acceptable(original, rewrite, allowed):
+            everything = [x for beat in script["beats"] if beat.get("kind") != "dialogue"
+                          for x in _sentences(beat.get("text") or "")] + [script.get("hook") or ""]
+            if acceptable(original, rewrite, allowed, everything):
                 beat = script["beats"][b]
                 parts_ = _sentences(beat["text"])
                 if k < len(parts_) and parts_[k] == original:

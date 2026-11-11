@@ -452,6 +452,12 @@ def _key(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9']+", text.lower()))
 
 
+def _near_duplicate(a: str, b: str) -> bool:
+    wa = {w for w in re.findall(r"[a-z']+", a.lower()) if len(w) > 2}
+    wb = {w for w in re.findall(r"[a-z']+", b.lower()) if len(w) > 2}
+    return len(wa) >= 4 and len(wb) >= 4 and len(wa & wb) / min(len(wa), len(wb)) > 0.8
+
+
 def cleanup(script: dict, brief: Brief) -> dict:
     """Mechanical fixes that need no model: at most 3 playable movie lines, no quotation marks in
     narration, and the title never read out as narration."""
@@ -471,6 +477,8 @@ def cleanup(script: dict, brief: Brief) -> dict:
             kept = []
             for sentence in _sentences_of(text):
                 key = sentence.lower()
+                if any(_near_duplicate(sentence, earlier) for earlier in seen):
+                    continue  # the same sentence in other words: the narrator would repeat himself
                 if key in seen or (hook_key and _key(sentence) == hook_key) or (title and key.rstrip(".!") == title) \
                         or copies_dialogue(sentence, brief.lines):  # the hook is already spoken first
                     continue
