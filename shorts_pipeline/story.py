@@ -20,6 +20,7 @@ from .locate import MovieTranscript
 MIN_BEATS, MAX_BEATS = 3, 6
 WORDS_PER_SECOND = 2.9   # narration over a beat's footage (≈205 wpm, leaving room for movie lines and silences)
 MIN_BEAT_SECONDS, MAX_BEAT_SECONDS = 8.0, 45.0
+ENDING_SHARE = 0.85   # beats starting after this share of the runtime (the climax, the ending) are dropped
 SUBTITLE_CHARS = 120_000   # whole-movie dialogue timeline (Gemini reads ~1M tokens)
 
 STORY_SCHEMA = {"type": "object", "properties": {"stories": {"type": "array", "items": {"type": "object", "properties": {
@@ -97,9 +98,12 @@ WRITE THE FULL SCRIPT NOW, like a great narrator (see the style examples):
 - hooks: 5 different opening lines (at most 14 words, a concrete visible act and the question it raises); hook: the
   strongest of them, spoken first. hook_beat: the index (0 = first) of the beat whose picture the hook describes;
   when it is a later beat, that moment is shown first as a flash-forward and the story then starts from beat 0.
-- LENGTH: the Short is about {seconds} seconds. The beats' stretches together must last at least that long, and
-  each beat's narration must fill its stretch (a 30-second beat gets about 75-85 words). A script far shorter
-  than this makes a Short far shorter than asked.
+- SHAPE (like the reference Shorts): 5-6 beats of about 18-28 seconds each, together at least {seconds} seconds.
+  Each beat's narration fills its stretch but stays short: about 45-70 words, never more. Across the Short use at
+  least 3 short original movie lines (movie_lines) at the confrontations: they punctuate the story.
+- ARC: hook, setup, escalation, the turn, and a CLIFFHANGER. The story stops before the film's climax: never use
+  the final act (the last ~15% of the movie), never show how the final fight or the main conflict ends. End on the
+  moment the stakes peak (like a man digging up his guns: the viewer must want to watch the movie).
 - narration per beat: what the narrator says over that beat's footage, about {words_per_second} words per second of
   the beat. Present tense, third person, short spoken sentences, cause and effect (but, so, then). Name what is ON
   SCREEN in that beat; explain only what the picture cannot (who someone is, why it matters) in a few words.
@@ -185,6 +189,8 @@ def clean_stories(raw: dict, runtime: float) -> list[dict]:
                 start, end = start - pad, end + pad
             end = min(end, start + MAX_BEAT_SECONDS * 2)  # long stretches are trimmed to the action later
             start, end = max(0.0, start), min(runtime or end, end)
+            if runtime and start > ENDING_SHARE * runtime:
+                continue  # the film's climax and ending are never shown: the Short ends on a cliffhanger
             if end - start < 4 or any(min(end, e) - max(start, s) > 0.5 * (end - start) for s, e in used):
                 continue  # broken, or the same stretch as another story's beat
             cold = bool(story.get("cold_open")) and len(beats) == 1

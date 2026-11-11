@@ -107,6 +107,14 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
     duration = edl["duration"]
     add("length", "pass" if 0.6 * target_seconds <= duration <= target_seconds + 5 else "warn",
         f"{duration:.0f} s (requested {target_seconds:.0f} s)")
+    aligned = voiceover.get("alignment") or []
+    if aligned:  # what was changed before voicing so the words match the footage
+        rewrites = sum(1 for n in aligned if n.startswith("rewritten"))
+        moved = sum(1 for n in aligned if n.startswith("scene") and "moved" in n)
+        missing = [n for n in aligned if "does not show" in n or n.startswith("not shown")]
+        add("script fitted to the footage", "pass" if not missing else "warn",
+            f"{rewrites} sentences rewritten to what is on screen, {moved} scenes moved to the right seconds"
+            + (f"; still unmatched: {' | '.join(m[:70] for m in missing[:3])}" if missing else ""))
     picture = edl.get("picture_check") or []
     if picture:  # Gemini judged the real frames under every clause
         scores = [r["match"] for r in picture if r.get("match")]

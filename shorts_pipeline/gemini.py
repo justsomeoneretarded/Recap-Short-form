@@ -777,8 +777,24 @@ age_restriction_risk: would YouTube likely age-restrict this (graphic gore, sexu
 the audio or captions)? low, medium or high, with age_reason. best_part: the strongest moment."""
 
 
+def proxy(video: Path, folder: Path | None = None) -> Path:
+    """A small 480p copy for Gemini to watch: uploads in seconds instead of timing out."""
+    import subprocess
+    video = Path(video)
+    target = Path(folder or video.parent) / f"{video.stem}-480p.mp4"
+    result = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", "scale=-2:480,fps=30",
+                             "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-c:a", "aac", "-b:a", "64k",
+                             str(target)], capture_output=True)
+    return target if result.returncode == 0 and target.exists() else video
+
+
 def critique(gemini: Client, video: Path, title: str, script_text: str) -> dict:
-    record = gemini.upload(Path(video))
+    small = proxy(Path(video))
+    try:
+        record = gemini.upload(small)
+    finally:
+        if small != Path(video):
+            small.unlink(missing_ok=True)
     try:
         reply = gemini.generate("smart", [
             {"fileData": {"fileUri": record["uri"], "mimeType": record.get("mimeType", "video/mp4")}},
@@ -1031,8 +1047,10 @@ def pick_frames(gemini: Client, arc: dict, voiceover: dict, slots: dict[str, lis
         "scene. Looking at the contact sheets, choose for every clause the stretch of its scene (start and end in "
         "clip seconds, read from the tile labels) that SHOWS what the clause says: the person, the action, the "
         "object. The stretch should last about the clause's seconds. Within a scene, clauses usually move forward in "
-        "time; never give two clauses the same seconds unless nothing else fits. match: 1-10, how well your stretch "
-        "shows the words. shown: false when nothing in the scene shows it (then pick the closest stretch)." + note +
+        "time; never give two clauses the same seconds unless nothing else fits. match, strictly: 10 = the named "
+        "person AND the action or object are on screen; 6 = the right person doing something else; 3 = same scene, "
+        "unrelated moment; 1 = nothing related. Most clauses are NOT 10. shown: false when nothing in the scene "
+        "shows it (then pick the closest stretch)." + note +
         "\nCLAUSES:\n" + json.dumps(rows, ensure_ascii=False))})
     reply = gemini.generate("smart", parts, schema=PICK_SCHEMA, temperature=0.2, low_media=True)
     bounds = {i: (sc["clip_start"], sc["clip_end"]) for i, sc in enumerate(arc.get("scenes") or [])}
@@ -1052,8 +1070,11 @@ def pick_frames(gemini: Client, arc: dict, voiceover: dict, slots: dict[str, lis
         if not math.isfinite(start) or hi - start < 0.5:
             continue
         end = min(hi, start + length)  # as long as the clause (shorter only where the scene ends)
-        out[sid] = {"start": round(start, 2), "end": round(end, 2), "match": int(row.get("match") or 0),
-                    "shown": row.get("shown") is not False}
+        shown = row.get("shown") is not False
+        match = int(row.get("match") or 0)
+        out[sid] = {"start": round(start, 2), "end": round(end, 2),
+                    "match": match if shown else min(match, 3),  # nothing shows it: it cannot match well
+                    "shown": shown}
     return out
 
 
@@ -1069,8 +1090,8 @@ def picks_to_director(picks: dict[str, dict], slots: dict[str, list[dict]]) -> d
 
 
 CHECK_SCHEMA_CUTS = {"type": "object", "properties": {"slots": {"type": "array", "items": {"type": "object", "properties": {
-    "id": {"type": "string"}, "match": {"type": "integer"}, "problem": {"type": "string"}},
-    "required": ["id", "match"]}}}, "required": ["slots"]}
+    "id": {"type": "string"}, "sees": {"type": "string"}, "match": {"type": "integer"}, "problem": {"type": "string"}},
+    "required": ["id", "sees", "match"]}}}, "required": ["slots"]}
 
 
 def check_cuts(gemini: Client, voiceover: dict, slots: dict[str, list[dict]], edl: dict, footage: dict,
@@ -1103,9 +1124,13 @@ def check_cuts(gemini: Client, voiceover: dict, slots: dict[str, list[dict]], ed
             for sid, shots in by_slot.items()]
     reply = gemini.generate("light", [
         {"text": "Shots of a movie-recap Short, before rendering (tile label = shot number):"}, _image_part(sheet),
-        {"text": "For every clause of narration below, score 1-10 how well its shots show what it says at that moment "
-                 "(the person, the action, the object). problem: what is wrong, if anything.\nCLAUSES:\n" +
+        {"text": "For every clause of narration below: first write in 'sees' what its shots actually show (at most "
+                 "8 words, only what is visible). Then score, strictly against what you wrote: 10 = the named person "
+                 "AND the action or object are on screen; 6 = the right person doing something else; 3 = same scene, "
+                 "unrelated moment; 1 = nothing related. Most clauses are NOT 10. problem: what is wrong, if anything."
+                 "\nCLAUSES:\n" +
                  json.dumps(rows, ensure_ascii=False)}], schema=CHECK_SCHEMA_CUTS, temperature=0.1, low_media=True)
     known = set(by_slot)
-    return {str(r.get("id")): {"match": int(r.get("match") or 0), "problem": str(r.get("problem") or "")[:160]}
+    return {str(r.get("id")): {"match": int(r.get("match") or 0), "sees": str(r.get("sees") or "")[:80],
+                               "problem": str(r.get("problem") or "")[:160]}
             for r in reply.get("slots") or [] if str(r.get("id")) in known}

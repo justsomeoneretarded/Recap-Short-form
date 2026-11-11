@@ -355,8 +355,16 @@ def _voice_story(result: dict, arcs: dict, screened: dict, youtube, output: Path
                 path = None
         if path:
             footage[scene['clip_id']] = path
-    voiceover = synthesize_voiceover(result, footage, arc, narrator, workdir, model)
     folder = output/result['arc']
+    folder.mkdir(parents=True, exist_ok=True)
+    # Before anything is voiced: each scene's footage is checked and every sentence fitted to the picture.
+    from . import gemini as gem
+    from .align import align_story
+    arc, result, alignment = align_story(gem.client(), arc, result, footage, workdir/'align')
+    write_json(folder/'arc.json', arc)  # the edit plan uses these (possibly corrected) scene windows
+    write_json(folder/'script.json', result['script'])
+    voiceover = synthesize_voiceover(result, footage, arc, narrator, workdir, model)
+    voiceover['alignment'] = alignment
     (folder/'audio').mkdir(parents=True, exist_ok=True)
     for beat in voiceover['beats']:  # bundle audio so another machine can render from this folder
         local = folder/'audio'/f"{beat['id']}{Path(beat['audio_path']).suffix}"
@@ -391,7 +399,7 @@ def run_render(discover: Path, voice: Path, output: Path, workdir: Path, *,
         voiceover = json.loads(path.read_text())
         for beat in voiceover['beats']:
             beat['audio_path'] = str((folder/beat['audio_path']).resolve())
-        arc = arcs[voiceover['arc']]
+        arc = json.loads((folder/'arc.json').read_text()) if (folder/'arc.json').exists() else arcs[voiceover['arc']]
         footage, cuts = {}, {}
         for scene in arc['scenes']:
             clip = screened.get(scene['clip_id'], {}).get('path')
@@ -539,7 +547,8 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
     rows = []
     for path in sorted(voice.glob('*/voiceover.json')):
         voiceover = json.loads(path.read_text())
-        arc = arcs[voiceover['arc']]
+        aligned = path.parent/'arc.json'  # scene windows corrected before voicing
+        arc = json.loads(aligned.read_text()) if aligned.exists() else arcs[voiceover['arc']]
         footage = _footage([s['clip_id'] for s in arc['scenes']], screened, workdir)
         cuts = {s['clip_id']: shot_changes(Path(footage[s['clip_id']]), s['clip_start'], s['clip_end']) for s in arc['scenes']}
         similar = _similarity(arc, voiceover)
@@ -593,7 +602,8 @@ def _picture_edit(arc: dict, voiceover: dict, footage: dict, cuts: dict, similar
             return {}, [], []
         edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
         checked = gem.check_cuts(google, voiceover, slots, edl, footage, temp)
-        weak = {sid: picks[sid] for sid, row in checked.items() if row['match'] < 6 and sid in picks}
+        weak = {sid: picks[sid] for sid, row in checked.items()
+                if sid in picks and (row['match'] < 6 or not picks[sid]['shown'])}
         fixed = []
         if weak:
             again = gem.pick_frames(google, arc, voiceover, slots, sheets, only=set(weak), avoid=weak)
@@ -609,9 +619,13 @@ def _picture_edit(arc: dict, voiceover: dict, footage: dict, cuts: dict, similar
             for k, slot in enumerate(beat_slots_):
                 sid = f'{beat_id}#{k}'
                 if sid in picks:
+                    match = (checked.get(sid) or {}).get('match', picks[sid]['match'])
+                    if not picks[sid]['shown']:
+                        match = min(match, 3)  # nothing in the footage shows it
                     report.append({'clause': sid, 'says': slot['text'][:160], 'seconds': [picks[sid]['start'], picks[sid]['end']],
-                                   'match': (checked.get(sid) or {}).get('match', picks[sid]['match']),
-                                   'shown': picks[sid]['shown'], 'problem': (checked.get(sid) or {}).get('problem', '')})
+                                   'match': match, 'shown': picks[sid]['shown'],
+                                   'sees': (checked.get(sid) or {}).get('sees', ''),
+                                   'problem': (checked.get(sid) or {}).get('problem', '')})
         scores = [r['match'] for r in report if r['match']]
         print(f"Picture edit: {len(report)} clauses placed from the frames, average match "
               f"{sum(scores) / max(1, len(scores)):.1f}/10, {len(weak)} re-picked, "

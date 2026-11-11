@@ -465,3 +465,29 @@ def test_writer_keeps_gemini_while_another_model_is_left():
     writer = g.FallbackWriter(primary, Local)
     assert writer.chat("s", "u", {}) == {"local": True}          # this one call falls back
     assert writer.chat("s", "u", {}) == {"ok": True}             # the next one is Gemini again
+
+
+def test_viewer_review_uploads_a_small_copy(monkeypatch, tmp_path):
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("needs ffmpeg")
+    video = tmp_path / "final.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=60", "-f", "lavfi",
+                    "-i", "sine=frequency=440", "-t", "2", "-shortest", str(video)], check=True)
+    uploaded = {}
+
+    class Fake:
+        def upload(self, path):
+            uploaded["height"] = int(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                                     "stream=height", "-of", "csv=p=0", str(path)],
+                                                    capture_output=True, text=True).stdout.strip())
+            return {"uri": "u", "name": "n"}
+
+        def generate(self, *a, **k):
+            return {"scores": {"overall": 7}, "problems": []}
+
+        def delete(self, record):
+            pass
+    g.critique(Fake(), video, "t", "words")
+    assert uploaded["height"] == 480 and not (tmp_path / "final-480p.mp4").exists()

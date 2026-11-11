@@ -271,3 +271,11 @@ def test_a_scene_is_widened_until_its_narration_fits_the_footage():
     assert st.fit_to_narration(100.0, 110.0, 90.0, 200.0, beat_) == (100.0, 131.0)   # forward first
     assert st.fit_to_narration(100.0, 110.0, 80.0, 112.0, beat_) == (81.0, 112.0)    # then backward
     assert st.fit_to_narration(100.0, 140.0, 90.0, 200.0, beat_) == (100.0, 140.0)   # already long enough
+
+
+def test_the_films_ending_is_never_used():
+    raw = {"stories": [{"title": "T", "spine": "", "hook_idea": "", "ending_idea": "", "beats": [
+        beat("a", "10:00", "10:30", "x"), beat("b", "40:00", "40:30", "x"), beat("c", "70:00", "70:30", "x"),
+        beat("finale", "95:00", "95:30", "x")]}], "broad_searches": []}
+    stories = st.clean_stories(raw, runtime=100 * 60)
+    assert [b["name"] for b in stories[0]["beats"]] == ["a", "b", "c"]           # 95 min of 100: the climax
