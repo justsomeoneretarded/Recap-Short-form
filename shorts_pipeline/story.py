@@ -308,6 +308,7 @@ def confirmed_scene(beat: dict, check: dict, clip: dict | None, report: dict | N
         cs, ce = beat["movie_start"] - offset, beat["movie_end"] - offset
         lo, hi = max(cs, gs - 3), min(ce, ge + 3)
         cs, ce = (lo, hi) if hi - lo >= 5 else (gs, ge)  # the plan's times were off: trust what Gemini saw
+        cs, ce = fit_to_narration(cs, ce, gs, ge, beat)
         ms, me, timed = cs + offset, ce + offset, "subtitles"
     else:
         cs, ce, ms, me, timed = gs, ge, beat["movie_start"], beat["movie_end"], "gemini"
@@ -320,6 +321,22 @@ def confirmed_scene(beat: dict, check: dict, clip: dict | None, report: dict | N
             "moments": [m for m in watch.get("moments") or [] if m["end"] > cs and m["start"] < ce],
             "alternates": [], "timed_by": timed, "confirmed": check.get("confidence"),
             "beat": {k: beat.get(k) for k in BEAT_KEYS}}
+
+
+def narration_seconds(beat: dict) -> float:
+    return len(str(beat.get("narration") or "").split()) / WORDS_PER_SECOND
+
+
+def fit_to_narration(start: float, end: float, lo: float, hi: float, beat: dict) -> tuple[float, float]:
+    """Widen [start, end] inside the footage that exists [lo, hi] until the beat's narration fits
+    (forward first: the scene continues; then backward). A scene shorter than what is said over it makes
+    the edit borrow other scenes' pictures, so the words stop matching the picture."""
+    need = min(narration_seconds(beat) + 1.0, MAX_BEAT_SECONDS * 1.5)
+    if end - start >= need:
+        return start, end
+    end = min(hi, start + need)
+    start = max(lo, min(start, end - need))
+    return start, end
 
 
 def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, confirmed: dict | None = None,
@@ -345,6 +362,7 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, 
             if best is None or best_cover < min(6.0, 0.5 * (beat["movie_end"] - beat["movie_start"])):
                 continue
             ms, me = max(best.movie_start, beat["movie_start"]), min(best.movie_end, beat["movie_end"])
+            ms, me = fit_to_narration(ms, me, best.movie_start, best.movie_end, beat)
             offset = best.movie_start - best.clip_start  # movie time = clip time + offset
             cs, ce = ms - offset, me - offset
             scenes.append({"clip_id": best.clip_id, "clip_title": best.clip_title,

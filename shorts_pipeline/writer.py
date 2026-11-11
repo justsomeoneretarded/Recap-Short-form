@@ -173,7 +173,9 @@ def _clean_title(title: str, movie_title: str) -> str:
 COMMON_PROPER = {"english", "american", "mexican", "russian", "spanish", "french", "british", "african", "fbi", "cia",
                  "dea", "doj", "u.s", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
                  "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
-                 "november", "december", "god", "christmas"}
+                 "november", "december", "god", "christmas", "category", "hurricane", "level", "room", "floor",
+                 "chapter", "part", "day", "night", "agent", "detective", "officer", "sergeant", "captain",
+                 "doctor", "mister", "miss", "mrs", "mr", "dr", "internet", "police", "army", "navy", "marines"}
 
 
 def _names(text: str) -> set[str]:
@@ -352,7 +354,11 @@ def check(script: dict, brief: Brief) -> dict:
     sentence_starts = {re.sub(r"['’]s$", "", m.lower()) for m in re.findall(r"(?:^|[.!?]\s+)([A-Z][a-zA-Z'’-]+)", full)}
     unknown = sorted(n for n in _names(full) - brief.allowed_names - sentence_starts - COMMON_PROPER
                      if n not in {"i", "he", "she", "they", "but", "so", "then", "now"})
-    if unknown:
+    numbered = {w.lower() for w in re.findall(r"\b([A-Z][a-z]+)\s+\d", full)}  # "Category 5", "Room 12": not names
+    unknown = [n for n in unknown if n not in numbered]
+    if len(unknown) == 1:  # one odd capitalised word is fixed, never a reason to throw the script away
+        issues.append(f"one word not in the brief: {unknown[0]}")
+    elif unknown:
         issues.append(f"names not in the brief: {', '.join(unknown[:6])}")
     title = (script.get("title") or "").strip()
     if re.search(r"hired to kill|now he'?s the prey|now she'?s the prey", title, re.I):
@@ -511,7 +517,16 @@ def planned_draft(arc: dict, brief: Brief) -> dict | None:
         return None
     beats, played = [], 0
     for i, scene in enumerate(scenes):
-        beats.append({"scene": i, "kind": "narration", "text": scene["beat"]["narration"]})
+        text = scene["beat"]["narration"]
+        budget = brief.budgets.get(i, 0)
+        if budget and len(text.split()) > 1.6 * budget:  # far more words than the footage holds: keep its start
+            kept = []
+            for sentence in _sentences_of(text):
+                if kept and len(" ".join(kept + [sentence]).split()) > 1.3 * budget:
+                    break
+                kept.append(sentence)
+            text = " ".join(kept)
+        beats.append({"scene": i, "kind": "narration", "text": text})
         for quote in scene["beat"].get("movie_lines") or []:
             want = set(re.findall(r"[a-z0-9']+", quote.lower()))
             best = max(((len(want & set(re.findall(r"[a-z0-9']+", l["text"].lower()))) / max(1, len(want)), k)

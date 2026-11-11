@@ -264,3 +264,10 @@ def test_editor_flags_a_mash_up_of_two_subplots():
     story = {"title": "t", "hook": "h", "beats": [{"name": n, "role": "r", "what_we_see": "w", "narration": "x y z"}
                                                   for n in ("bankers", "miles", "gun")]}
     assert st.edit_script(g, story, {"title": "The Equalizer 2", "year": 2018})["editor"]["one_storyline"] is False
+
+
+def test_a_scene_is_widened_until_its_narration_fits_the_footage():
+    beat_ = {"narration": " ".join(["word"] * 87)}           # about 30 s of speech
+    assert st.fit_to_narration(100.0, 110.0, 90.0, 200.0, beat_) == (100.0, 131.0)   # forward first
+    assert st.fit_to_narration(100.0, 110.0, 80.0, 112.0, beat_) == (81.0, 112.0)    # then backward
+    assert st.fit_to_narration(100.0, 140.0, 90.0, 200.0, beat_) == (100.0, 140.0)   # already long enough

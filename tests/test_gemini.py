@@ -438,3 +438,30 @@ def test_contact_sheet_labels_real_frames(tmp_path):
     sheets = g.frame_sheets({"scenes": [{"clip_id": "A", "clip_start": 1.0, "clip_end": 5.0, "clip_title": "t"}]},
                             {"A": str(video)}, tmp_path / "w")
     assert len(sheets) == 1 and 3 <= len(sheets[0]["times"]) <= 5 and sheets[0]["image"].size[0] > 256
+
+
+def test_writer_keeps_gemini_while_another_model_is_left():
+    class Primary:
+        role, stats = "smart", [{}]
+
+        def __init__(self):
+            self.gemini, self.calls = self, 0
+
+        def chain(self, role):
+            return ["gemini-3.6-flash"]                         # still one model with quota
+
+        def chat(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                raise g.GeminiUnavailable("gemini-flash-latest: daily free limit used up")
+            return {"ok": True}
+
+    class Local:
+        stats, model = [{}], "qwen"
+
+        def chat(self, *a, **k):
+            return {"local": True}
+    primary = Primary()
+    writer = g.FallbackWriter(primary, Local)
+    assert writer.chat("s", "u", {}) == {"local": True}          # this one call falls back
+    assert writer.chat("s", "u", {}) == {"ok": True}             # the next one is Gemini again

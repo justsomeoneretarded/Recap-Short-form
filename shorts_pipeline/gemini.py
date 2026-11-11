@@ -299,6 +299,9 @@ class Client:
                 return _parse_json(text) if schema is not None else text
             except (_Exhausted, _BadRequest) as exc:
                 errors.append(str(exc)[:200])
+                if not str(exc).split(": ", 1)[-1].startswith(("daily", "free limit", "per-minute")):
+                    # quota answers are printed where they happen; everything else is printed here
+                    print(f"[gemini] {str(exc)[:300]}", file=sys.stderr, flush=True)
                 continue
         raise GeminiUnavailable("; ".join(errors) or f"no Gemini model for {role}")
 
@@ -475,7 +478,7 @@ class GeminiWriter:
 
 
 class FallbackWriter:
-    """Gemini first; the local model takes over for good once Gemini is out of quota, and for
+    """Gemini first; the local model takes over for good once no Gemini model is left, and for
     one call when Gemini refuses or fails that call."""
 
     def __init__(self, primary, make_backup, *, wait_ready=None):
@@ -501,8 +504,13 @@ class FallbackWriter:
                 self.stats.append(self.primary.stats[-1])
                 return reply
             except GeminiUnavailable as exc:
-                self.notes.append(f"Gemini unavailable, local writer used: {str(exc)[:160]}")
-                if any(k in str(exc) for k in ("daily", "limit is 0", "budget", "no Gemini model", "network")):
+                self.notes.append(f"Gemini unavailable, local writer used: {str(exc)[-400:]}")
+                # Give Gemini up for good only when no model is left (one used-up model says nothing about
+                # the others), the job's budget is spent or the network is down.
+                client = getattr(self.primary, "gemini", None)
+                left = client.chain(getattr(self.primary, "role", "smart")) if client is not None and \
+                    hasattr(client, "chain") else []
+                if not left or any(k in str(exc) for k in ("budget", "network")):
                     self._primary_ok = False
             except ValueError as exc:
                 self.notes.append(f"Gemini answer unusable, local writer used once: {str(exc)[:120]}")

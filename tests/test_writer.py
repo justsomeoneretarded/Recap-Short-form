@@ -281,3 +281,14 @@ def test_a_script_well_under_its_footage_length_is_flagged_and_extended():
                        {"scene": 1, "kind": "narration", "text": "A doctor helps him."}]}
     report = w.check(short, b)
     assert any(i.startswith("script too short") for i in report["issues"]) and w.needs_fix(report)
+
+
+def test_a_numbered_word_is_not_a_name_and_one_odd_word_never_rejects_a_script():
+    b = brief()
+    hurricane = {"title": "t", "hook": "He waits.", "ending": "reveal", "beats": [
+        {"scene": 0, "kind": "narration", "text": "John waits out a Category 5 storm in the library."}]}
+    assert not any("category" in i for i in w.check(hurricane, b)["issues"])
+    odd = {"title": "t", "hook": "He waits.", "ending": "reveal", "beats": [
+        {"scene": 0, "kind": "narration", "text": "John fights while Zorblax watches."}]}
+    issues = w.check(odd, b)["issues"]
+    assert any(i.startswith("one word not in the brief") for i in issues) and not any(w.is_serious(i) for i in issues)
