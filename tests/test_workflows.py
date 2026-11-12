@@ -63,3 +63,10 @@ def test_test_runs_use_the_real_pipeline_per_movie():
     on = called.get("on", called.get(True))
     assert {"movie", "tag", "max_stories"} <= set(on["workflow_call"]["inputs"])
     assert "inputs.tag" in called["concurrency"]["group"]
+
+
+def test_package_installs_have_fallback_mirrors_and_a_retry():
+    from pathlib import Path
+    text = (Path(__file__).parent.parent / ".github/workflows/generate-shorts.yml").read_text()
+    assert "azure.archive.ubuntu.com" in text and "mirrors.edge.kernel.org" in text
+    assert "Acquire::http::Timeout=20" in text and ") || ( sleep 15 &&" in text

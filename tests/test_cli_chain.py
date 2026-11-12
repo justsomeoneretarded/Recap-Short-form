@@ -180,3 +180,25 @@ def test_one_scene_failing_keeps_the_picture_edit_of_the_others(monkeypatch, tmp
     picks = cli._scene_picks(object(), {}, voice, slots, [{"scene": 0}, {"scene": 1}], {}, tmp_path)
     assert tried == [["b0#0"], ["b0#0"], ["b1#0"]]                 # scene 0 retried smaller, then given up
     assert list(picks) == ["b1#0"]
+
+
+def test_discover_stops_instead_of_a_footage_first_story(monkeypatch, tmp_path):
+    import pytest
+    from shorts_pipeline import cli, hunt
+    from shorts_pipeline import gemini as gem
+    srt = tmp_path / "movie.srt"
+    srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello.\n")
+    research = {"movie": {"title": "T", "year": 2018}, "subtitles": {"path": str(srt)}, "folder": str(tmp_path)}
+    monkeypatch.setattr(cli, "run_research", lambda *a, **k: research)
+    monkeypatch.setattr(gem, "client", lambda: object())
+    import shorts_pipeline.discovery as discovery
+    monkeypatch.setattr(discovery, "YouTube", lambda *a, **k: object())
+    monkeypatch.setattr(hunt, "run", lambda *a, **k: {"arcs": [], "planned": [], "found": {"queries": [], "candidates": []},
+                                                     "placed": {"clips": []}, "screened": {},
+                                                     "report": {"path": "scene-by-scene (no story had footage)",
+                                                                "lost": ["abc: burned-in subtitles"]}})
+    called = []
+    monkeypatch.setattr("shorts_pipeline.arcs.build_arcs", lambda *a, **k: called.append(1) or {"arcs": []})
+    with pytest.raises(SystemExit, match="nothing was made"):
+        cli.run_discover("T (2018)", tmp_path / "w", tmp_path / "out")
+    assert not called and not (tmp_path / "out" / "arcs.json").exists()

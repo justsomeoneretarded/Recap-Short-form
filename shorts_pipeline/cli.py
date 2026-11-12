@@ -189,7 +189,18 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
                 log(f"no Gemini scene hints: {str(exc)[:160]}")
         found = discover(research, youtube, **({'scene_hints': hints} if hints else {}))
         lap('search_and_rank')
-    if stories is None:  # the old scene-by-scene stories (no Gemini, or no story had footage)
+    if stories is None and report.get('path'):
+        # The script-first runner ran and no story had footage for most of its scenes. The old footage-first
+        # stories would make a Short from whatever clips exist, which is not the story; stop and say why.
+        write_json(output/'screening.json', list(screened.values()))
+        write_json(output/'summary.json', {'movie': research['movie']['title'], 'hunt': report,
+                                           'planned_stories': planned, 'made': False})
+        lost = '; '.join(report.get('lost') or [])[:600]
+        message = ("No story had footage for most of its scenes, so nothing was made. "
+                   + (f"Lost in screening: {lost}. " if lost else "") + "See output/discover/summary.json.")
+        print(f"::error::{message}", flush=True)
+        raise SystemExit(message)
+    if stories is None:  # the old scene-by-scene stories: only without Gemini or without subtitles
         if not placed or not placed.get('clips'):
             placed = place_candidates(research, found, youtube, Path(workdir).resolve(), top=top, use_whisper=use_whisper)
             lap('download_and_place')

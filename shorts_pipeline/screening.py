@@ -96,6 +96,11 @@ def _inside(point: tuple, box: tuple, margin: float = 0.01) -> bool:
     return box[0] - margin <= point[0] <= box[2] + margin and box[1] - margin <= point[1] <= box[3] + margin
 
 
+COPYRIGHT = re.compile(r"©|(?:^|\s)[@(]c?\)?\s*(?:19|20)\d\d|\(c\)|all rights reserved|"
+                       r"\b(?:columbia|universal|warner|paramount|lionsgate|disney|sony|fox|pictures|studios|"
+                       r"entertainment|industries)\b", re.I)
+
+
 def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: tuple) -> dict:
     """Group OCR boxes into subtitles, watermarks, promo cards and incidental scene text."""
     subtitle_frames, subtitle_texts, inside_picture = 0, set(), 0
@@ -103,6 +108,7 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     logos: Counter = Counter()
     promo_frames, promo_times, card_times = 0, [], []
     ax0, ay0, ax1, ay1 = active
+    copyright_rows = 0
     for when, rows, frame in samples:
         has_sub = False
         # A frame full of text (an opening title crawl, a letter, a news screen) is a text card:
@@ -115,6 +121,9 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
             rel_y = (cy - ay0) / max(1e-6, ay1 - ay0)
             rel_x = (cx - ax0) / max(1e-6, ax1 - ax0)
+            if COPYRIGHT.search(row["text"]):
+                copyright_rows += 1  # the studio's "(c) 2018 Columbia Pictures" line: never a subtitle or a logo
+                continue
             if PROMO.search(row["text"]):
                 promo_frames += 1
                 promo_times.append(round(when, 1))
@@ -136,7 +145,8 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     inner_marks = [{"x": k[0], "y": k[1], "text": k[2], "frames": v} for k, v in logos.items() if v >= 2]
     return {"frames": len(samples), "subtitle_frames": subtitle_frames, "subtitle_share": round(subtitle_frames / n, 3),
             "distinct_subtitle_lines": len(subtitle_texts), "subtitle_boxes_inside_picture": inside_picture,
-            "watermarks": watermarks, "inner_watermarks": inner_marks, "promo_frames": promo_frames,
+            "watermarks": watermarks, "inner_watermarks": inner_marks, "copyright_rows": copyright_rows,
+            "promo_frames": promo_frames,
             "text_card_times": sorted(set(card_times)),
             "promo_times": sorted(set(promo_times))}
 
@@ -221,8 +231,10 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
         notes.append(f"black bars: active picture {active['box']}")
     if (info.get("height") or 0) < MIN_HEIGHT:
         reasons.append(f"low resolution ({info.get('height')}p; needs {MIN_HEIGHT}p+)")
-    for mark in text.get("inner_watermarks", []):
-        reasons.append(f"channel watermark inside the picture: '{mark['text']}'")
+    for mark in text.get("inner_watermarks", []):  # a channel handle or logo is fine to use: noted only
+        notes.append(f"channel logo inside the picture: '{mark['text']}' (kept)")
+    if text.get("copyright_rows"):
+        notes.append("studio copyright line in the picture (kept)")
     if text.get("text_card_times"):
         notes.append(f"text cards at {text['text_card_times'][:6]} s — never used in a Short")
     brightness = round(float(np.median([f.mean() for _, f in frames])), 1) if frames else None

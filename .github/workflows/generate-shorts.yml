@@ -104,8 +104,8 @@ jobs:
       - name: Install FFmpeg, downloader, OCR and Whisper
         timeout-minutes: 10
         run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg jq
+          if [ -f /etc/apt/apt-mirrors.txt ]; then printf '%s\n' http://azure.archive.ubuntu.com/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://mirrors.edge.kernel.org/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          ( sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg jq ) || ( sleep 15 && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg jq )
           python -m pip install -e '.[source,screening]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
       - name: Prepare optional YouTube cookies
         env:
@@ -175,8 +175,8 @@ jobs:
           cache: pip
       - name: Install pipeline and Ollama with Qwen3 14B
         run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends zstd
+          if [ -f /etc/apt/apt-mirrors.txt ]; then printf '%s\n' http://azure.archive.ubuntu.com/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://mirrors.edge.kernel.org/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          ( sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends zstd ) || ( sleep 15 && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends zstd )
           python -m pip install -e .
           cat > "$RUNNER_TEMP/local-writer.sh" <<'SH'
           set -e
@@ -273,8 +273,8 @@ jobs:
       - name: Install FFmpeg, Chatterbox, Whisper and OpenCV
         timeout-minutes: 25
         run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq
+          if [ -f /etc/apt/apt-mirrors.txt ]; then printf '%s\n' http://azure.archive.ubuntu.com/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://mirrors.edge.kernel.org/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          ( sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq ) || ( sleep 15 && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg fonts-dejavu-core jq )
           python -m pip install --upgrade pip
           python -m pip install torch==2.6.0 torchaudio==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e '.[voice,source,screening]' 'faster-whisper>=1.2,<2' 'bgutil-ytdlp-pot-provider>=2.0'
@@ -365,8 +365,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg jq unzip libvulkan1 mesa-vulkan-drivers libgomp1
+          if [ -f /etc/apt/apt-mirrors.txt ]; then printf '%s\n' http://azure.archive.ubuntu.com/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://mirrors.edge.kernel.org/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          ( sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg jq unzip libvulkan1 mesa-vulkan-drivers libgomp1 ) || ( sleep 15 && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg jq unzip libvulkan1 mesa-vulkan-drivers libgomp1 )
           python -m pip install -e '.[source]' 'bgutil-ytdlp-pot-provider>=2.0'
           bash scripts/install_rife.sh || echo "::warning::RIFE unavailable; 60 fps uses motion-blended interpolation"
       - name: Prepare optional YouTube cookies
@@ -417,8 +417,8 @@ jobs:
           cache: pip
       - name: Install FFmpeg, OCR and fonts
         run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then echo https://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
-          sudo apt-get -o Acquire::Retries=2 update -qq && sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          if [ -f /etc/apt/apt-mirrors.txt ]; then printf '%s\n' http://azure.archive.ubuntu.com/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://mirrors.edge.kernel.org/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt > /dev/null; fi
+          ( sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg fonts-dejavu-core ) || ( sleep 15 && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y --no-install-recommends ffmpeg fonts-dejavu-core )
           python -m pip install -e '.[screening]'
           mkdir -p work/models
           curl -fsSL --retry 3 -o "$SHORTS_YUNET_MODEL" https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx || true

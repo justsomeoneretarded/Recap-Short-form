@@ -97,3 +97,25 @@ def test_channel_handle_inside_the_picture_is_rejected(tmp_path):
                                          "x=w*0.12:y=h*0.62")
     report = s.screen(clip)
     assert not report["accept"]
+
+
+def _rows(text, y0=0.92, y1=0.97, x0=0.30, x1=0.70, w=1000, h=1000):
+    return {"box": (x0 * w, y0 * h, x1 * w, y1 * h), "text": text}
+
+
+def test_studio_copyright_line_is_neither_subtitle_nor_logo():
+    import numpy as np
+    from shorts_pipeline.screening import classify_text
+    frame = np.zeros((1000, 1000, 3), dtype=np.uint8)
+    samples = [(t, [_rows(f"@ 2018 Columbia Pictures {t}")], frame) for t in range(6)]   # OCR reads (c) as @
+    text = classify_text(samples, (0, 0, 1, 1))
+    assert text["subtitle_frames"] == 0 and not text["inner_watermarks"] and text["copyright_rows"] == 6
+
+
+def test_real_subtitles_still_count():
+    import numpy as np
+    from shorts_pipeline.screening import classify_text
+    frame = np.zeros((1000, 1000, 3), dtype=np.uint8)
+    lines = ["I will find you.", "Who are you?", "Get out of my car.", "Nobody.", "Run."]
+    text = classify_text([(t, [_rows(line, 0.80, 0.86)], frame) for t, line in enumerate(lines)], (0, 0, 1, 1))
+    assert text["subtitle_frames"] == 5 and text["distinct_subtitle_lines"] == 5
