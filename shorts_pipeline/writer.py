@@ -643,5 +643,7 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
             "rejected": rejected, "rejected_because": serious or (["low script score"] if rejected else []),
             "dialogue_lines": {k: v for k, v in brief.lines.items()
                                if any(b.get("line") == k for b in final.get("beats", []))},
+            # every playable movie line: the footage-first script may choose others
+            "movie_lines": {k: v for k, v in brief.lines.items() if v.get("playable", True)},
             "drafts": candidates, "fixed": final is not best["script"], "model_calls": list(getattr(llm, "stats", []))[calls_before:],
             "writer_notes": list(getattr(llm, "notes", [])) + picture_notes}

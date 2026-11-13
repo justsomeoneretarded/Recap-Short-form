@@ -491,3 +491,73 @@ def test_viewer_review_uploads_a_small_copy(monkeypatch, tmp_path):
             pass
     g.critique(Fake(), video, "t", "words")
     assert uploaded["height"] == 480 and not (tmp_path / "final-480p.mp4").exists()
+
+
+class KeyedSession:
+    """Answers per API key: replies[key][model] is a queue."""
+
+    def __init__(self, replies):
+        self.replies = {k: {m: list(q) for m, q in v.items()} for k, v in replies.items()}
+        self.posts = []
+
+    def request(self, method, url, headers=None, timeout=None, **kwargs):
+        if url.endswith("/v1beta/models"):
+            return Reply(200, MODELS)
+        key, model = headers["x-goog-api-key"], url.rsplit("/", 1)[-1].split(":")[0]
+        self.posts.append((key, model))
+        queue = self.replies.get(key, {}).get(model) or []
+        return queue.pop(0) if queue else Reply(500, text="no reply queued")
+
+
+MINUTE_429 = Reply(429, text='{"error": {"details": [{"violations": [{"quotaId": '
+                             '"GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]}, {"retryDelay": "40s"}]}}')
+
+
+def test_a_busy_key_hands_over_to_the_next_key_without_waiting():
+    waits = []
+    s = KeyedSession({"k1": {"gemini-3.5-flash": [MINUTE_429]}, "k2": {"gemini-3.5-flash": [answer({"ok": 2})]}})
+    c = g.Client(keys=["k1", "k2"], session=s, sleep=waits.append)
+    assert c.generate("smart", [{"text": "x"}], schema={"type": "object"}) == {"ok": 2}
+    assert [k for k, _ in s.posts if _ == "gemini-3.5-flash"] == ["k1", "k2"] and waits == []
+
+
+def test_a_used_up_key_is_retired_for_the_day_and_the_other_key_carries_on(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHORTS_GEMINI_STATE", str(tmp_path / "state.json"))
+    day = Reply(429, text=DAILY)
+    s = KeyedSession({"k1": {"gemini-3.5-flash": [day]},
+                      "k2": {"gemini-3.5-flash": [answer({"ok": 1}), answer({"ok": 2})]}})
+    c = g.Client(keys=["k1", "k2"], session=s, sleep=lambda x: None)
+    assert c.generate("smart", [{"text": "a"}], schema={"type": "object"}) == {"ok": 1}
+    assert c.generate("smart", [{"text": "b"}], schema={"type": "object"}) == {"ok": 2}
+    assert [k for k, m in s.posts if m == "gemini-3.5-flash"] == ["k1", "k2", "k2"]   # k1 never asked again
+    assert "gemini-3.5-flash" not in c.exhausted                                        # k2 still has it
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert "k1" not in json.dumps(state) and len(state["keys"]) == 2                    # keys never written
+
+
+def test_the_input_token_window_waits_instead_of_hitting_a_429(monkeypatch):
+    monkeypatch.setattr(g, "TPM_LIMIT", 1000)
+    waits = []
+    def sized(n):
+        return Reply(200, {"candidates": [{"content": {"parts": [{"text": json.dumps({"n": n})}]}}],
+                           "usageMetadata": {"promptTokenCount": 800, "candidatesTokenCount": 5}})
+    s = KeyedSession({"k1": {"gemini-3.5-flash": [sized(1), sized(2)]}})
+    c = g.Client(keys=["k1"], session=s, sleep=waits.append)
+    big = [{"text": "x" * 3200}]                                           # ~800 tokens each
+    c.generate("smart", big, schema={"type": "object"})
+    c.generate("smart", big, schema={"type": "object"})
+    assert waits and waits[-1] > 50                                         # waited for the minute to free up
+
+
+def test_a_reply_cut_off_by_the_output_limit_is_asked_again_with_more_room():
+    cut = Reply(200, {"candidates": [{"content": {"parts": [{"text": '{"lines": ["a", "b'}]}, "finishReason": "MAX_TOKENS"}]})
+    s = KeyedSession({"k1": {"gemini-3.5-flash": [cut, answer({"lines": ["a", "b"]})]}})
+    c = g.Client(keys=["k1"], session=s, sleep=lambda x: None)
+    assert c.generate("smart", [{"text": "x"}], schema={"type": "object"}) == {"lines": ["a", "b"]}
+
+
+def test_every_configured_key_is_found(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "a")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "b")
+    monkeypatch.setenv("GEMINI_API_KEYS", "c, a")
+    assert g.api_keys() == ["a", "b", "c"]

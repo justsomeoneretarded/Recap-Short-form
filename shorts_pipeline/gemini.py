@@ -42,14 +42,27 @@ MIN_GAP = float(os.environ.get("SHORTS_GEMINI_MIN_GAP", "6"))  # seconds between
 REQUEST_WAIT = float(os.environ.get("SHORTS_GEMINI_REQUEST_WAIT", "150"))  # most waiting for one answer
 JOB_WAIT = float(os.environ.get("SHORTS_GEMINI_JOB_WAIT", "900"))  # most waiting for limits in one job
 MAX_VIDEO_SECONDS = 20 * 60
+TPM_LIMIT = int(os.environ.get("SHORTS_GEMINI_TPM", "200000"))  # input tokens per minute per (key, model), with margin
+DEFAULT_OUTPUT_TOKENS = int(os.environ.get("SHORTS_GEMINI_OUTPUT_TOKENS", "8192"))
+BIG_OUTPUT_TOKENS = 32768
 
 
 class GeminiUnavailable(RuntimeError):
     """Gemini cannot answer this request; use the local fallback."""
 
 
+def api_keys() -> list[str]:
+    """Every configured key, first one first: GEMINI_API_KEY, GEMINI_API_KEY_2.._5, GEMINI_API_KEYS (comma
+    separated) and GOOGLE_API_KEY. Empty ones are ignored, duplicates once."""
+    found = [os.environ.get("GEMINI_API_KEY", "")]
+    found += [os.environ.get(f"GEMINI_API_KEY_{n}", "") for n in range(2, 6)]
+    found += (os.environ.get("GEMINI_API_KEYS") or "").split(",") + [os.environ.get("GOOGLE_API_KEY", "")]
+    return list(dict.fromkeys(k.strip() for k in found if k and k.strip()))
+
+
 def api_key() -> str:
-    return (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    keys = api_keys()
+    return keys[0] if keys else ""
 
 
 def enabled() -> bool:
@@ -87,27 +100,66 @@ def rank_models(models: list[dict], role: str) -> list[str]:
 
 
 class Client:
-    """Small REST client: JSON output, YouTube links, file uploads, embeddings, retries, budget."""
+    """Small REST client: JSON output, YouTube links, file uploads, embeddings, retries, budget.
 
-    def __init__(self, key: str | None = None, *, session=None, sleep=time.sleep, max_calls: int | None = None):
+    Several API keys (GEMINI_API_KEY, GEMINI_API_KEY_2.._5, GEMINI_API_KEYS) share the work. Google's free
+    limits are per project and per model, so the state is kept per (key, model):
+    - requests are spaced (MIN_GAP) and a rolling 60-second input-token window is respected (TPM), so a
+      request waits for room instead of hitting a 429;
+    - a per-minute 429 cools that (key, model) down and the next key is tried at once;
+    - a per-day 429 retires that (key, model) for the day; a zero limit is remembered for good;
+    - only when every key is cooling down does the job wait.
+    """
+
+    def __init__(self, key: str | None = None, *, session=None, sleep=time.sleep, max_calls: int | None = None,
+                 keys: list[str] | None = None):
         import requests
-        self.key = key or api_key()
-        if not self.key:
+        self.keys = [k for k in (keys or ([key] if key else api_keys())) if k]
+        if not self.keys:
             raise GeminiUnavailable("no GEMINI_API_KEY")
+        self.key = self.keys[0]
         self.session = session or requests.Session()
         self.sleep = sleep
-        self.max_calls = max_calls if max_calls is not None else int(os.environ.get("SHORTS_GEMINI_MAX_CALLS", "80"))
+        per_key = max_calls if max_calls is not None else int(os.environ.get("SHORTS_GEMINI_MAX_CALLS", "80"))
+        self.max_calls = per_key * len(self.keys)
         self.calls: list[dict] = []
-        self.exhausted: set[str] = set()      # no quota left today (or not available) for this key
-        self.never_free: set[str] = set()     # free limit is 0 for this key: skipped on every day
-        self.cooldown: dict[str, float] = {}   # per-minute limit hit: usable again after this time
+        self.ex: list[set[str]] = [set() for _ in self.keys]        # per key: no quota left today
+        self.nf: list[set[str]] = [set() for _ in self.keys]        # per key: free limit is 0, on every day
+        self.cool: dict[tuple[int, str], float] = {}                 # (key, model) → usable again after this time
+        self.last: dict[tuple[int, str], float] = {}                 # (key, model) → time of the last request
+        self.window: dict[tuple[int, str], list[tuple[float, int]]] = {}  # (key, model) → (time, input tokens)
+        self.file_key: dict[str, int] = {}                          # uploaded file → the key that owns it
         self.good: dict[str, str] = {}         # the model that last answered, per role: tried first
         self.last_call = 0.0
-        self.waited = 0.0                      # seconds spent waiting for per-minute limits in this job
+        self.waited = 0.0                      # seconds spent waiting for limits in this job
         self._request_wait = REQUEST_WAIT
         self.state_file = Path(os.environ["SHORTS_GEMINI_STATE"]) if os.environ.get("SHORTS_GEMINI_STATE") else None
         self._load_state()
         self._models: dict[str, list[str]] | None = None
+
+    # ------------------------------------------------------------------ views (all keys together)
+    @property
+    def exhausted(self) -> set[str]:
+        """Models no key can use today."""
+        return set.intersection(*[e | n for e, n in zip(self.ex, self.nf)]) if self.keys else set()
+
+    @property
+    def never_free(self) -> set[str]:
+        return set.intersection(*self.nf) if self.keys else set()
+
+    @property
+    def cooldown(self) -> dict[str, float]:
+        """Per model: when the first key that may still use it is free again (only models cooling on every key)."""
+        out: dict[str, float] = {}
+        now = time.time()
+        for (k, model), until in self.cool.items():
+            usable = [i for i in range(len(self.keys)) if model not in self.ex[i] | self.nf[i]]
+            if k in usable and all(self.cool.get((i, model), 0) > now for i in usable):
+                out[model] = min(self.cool.get((i, model), 0) for i in usable)
+        return out
+
+    def _usable_keys(self, model: str) -> list[int]:
+        return [i for i in range(len(self.keys)) if model not in self.ex[i] | self.nf[i]]
 
     # ------------------------------------------------------------------ shared state
     @staticmethod
@@ -116,30 +168,39 @@ class Client:
         from datetime import datetime, timedelta, timezone
         return (datetime.now(timezone.utc) - timedelta(hours=8)).strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _key_id(key: str) -> str:
+        import hashlib
+        return hashlib.sha256(key.encode()).hexdigest()[:12]  # never the key itself
+
     def _load_state(self) -> None:
         """Models an earlier job already found used up today are skipped without spending a request."""
         try:
             data = json.loads(self.state_file.read_text()) if self.state_file and self.state_file.exists() else {}
         except (OSError, ValueError):
             data = {}
-        self.never_free |= set(data.get("never_free") or [])
-        self.exhausted |= self.never_free
-        if data.get("day") == self._quota_day():
-            self.exhausted |= set(data.get("exhausted") or [])
+        per_key = data.get("keys") or {}
+        for i, key in enumerate(self.keys):
+            row = per_key.get(self._key_id(key)) or (data if i == 0 and not per_key else {})
+            self.nf[i] |= set(row.get("never_free") or [])
+            if data.get("day") == self._quota_day():
+                self.ex[i] |= set(row.get("exhausted") or [])
 
     def _save_state(self) -> None:
         if not self.state_file:
             return
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps({"day": self._quota_day(), "exhausted": sorted(self.exhausted - self.never_free),
-                                                   "never_free": sorted(self.never_free)}))
+            keys = {self._key_id(k): {"exhausted": sorted(self.ex[i] - self.nf[i]), "never_free": sorted(self.nf[i])}
+                    for i, k in enumerate(self.keys)}
+            first = keys[self._key_id(self.keys[0])]
+            self.state_file.write_text(json.dumps({"day": self._quota_day(), **first, "keys": keys}))
         except OSError:
             pass
 
     # ------------------------------------------------------------------ plumbing
-    def _http(self, method: str, url: str, **kwargs):
-        headers = {"x-goog-api-key": self.key, **kwargs.pop("headers", {})}
+    def _http(self, method: str, url: str, *, key: int = 0, **kwargs):
+        headers = {"x-goog-api-key": self.keys[key], **kwargs.pop("headers", {})}
         try:
             return self.session.request(method, url, headers=headers, timeout=kwargs.pop("timeout", 600), **kwargs)
         except Exception as exc:  # noqa: BLE001 - network trouble means "use the fallback"
@@ -175,64 +236,126 @@ class Client:
         if self.good.get(role) in names:
             names.insert(0, self.good[role])
         now = time.time()
-        return [n for n in dict.fromkeys(names) if n not in self.exhausted and self.cooldown.get(n, 0) <= now]
+        return [n for n in dict.fromkeys(names)
+                if any(self.cool.get((k, n), 0) <= now for k in self._usable_keys(n))]
+
+    @staticmethod
+    def estimate_tokens(body: dict) -> int:
+        """Rough input size: text / 4, ~258 per image, ~100 per second of low-resolution video."""
+        total = 0
+        for content in body.get("contents") or []:
+            for part in content.get("parts") or []:
+                if "text" in part:
+                    total += len(part["text"]) // 4
+                elif "inlineData" in part:
+                    total += 258 if str(part["inlineData"].get("mimeType", "")).startswith("image") else \
+                        len(part["inlineData"].get("data", "")) // 1000
+                elif "fileData" in part:
+                    meta = part.get("videoMetadata") or {}
+                    try:
+                        seconds = float(str(meta.get("endOffset", "60s")).rstrip("s")) - \
+                            float(str(meta.get("startOffset", "0s")).rstrip("s"))
+                    except ValueError:
+                        seconds = 60.0
+                    total += int(max(1.0, seconds) * 100)
+        for part in (body.get("systemInstruction") or {}).get("parts") or []:
+            total += len(part.get("text", "")) // 4
+        return max(1, total)
+
+    def _room(self, slot: tuple[int, str], tokens: int) -> float:
+        """Seconds to wait before this (key, model) may send: request spacing and the input-token window."""
+        now = time.time()
+        wait = MIN_GAP - (now - self.last.get(slot, 0.0))
+        window = [(t, n) for t, n in self.window.get(slot, []) if now - t < 60]
+        self.window[slot] = window
+        used = sum(n for _, n in window)
+        if window and used + tokens > TPM_LIMIT:
+            freed, need = 0, used + tokens - TPM_LIMIT
+            for t, n in window:  # oldest first: wait until enough has left the minute
+                freed += n
+                if freed >= need:
+                    wait = max(wait, 60 - (now - t) + 0.5)
+                    break
+        return max(0.0, wait)
 
     def _post(self, model: str, method: str, body: dict) -> dict:
-        """One request with retries. Daily quota → model marked exhausted; per-minute → wait."""
+        """One request on the first key that may send it. Per-minute limit → next key (or a bounded wait);
+        daily limit → that key is done with this model for today."""
         if len(self.calls) >= self.max_calls:
             raise GeminiUnavailable(f"this job's Gemini budget ({self.max_calls} requests) is spent")
-        minute_waits = 0
-        for attempt in range(6):
-            # Space requests out (all of this job's calls share the key's per-minute limit with the other jobs).
-            gap = MIN_GAP - (time.time() - self.last_call)
-            if gap > 0:
-                self.sleep(gap)
-            started = self.last_call = time.time()
-            reply = self._http("POST", f"{API}/v1beta/models/{model}:{method}", json=body)
-            row = {"model": model, "method": method, "status": reply.status_code, "seconds": round(time.time() - started, 1)}
+        tokens = self.estimate_tokens(body)
+        pinned = next((self.file_key[u] for u in re.findall(r'"fileUri":\s*"([^"]+)"', json.dumps(body))
+                       if u in self.file_key), None)  # an uploaded file only exists for the key that uploaded it
+        minute_waits, server_errors, errors = 0, 0, []
+        while True:
+            keys = [k for k in self._usable_keys(model) if pinned is None or k == pinned]
+            if not keys:
+                raise _Exhausted(f"{model}: {errors[-1] if errors else 'no key can use it today'}")
+            now = time.time()
+            ready = [k for k in keys if self.cool.get((k, model), 0) <= now]
+            if not ready:  # every key is cooling down: wait for the first one, within the job's limits
+                first = min(keys, key=lambda i: self.cool[(i, model)])
+                pause = round(self.cool[(first, model)] - now + 1, 1)
+                if minute_waits >= MINUTE_RETRIES or pause > self._request_wait or self.waited + pause > JOB_WAIT:
+                    raise _Exhausted(f"{model}: {errors[-1] if errors else 'per-minute limit on every key'}")
+                minute_waits += 1
+                self._request_wait -= pause
+                self.waited += pause
+                self.sleep(pause)
+                self.cool.pop((first, model), None)  # its minute is over
+                continue
+            k = min(ready, key=lambda i: self._room((i, model), tokens))
+            slot = (k, model)
+            pause = self._room(slot, tokens)
+            if pause > 0:
+                if pause > MIN_GAP + 0.01:  # a token-window wait (spacing waits are routine)
+                    self.waited += pause
+                self.sleep(pause)
+            started = self.last_call = self.last[slot] = time.time()
+            self.window.setdefault(slot, []).append((started, tokens))
+            reply = self._http("POST", f"{API}/v1beta/models/{model}:{method}", key=k, json=body)
+            row = {"model": model, "key": k + 1, "method": method, "status": reply.status_code,
+                   "seconds": round(time.time() - started, 1), "input_estimate": tokens}
             self.calls.append(row)
             if reply.status_code == 200:
                 data = reply.json()
                 usage = data.get("usageMetadata") or {}
                 row.update(prompt_tokens=usage.get("promptTokenCount", 0), output_tokens=usage.get("candidatesTokenCount", 0))
+                if usage.get("promptTokenCount"):  # learn the real size for the window
+                    self.window[slot][-1] = (started, int(usage["promptTokenCount"]))
                 return data
             text = reply.text[:4000]
             if reply.status_code == 429:
                 wait, daily, why = quota_problem(text)
                 row["error"], row["google_says"] = why, google_message(text)
-                print(f"[gemini] {model}: {why} — Google: {row['google_says'][:300]}", file=sys.stderr, flush=True)
-                if daily:  # nothing left today for this key on this model: never ask it again
-                    self.exhausted.add(model)
+                errors.append(why)
+                label = f"{model} (key {k + 1})" if len(self.keys) > 1 else model
+                print(f"[gemini] {label}: {why} — Google: {row['google_says'][:300]}", file=sys.stderr, flush=True)
+                if daily:  # nothing left today for this key on this model: never ask it again today
+                    self.ex[k].add(model)
                     if why.startswith("free limit is 0"):
-                        self.never_free.add(model)  # not a daily limit: this key never gets this model
+                        self.nf[k].add(model)  # not a daily limit: this key never gets this model
                     self._save_state()
-                    raise _Exhausted(f"{model}: {why}")
-                pause = max(wait, MINUTE_WAIT) + 1
-                if minute_waits < MINUTE_RETRIES and pause <= self._request_wait and self.waited + pause <= JOB_WAIT:
-                    # Per-minute limit: a full minute guarantees a fresh window; then the same model again.
-                    # Bounded per answer and per job, so limits can never stall a run for long.
-                    minute_waits += 1
-                    self._request_wait -= pause
-                    self.waited += pause
-                    self.sleep(pause)
-                    continue
-                self.cooldown[model] = time.time() + max(wait, MINUTE_WAIT)
-                raise _Exhausted(f"{model}: {why}")
-            if reply.status_code in (500, 502, 503, 504) and attempt < 3:
-                self.sleep(4 * 2 ** attempt)
+                    continue  # the next key, if any
+                self.cool[slot] = time.time() + max(wait, MINUTE_WAIT if len(self.keys) == 1 else wait)
+                continue  # another key now, or a bounded wait when all are cooling
+            if reply.status_code in (500, 502, 503, 504) and server_errors < 3:
+                server_errors += 1
+                self.sleep(4 * 2 ** (server_errors - 1))
                 continue
             if reply.status_code == 404:
-                self.exhausted.add(model)
-                raise _Exhausted(f"{model}: not available ({text[:160]})")
+                self.ex[k].add(model)
+                if not self._usable_keys(model):
+                    raise _Exhausted(f"{model}: not available ({text[:160]})")
+                continue
             raise _BadRequest(f"{model}: HTTP {reply.status_code} {text[:300]}")
-        raise _Exhausted(f"{model}: no answer after retries")
 
     def smart_ready(self) -> str | None:
-        """The first smart model that still answers today (one tiny request), or None when only the light
-        models are left. Models already known to be used up are not asked again."""
+        """The first smart model that still answers today on any key (one tiny request), or None when only
+        the light models are left. Models already known to be used up are not asked again."""
         light = set(self.models().get("light", []))
         for model in self.models().get("smart", []):
-            if model in self.exhausted or model in light:
+            if model in light or not self._usable_keys(model):
                 continue
             body = {"contents": [{"role": "user", "parts": [{"text": "Reply with the word ok."}]}],
                     "generationConfig": {"temperature": 0, "maxOutputTokens": 4}}
@@ -247,16 +370,16 @@ class Client:
     # ------------------------------------------------------------------ generation
     def generate(self, role: str, parts: list[dict], *, system: str | None = None, schema: dict | None = None,
                  temperature: float = 0.4, seed: int | None = None, tools: list | None = None,
-                 low_media: bool = False) -> dict | str:
+                 low_media: bool = False, max_tokens: int | None = None) -> dict | str:
         """Text (or parsed JSON when `schema` is given) from the best model still available."""
         self._request_wait = REQUEST_WAIT
         for round_ in range(2):
             try:
                 return self._generate(role, parts, system=system, schema=schema, temperature=temperature, seed=seed,
-                                      tools=tools, low_media=low_media)
+                                      tools=tools, low_media=low_media, max_tokens=max_tokens)
             except GeminiUnavailable:
                 # Every model is only pausing for its per-minute limit: wait for the first one, once.
-                waiting = [t for m, t in self.cooldown.items() if m not in self.exhausted and t > time.time()]
+                waiting = [t for m, t in self.cooldown.items() if t > time.time()]
                 pause = (min(waiting) - time.time() + 1) if waiting else 0
                 if round_ or not waiting or pause > min(MAX_WAIT, self._request_wait) or self.waited + pause > JOB_WAIT \
                         or self.chain(role):
@@ -265,50 +388,63 @@ class Client:
                 self.sleep(pause)
         raise GeminiUnavailable("no Gemini model answered")
 
-    def _generate(self, role, parts, *, system, schema, temperature, seed, tools, low_media):
+    def _generate(self, role, parts, *, system, schema, temperature, seed, tools, low_media, max_tokens=None):
         errors = []
         for model in self.chain(role)[:MAX_MODELS_PER_REQUEST]:
-            config: dict = {"temperature": temperature}
-            if seed is not None:
-                config["seed"] = seed
-            if low_media:
-                config["mediaResolution"] = "MEDIA_RESOLUTION_LOW"
-            use_schema = schema is not None and not tools  # search grounding cannot be combined with JSON mode
-            if use_schema:
-                config.update(responseMimeType="application/json", responseJsonSchema=schema)
-            body = {"contents": [{"role": "user", "parts": parts}], "generationConfig": config, "safetySettings": SAFETY}
-            if system:
-                body["systemInstruction"] = {"parts": [{"text": system}]}
-            if tools:
-                body["tools"] = tools
-            try:
+            limit = max_tokens or DEFAULT_OUTPUT_TOKENS
+            for attempt in range(2):  # a reply cut off by the output limit is asked again with more room
+                config: dict = {"temperature": temperature, "maxOutputTokens": limit}
+                if seed is not None:
+                    config["seed"] = seed
+                if low_media:
+                    config["mediaResolution"] = "MEDIA_RESOLUTION_LOW"
+                use_schema = schema is not None and not tools  # search grounding cannot be combined with JSON mode
+                if use_schema:
+                    config.update(responseMimeType="application/json", responseJsonSchema=schema)
+                body = {"contents": [{"role": "user", "parts": parts}], "generationConfig": config, "safetySettings": SAFETY}
+                if system:
+                    body["systemInstruction"] = {"parts": [{"text": system}]}
+                if tools:
+                    body["tools"] = tools
                 try:
-                    data = self._post(model, "generateContent", body)
-                except _BadRequest as exc:
-                    if (use_schema and "responseJsonSchema" in str(exc)) or "mediaResolution" in str(exc):
-                        config.pop("responseJsonSchema", None)  # older model: JSON mode with the schema in the prompt
-                        config.pop("mediaResolution", None)
-                        body["contents"][0]["parts"] = parts + ([{"text": "Answer as JSON matching this schema:\n" +
-                                                                  json.dumps(schema)}] if schema else [])
+                    try:
                         data = self._post(model, "generateContent", body)
-                    else:
+                    except _BadRequest as exc:
+                        if (use_schema and "responseJsonSchema" in str(exc)) or "mediaResolution" in str(exc):
+                            config.pop("responseJsonSchema", None)  # older model: JSON mode with the schema in the prompt
+                            config.pop("mediaResolution", None)
+                            body["contents"][0]["parts"] = parts + ([{"text": "Answer as JSON matching this schema:\n" +
+                                                                      json.dumps(schema)}] if schema else [])
+                            data = self._post(model, "generateContent", body)
+                        else:
+                            raise
+                    cut = ((data.get("candidates") or [{}])[0] or {}).get("finishReason") == "MAX_TOKENS"
+                    try:
+                        text = _text(data)
+                        result = _parse_json(text) if schema is not None else text
+                    except _BadRequest:
+                        if cut and attempt == 0:
+                            limit = min(BIG_OUTPUT_TOKENS, limit * 4)
+                            continue
                         raise
-                text = _text(data)
-                self.calls[-1]["role"] = role
-                self.good[role] = model
-                return _parse_json(text) if schema is not None else text
-            except (_Exhausted, _BadRequest) as exc:
-                errors.append(str(exc)[:200])
-                if not str(exc).split(": ", 1)[-1].startswith(("daily", "free limit", "per-minute")):
-                    # quota answers are printed where they happen; everything else is printed here
-                    print(f"[gemini] {str(exc)[:300]}", file=sys.stderr, flush=True)
-                continue
+                    self.calls[-1]["role"] = role
+                    self.good[role] = model
+                    return result
+                except (_Exhausted, _BadRequest) as exc:
+                    errors.append(str(exc)[:200])
+                    if not str(exc).split(": ", 1)[-1].startswith(("daily", "free limit", "per-minute")):
+                        # quota answers are printed where they happen; everything else is printed here
+                        print(f"[gemini] {str(exc)[:300]}", file=sys.stderr, flush=True)
+                    break
         raise GeminiUnavailable("; ".join(errors) or f"no Gemini model for {role}")
 
     def upload(self, path: Path, mime: str = "video/mp4", wait: float = 300) -> dict:
         """Files API (free, kept 48 h): returns the file record once it is ready to use."""
         path = Path(path)
-        start = self._http("POST", f"{API}/upload/v1beta/files", headers={
+        wanted = self.models().get("smart", []) + self.models().get("light", [])
+        key = next((i for i in range(len(self.keys))  # a key that can still use a model to read the file with
+                    if any(m not in self.ex[i] | self.nf[i] for m in wanted)), 0)
+        start = self._http("POST", f"{API}/upload/v1beta/files", key=key, headers={
             "X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start",
             "X-Goog-Upload-Header-Content-Length": str(path.stat().st_size),
             "X-Goog-Upload-Header-Content-Type": mime, "Content-Type": "application/json"},
@@ -317,7 +453,7 @@ class Client:
         if start.status_code != 200 or not url:
             raise GeminiUnavailable(f"upload start: HTTP {start.status_code} {start.text[:160]}")
         with open(path, "rb") as handle:
-            done = self._http("POST", url, headers={"X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize",
+            done = self._http("POST", url, key=key, headers={"X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize",
                                                     "Content-Length": str(path.stat().st_size)}, data=handle, timeout=900)
         if done.status_code != 200:
             raise GeminiUnavailable(f"upload: HTTP {done.status_code} {done.text[:160]}")
@@ -325,15 +461,17 @@ class Client:
         deadline = time.time() + wait
         while record.get("state") == "PROCESSING" and time.time() < deadline:
             self.sleep(5)
-            reply = self._http("GET", f"{API}/v1beta/{record['name']}")
+            reply = self._http("GET", f"{API}/v1beta/{record['name']}", key=key)
             record = reply.json() if reply.status_code == 200 else record
         if record.get("state") not in (None, "ACTIVE"):
             raise GeminiUnavailable(f"uploaded file not usable: {record.get('state')}")
+        if record.get("uri"):
+            self.file_key[record["uri"]] = key
         return record
 
     def delete(self, record: dict) -> None:
         try:
-            self._http("DELETE", f"{API}/v1beta/{record['name']}")
+            self._http("DELETE", f"{API}/v1beta/{record['name']}", key=self.file_key.get(record.get("uri", ""), 0))
         except Exception:  # noqa: BLE001 - files expire on their own after 48 h
             pass
 
@@ -358,7 +496,11 @@ class Client:
         for call in self.calls:
             if call.get("error"):
                 errors.setdefault(call["model"], f"{call['error']} — Google: {call.get('google_says', '')[:300]}")
-        return {"requests": len(self.calls), "by_model": models, "exhausted": sorted(self.exhausted), "errors": errors,
+        keys = {}
+        for call in self.calls:
+            keys[f"key{call.get('key', 1)}"] = keys.get(f"key{call.get('key', 1)}", 0) + 1
+        return {"requests": len(self.calls), "by_model": models, "by_key": keys, "keys": len(self.keys),
+                "exhausted": sorted(self.exhausted), "errors": errors,
                 "seconds": round(sum(c["seconds"] for c in self.calls), 1), "waited_for_limits": round(self.waited),
                 "models": chosen}
 

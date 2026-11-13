@@ -108,6 +108,15 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
     add("length", "pass" if 0.6 * target_seconds <= duration <= target_seconds + 5 else "warn",
         f"{duration:.0f} s (requested {target_seconds:.0f} s)")
     aligned = voiceover.get("alignment") or []
+    if aligned and aligned[0].startswith("footage-first"):  # Gemini watched the footage and wrote line by line
+        lined = sum(len(b.get("lines") or []) for b in voiceover.get("beats") or [])
+        dropped = [n for n in aligned if n.startswith("dropped")]
+        add("script written from the footage", "pass",
+            f"{lined} lines, each tied to the event that shows it"
+            + (f"; {len(dropped)} lines dropped ({' | '.join(d[:60] for d in dropped[:3])})" if dropped else "")
+            + (f"; editor: {' | '.join(n[8:70] for n in aligned if n.startswith('editor:'))[:200]}"
+               if any(n.startswith("editor:") for n in aligned) else ""))
+        aligned = []
     if aligned:  # what was changed before voicing so the words match the footage
         rewrites = sum(1 for n in aligned if n.startswith("rewritten"))
         moved = sum(1 for n in aligned if n.startswith("scene") and "moved" in n)

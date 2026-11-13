@@ -254,6 +254,91 @@ def _slot_picks(pieces: list[tuple[float, float]], slots: list[dict], speed: flo
     return picked
 
 
+def _clean(word: str) -> str:
+    return re.sub(r"[^a-z0-9']", "", str(word).lower())
+
+
+def line_spans(beat: dict, gap: float) -> list[dict] | None:
+    """Each line of a footage-first narration take: its start/end in the take and when its key word is spoken
+    (from the narrator's word timings). None when the words cannot be matched to the lines."""
+    lines, words = beat.get("lines") or [], beat.get("words") or []
+    counts = [len(line["text"].split()) for line in lines]
+    if not lines or not words or abs(sum(counts) - len(words)) > max(2, 0.15 * len(words)):
+        return None
+    scale = len(words) / max(1, sum(counts))  # small differences (numbers read out) spread evenly
+    spans, at = [], 0.0
+    for i, (line, n) in enumerate(zip(lines, counts)):
+        first = min(len(words) - 1, int(round(at)))
+        last = min(len(words), max(first + 1, int(round(at + n * scale))))
+        mine = words[first:last]
+        at += n * scale
+        t0 = 0.0 if i == 0 else float(mine[0]["start"])
+        key = _clean(line.get("key_word", ""))
+        hit = next((w for w in mine if _clean(w["word"]) == key), None) if key else None
+        tk = float(hit["start"]) if hit else (float(mine[0]["start"]) + float(mine[-1]["end"])) / 2
+        spans.append({"line": line, "start": t0, "key": max(t0, tk)})
+    for i, span in enumerate(spans):
+        span["end"] = spans[i + 1]["start"] if i + 1 < len(spans) else gap
+    return [s for s in spans if s["end"] - s["start"] > 0.05]
+
+
+def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict, used: dict) -> list[dict] | None:
+    """Shots for a footage-first narration take: every line plays the event it describes, placed so that the
+    event's peak plays when the line's key word is spoken. A line longer than its event takes more of the same
+    scene's footage around it (the watched window); only past that is it slowed gently (>=0.8x), and only past
+    that is the rest filled from the scene's other footage."""
+    spans = line_spans(beat, gap)
+    if not spans:
+        return None
+    windows = {}
+    for scene in arc.get("scenes") or []:
+        lo, hi = scene.get("watch_window") or (scene["clip_start"], scene["clip_end"])
+        windows[scene["clip_id"]] = (min(lo, scene["clip_start"]), max(hi, scene["clip_end"]))
+    if any(span["line"].get("event", {}).get("clip_id") not in footage for span in spans):
+        return None
+    shots, last_end = [], {}
+    for span in spans:
+        event = span["line"]["event"]
+        clip = event["clip_id"]
+        lo, hi = windows.get(clip, (event["start"], event["end"]))
+        lo, hi = min(lo, event["start"]), max(hi, event["end"])
+        need = span["end"] - span["start"]
+        speed = 1.0 if hi - lo >= need else max(MIN_SPEED, (hi - lo) / need)
+        take = need * speed
+        start = event["peak"] - (span["key"] - span["start"]) * speed  # the peak lands on the key word
+        if last_end.get(clip) and start < last_end[clip] < start + take and last_end[clip] - start < 0.6 * take:
+            start = last_end[clip]  # the next line of the same scene does not replay the same seconds
+        start = max(lo, min(start, hi - take))
+        end = min(hi, start + take)
+        cursor = start_t + span["start"]
+        length = (end - start) / speed
+        shots.append({"clip_id": clip, "source": footage[clip], "start": round(start, 3), "end": round(end, 3),
+                      "speed": round(speed, 3), "timeline_start": round(cursor, 3), "duration": round(length, 3),
+                      "audio": "duck", "beat": beat["id"], "event": event.get("id"),
+                      "key_at": round(start_t + span["key"], 3)})
+        used.setdefault(clip, []).append((start, end))
+        last_end[clip] = end
+        short = need - length
+        if short > 0.25:  # no more footage of this event: the scene's other footage, never another scene first
+            index = next((i for i, sc in enumerate(arc["scenes"]) if sc["clip_id"] == clip), 0)
+            cursor += length
+            for extra_clip, extra_source, s, e in _extra_footage(arc, index, footage, {}, used, short):
+                shots.append({"clip_id": extra_clip, "source": extra_source, "start": round(s, 3), "end": round(e, 3),
+                              "speed": 1.0, "timeline_start": round(cursor, 3), "duration": round(e - s, 3),
+                              "audio": "duck", "beat": beat["id"]})
+                used.setdefault(extra_clip, []).append((s, e))
+                cursor += e - s
+    if shots:  # the take ends exactly where the next beat starts (more of the same footage, never a freeze)
+        last = shots[-1]
+        last["duration"] = round(start_t + gap - last["timeline_start"], 3)
+        lo, hi = windows.get(last["clip_id"], (last["start"], last["end"]))
+        if last["duration"] * last["speed"] > last["end"] - last["start"] + 0.02:
+            last["end"] = round(min(hi, last["start"] + last["duration"] * last["speed"]), 3)
+            if last["duration"] * last["speed"] > last["end"] - last["start"] + 0.02:
+                last["speed"] = round(max(MIN_SPEED, (last["end"] - last["start"]) / last["duration"]), 3)
+    return shots
+
+
 def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | None = None, similar=None,
               director: dict | None = None) -> dict:
     """Shots on the output timeline: {clip_id, source, start, end, speed, timeline_start, duration, audio}."""
@@ -283,6 +368,10 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
                           "duration": gap, "audio": "full", "beat": beat["id"]})
             scene_cursor[beat["scene"]] = beat["clip_start"] + gap
             used.setdefault(clip_id, []).append((beat["clip_start"], beat["clip_start"] + gap))
+            continue
+        placed = None if borrowed else line_shots(beat, start_t, gap, arc, footage, used)
+        if placed:  # footage-first lines: each line plays its own event, peak under its key word
+            shots += placed
             continue
         a = scene_cursor.get(beat["scene"], scene["clip_start"])
         upcoming = [b for b in beats[index + 1:] if b["kind"] == "dialogue" and b["scene"] == beat["scene"]]

@@ -334,12 +334,14 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
         if (discover/'screening.json').exists() else {}
     youtube = YouTube()
     rows = []
+    research = json.loads((discover/'research.json').read_text()) if (discover/'research.json').exists() else {}
     chosen = json.loads((scripts/'scripts.json').read_text())
     chosen = [r for r in chosen if r['arc'] == only] if only else chosen[:max_arcs]
     failed = []
     for result in chosen:
         try:
-            rows.append(_voice_story(result, arcs, screened, youtube, output, workdir, narrator, model))
+            rows.append(_voice_story(result, arcs, screened, youtube, output, workdir, narrator, model,
+                                     movie=research.get('movie') or {}))
         except Exception as exc:  # noqa: BLE001 - one story never stops the others
             failed.append({'arc': result['arc'], 'error': str(exc)[:300]})
             print(f"Story {result['arc']} could not be voiced: {str(exc)[:300]}", file=sys.stderr)
@@ -350,7 +352,7 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
 
 
 def _voice_story(result: dict, arcs: dict, screened: dict, youtube, output: Path, workdir: Path, narrator: str,
-                 model: str) -> dict:
+                 model: str, movie: dict | None = None) -> dict:
     import shutil
     from .narration import synthesize_voiceover, write_short_captions
     arc = arcs[result['arc']]
@@ -368,10 +370,30 @@ def _voice_story(result: dict, arcs: dict, screened: dict, youtube, output: Path
             footage[scene['clip_id']] = path
     folder = output/result['arc']
     folder.mkdir(parents=True, exist_ok=True)
-    # Before anything is voiced: each scene's footage is checked and every sentence fitted to the picture.
+    # Before anything is voiced, Gemini watches every scene's footage and writes the script line by line from
+    # what it saw (each line tied to the event that shows it); the plan-based script fitted to the frames is
+    # the fallback when that cannot be done.
     from . import gemini as gem
-    from .align import align_story
-    arc, result, alignment = align_story(gem.client(), arc, result, footage, workdir/'align')
+    google = gem.client()
+    alignment: list[str] = []
+    script = None
+    if google is not None:
+        from . import footage_script
+        from .watch import watch_story
+        movie = movie or {'title': str((result.get('brief') or {}).get('movie', '')), 'year': ''}
+        arc = watch_story(google, arc, footage, workdir/'watch', movie)
+        script, alignment = footage_script.write(google, arc, result, movie,
+                                                 seconds=float(arc.get('short_seconds') or 150))
+    if script is not None:
+        chosen_lines = {b['line'] for b in script['beats'] if b.get('kind') == 'dialogue'}
+        pool = {**(result.get('movie_lines') or {}), **(result.get('dialogue_lines') or {})}
+        result = {**result, 'script': script, 'dialogue_lines': {k: pool[k] for k in chosen_lines if k in pool}}
+        alignment = ['footage-first script: every line written from the watched events'] + alignment
+    else:
+        from .align import align_story
+        if alignment:
+            print('Footage-first script not made: ' + '; '.join(alignment[:3]), file=sys.stderr)
+        arc, result, alignment = align_story(google, arc, result, footage, workdir/'align')
     write_json(folder/'arc.json', arc)  # the edit plan uses these (possibly corrected) scene windows
     write_json(folder/'script.json', result['script'])
     voiceover = synthesize_voiceover(result, footage, arc, narrator, workdir, model)
@@ -573,6 +595,8 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
             if fixes:
                 director = {**director, **fixes}
                 edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
+        if any(b.get('lines') for b in voiceover.get('beats') or []):
+            picture = picture + _line_check(arc, voiceover, edl, footage, output/voiceover['arc'])
         edl['director'] = {k: [list(r) for r in v] for k, v in director.items()}
         edl['critic_fixed_beats'] = sorted(fixes)
         edl['picture_check'] = picture
@@ -599,7 +623,8 @@ def _picture_edit(arc: dict, voiceover: dict, footage: dict, cuts: dict, similar
     google = gem.client()
     if google is None:
         return {}, [], []
-    slots = beat_slots(voiceover)
+    lined = {b['id'] for b in voiceover.get('beats') or [] if b.get('lines')}
+    slots = {k: v for k, v in beat_slots(voiceover).items() if k not in lined}  # footage-first lines are placed already
     if not slots:
         return {}, [], []
     temp = Path(tempfile.mkdtemp(prefix='frames-', dir=work.parent if work.parent.exists() else None))
@@ -661,6 +686,47 @@ def _picture_edit(arc: dict, voiceover: dict, footage: dict, cuts: dict, similar
         return {}, [], []
     finally:
         shutil.rmtree(temp, ignore_errors=True)
+
+
+def _line_check(arc: dict, voiceover: dict, edl: dict, footage: dict, work: Path) -> list[dict]:
+    """Footage-first lines: Gemini looks at the frame under every line (its event, at the key word) and scores
+    how well it shows the line; the rows go into the review."""
+    import shutil
+    import tempfile
+    from . import gemini as gem
+    from .edit import line_spans
+    google = gem.client()
+    beats = voiceover.get('beats') or []
+    slots = {}
+    for i, beat in enumerate(beats):
+        if not beat.get('lines'):
+            continue
+        gap = (beats[i + 1]['timeline_start'] - beat['timeline_start']) if i + 1 < len(beats) else beat['duration']
+        spans = line_spans(beat, gap) or []
+        slots[beat['id']] = [{'start': x['start'], 'end': x['end'], 'text': x['line']['text'],
+                              'event': (x['line'].get('event') or {}).get('what', '')} for x in spans]
+    if google is None or not slots:
+        return []
+    temp = Path(tempfile.mkdtemp(prefix='lines-', dir=work.parent if work.parent.exists() else None))
+    try:
+        checked = gem.check_cuts(google, voiceover, slots, edl, footage, temp)
+    except gem.GeminiUnavailable as exc:
+        print(f'No line check: {str(exc)[:120]}', file=sys.stderr)
+        checked = {}
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+    report = []
+    for beat_id, rows in slots.items():
+        for k, row in enumerate(rows):
+            got = checked.get(f'{beat_id}#{k}') or {}
+            report.append({'clause': f'{beat_id}#{k}', 'says': row['text'][:160], 'event': row['event'][:120],
+                           'match': got.get('match'), 'shown': True, 'sees': got.get('sees', ''),
+                           'problem': got.get('problem', '')})
+    scores = [r['match'] for r in report if r['match']]
+    if scores:
+        print(f"Line check: {len(report)} lines, average match {sum(scores) / len(scores):.1f}/10, "
+              f"{sum(1 for x in scores if x < 6)} under 6", file=sys.stderr)
+    return report
 
 
 def _scene_picks(google, arc: dict, voiceover: dict, slots: dict, sheets: list, footage: dict, work: Path) -> dict:

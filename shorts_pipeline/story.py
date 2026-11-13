@@ -25,6 +25,7 @@ SUBTITLE_CHARS = 120_000   # whole-movie dialogue timeline (Gemini reads ~1M tok
 
 STORY_SCHEMA = {"type": "object", "properties": {"stories": {"type": "array", "items": {"type": "object", "properties": {
     "title": {"type": "string"},
+    "story_map": {"type": "string"},
     "spine": {"type": "string"},
     "hook_idea": {"type": "string"},
     "ending_idea": {"type": "string"},
@@ -69,6 +70,9 @@ What the best channels do (from the reference Shorts):
 - The narrator names the specific objects and actions that are on screen, and short original movie lines
   punctuate the story at confrontations.
 - The ending fits the story: a renewed threat, an ironic reveal, a reflection, a thematic payoff or a full payoff.
+First, for each story, write story_map: the main characters (who they are to each other), the chain of cause and
+effect from the first beat to the last (what makes each thing happen), and the arc. Choose the beats, the hook and
+the ending from that map.
 Rules for each story:
 - ONE STORYLINE: one conflict carried by the same main characters from the first beat to the last, each beat
   causing the next. Never join separate subplots or side missions into one story (e.g. a side job the hero does
@@ -211,6 +215,7 @@ def clean_stories(raw: dict, runtime: float) -> list[dict]:
         if len(beats) >= MIN_BEATS:
             used += [(b["movie_start"], b["movie_end"]) for b in beats]
             stories.append({"title": str(story.get("title", ""))[:90], "spine": str(story.get("spine", ""))[:400],
+                            "story_map": " ".join(str(story.get("story_map") or "").split())[:1200],
                             "hook_idea": str(story.get("hook_idea", ""))[:200],
                             "ending_idea": str(story.get("ending_idea", ""))[:200],
                             "hook": " ".join(str(story.get("hook") or "").split())[:160],
@@ -391,7 +396,7 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, 
                      "short_seconds": round(min(target_seconds, 0.85 * footage), 1),
                      "shorter_than_requested": 0.85 * footage < target_seconds, "planned": True,
                      "story": {k: story.get(k) for k in ("title", "spine", "hook_idea", "ending_idea", "ending_mode",
-                                                         "cold_open", "hook", "mood", "hook_beat_name")},
+                                                         "cold_open", "hook", "mood", "hook_beat_name", "story_map")},
                      "missing": missing,
                      "scenes": scenes})
     return arcs

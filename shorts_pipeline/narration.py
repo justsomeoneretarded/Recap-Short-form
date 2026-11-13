@@ -87,6 +87,8 @@ def voice_beats(result: dict) -> list[dict]:
     hook = speakable((script.get("hook") or "").strip())
     hook_at = script.get("hook_scene") if isinstance(script.get("hook_scene"), int) and script.get("hook_scene", 0) >= 0 else 0
     pending: dict | None = {"kind": "narration", "scene": hook_at, "text": hook, "delivery": "punchy_hook"} if hook else None
+    if pending and script.get("hook_line"):  # footage-first: the hook keeps its event and key word
+        pending["lines"] = [{**script["hook_line"], "text": hook}]
     if pending and hook_at:
         pending["flash_forward"] = True  # the hook shows a later scene first, then the story starts from its cause
     for beat in script.get("beats", []):
@@ -104,12 +106,19 @@ def voice_beats(result: dict) -> list[dict]:
         text = speakable((beat.get("text") or "").strip())
         if not text:
             continue
+        lines = [{**line, "text": speakable(line["text"])} for line in beat.get("lines") or []]
         if pending and pending["scene"] == beat.get("scene") and pending["delivery"] != "punchy_hook":
             pending["text"] += " " + text
+            if lines and "lines" in pending:
+                pending["lines"] += lines
+            else:
+                pending.pop("lines", None)  # mixed: no per-line placement for this take
         else:
             if pending:
                 beats.append(pending)
             pending = {"kind": "narration", "scene": beat.get("scene", 0), "text": text, "delivery": "punchy"}
+            if lines:
+                pending["lines"] = lines
     if pending:
         beats.append(pending)
     for i, beat in enumerate(beats):
