@@ -129,6 +129,9 @@ class Client:
         self.last: dict[tuple[int, str], float] = {}                 # (key, model) → time of the last request
         self.window: dict[tuple[int, str], list[tuple[float, int]]] = {}  # (key, model) → (time, input tokens)
         self.file_key: dict[str, int] = {}                          # uploaded file → the key that owns it
+        self.minute_hits: dict[tuple[int, str], float] = {}         # (key, model) → last per-minute 429
+        self.shared_hits: dict[str, int] = {}
+        self.shared_project = False                                  # the keys share one free limit
         self.good: dict[str, str] = {}         # the model that last answered, per role: tried first
         self.last_call = 0.0
         self.waited = 0.0                      # seconds spent waiting for limits in this job
@@ -240,8 +243,9 @@ class Client:
                 if any(self.cool.get((k, n), 0) <= now for k in self._usable_keys(n))]
 
     @staticmethod
-    def estimate_tokens(body: dict) -> int:
-        """Rough input size: text / 4, ~258 per image, ~100 per second of low-resolution video."""
+    def estimate_tokens(body: dict, *, video_seconds: float | None = None, low_media: bool = True) -> int:
+        """Rough input size: text / 4, ~258 per image, ~100 per second of low-resolution video (~300 at
+        normal resolution); a video's length comes from `video_seconds` or its offsets."""
         total = 0
         for content in body.get("contents") or []:
             for part in content.get("parts") or []:
@@ -253,11 +257,12 @@ class Client:
                 elif "fileData" in part:
                     meta = part.get("videoMetadata") or {}
                     try:
-                        seconds = float(str(meta.get("endOffset", "60s")).rstrip("s")) - \
-                            float(str(meta.get("startOffset", "0s")).rstrip("s"))
+                        seconds = float(str(meta.get("endOffset")).rstrip("s")) - \
+                            float(str(meta.get("startOffset", "0s")).rstrip("s")) if meta.get("endOffset") else None
                     except ValueError:
-                        seconds = 60.0
-                    total += int(max(1.0, seconds) * 100)
+                        seconds = None
+                    seconds = seconds or video_seconds or 180.0  # an unknown upload: assume a three-minute clip
+                    total += int(max(1.0, seconds) * (100 if low_media else 300))
         for part in (body.get("systemInstruction") or {}).get("parts") or []:
             total += len(part.get("text", "")) // 4
         return max(1, total)
@@ -283,7 +288,8 @@ class Client:
         daily limit → that key is done with this model for today."""
         if len(self.calls) >= self.max_calls:
             raise GeminiUnavailable(f"this job's Gemini budget ({self.max_calls} requests) is spent")
-        tokens = self.estimate_tokens(body)
+        seconds, low = getattr(self, "_video_seconds", (None, False))
+        tokens = self.estimate_tokens(body, video_seconds=seconds, low_media=low)
         pinned = next((self.file_key[u] for u in re.findall(r'"fileUri":\s*"([^"]+)"', json.dumps(body))
                        if u in self.file_key), None)  # an uploaded file only exists for the key that uploaded it
         minute_waits, server_errors, errors = 0, 0, []
@@ -337,7 +343,18 @@ class Client:
                         self.nf[k].add(model)  # not a daily limit: this key never gets this model
                     self._save_state()
                     continue  # the next key, if any
-                self.cool[slot] = time.time() + max(wait, MINUTE_WAIT if len(self.keys) == 1 else wait)
+                now = time.time()
+                others = [t for (kk, mm), t in self.minute_hits.items() if mm == model and kk != k and now - t < 15]
+                self.minute_hits[slot] = now
+                if others:  # the other key hit the same per-minute limit seconds ago
+                    self.shared_hits[model] = self.shared_hits.get(model, 0) + 1
+                    if self.shared_hits[model] >= 3 and not self.shared_project:
+                        self.shared_project = True
+                        print("[gemini] the keys hit their per-minute limits together: they appear to share one "
+                              "Google project (one free limit); they now wait together", file=sys.stderr, flush=True)
+                until = now + max(wait, MINUTE_WAIT if len(self.keys) == 1 or self.shared_project else wait)
+                for kk in (range(len(self.keys)) if self.shared_project else [k]):
+                    self.cool[(kk, model)] = max(self.cool.get((kk, model), 0), until)
                 continue  # another key now, or a bounded wait when all are cooling
             if reply.status_code in (500, 502, 503, 504) and server_errors < 3:
                 server_errors += 1
@@ -370,9 +387,12 @@ class Client:
     # ------------------------------------------------------------------ generation
     def generate(self, role: str, parts: list[dict], *, system: str | None = None, schema: dict | None = None,
                  temperature: float = 0.4, seed: int | None = None, tools: list | None = None,
-                 low_media: bool = False, max_tokens: int | None = None) -> dict | str:
-        """Text (or parsed JSON when `schema` is given) from the best model still available."""
+                 low_media: bool = False, max_tokens: int | None = None,
+                 video_seconds: float | None = None) -> dict | str:
+        """Text (or parsed JSON when `schema` is given) from the best model still available. `video_seconds`:
+        the length of a video part, so the input-token window counts it honestly."""
         self._request_wait = REQUEST_WAIT
+        self._video_seconds = (video_seconds, low_media)
         for round_ in range(2):
             try:
                 return self._generate(role, parts, system=system, schema=schema, temperature=temperature, seed=seed,
@@ -500,6 +520,7 @@ class Client:
         for call in self.calls:
             keys[f"key{call.get('key', 1)}"] = keys.get(f"key{call.get('key', 1)}", 0) + 1
         return {"requests": len(self.calls), "by_model": models, "by_key": keys, "keys": len(self.keys),
+                "keys_share_one_project": self.shared_project,
                 "exhausted": sorted(self.exhausted), "errors": errors,
                 "seconds": round(sum(c["seconds"] for c in self.calls), 1), "waited_for_limits": round(self.waited),
                 "models": chosen}
@@ -742,7 +763,7 @@ def watch_clip(gemini: Client, video_id: str, movie: dict, *, duration: float | 
         video["videoMetadata"] = {"startOffset": "0s", "endOffset": f"{int(MAX_VIDEO_SECONDS)}s"}
     try:
         result = gemini.generate("light", [video, {"text": prompt}], schema=WATCH_SCHEMA, temperature=0.2,
-                                 low_media=True)
+                                 low_media=True, video_seconds=min(duration or 180.0, MAX_VIDEO_SECONDS))
         source = "youtube link"
     except GeminiUnavailable:
         if not local or not Path(local).exists() or Path(local).stat().st_size > 1_500_000_000:

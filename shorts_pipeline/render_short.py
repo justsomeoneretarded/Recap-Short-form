@@ -287,7 +287,10 @@ def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertic
     """Framing plan and motion per shot, computed once (also shipped to parallel render machines)."""
     plans = {}
     for i, shot in enumerate(edl["shots"]):
-        active = tuple((screening.get(shot["clip_id"]) or {}).get("active", {}).get("box") or (0, 0, 1, 1))
+        report_active = (screening.get(shot["clip_id"]) or {}).get("active", {}) or {}
+        active = tuple(report_active.get("box") or (0, 0, 1, 1))
+        if report_active.get("subtitle_crop"):  # burned-in subtitles: the picture ends just above them
+            active = (active[0], active[1], active[2], min(active[3], float(report_active["subtitle_crop"])))
         frames = sample(Path(shot["source"]), shot["start"], max(shot["start"] + 0.2, shot["end"]), 5)
         entry = {"active": active, "motion": motion(Path(shot["source"]), shot["start"], shot["end"] - shot["start"])}
         logo = bool(((screening.get(shot["clip_id"]) or {}).get("text") or {}).get("watermarks"))

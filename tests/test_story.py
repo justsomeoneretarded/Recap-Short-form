@@ -279,3 +279,16 @@ def test_the_films_ending_is_never_used():
         beat("finale", "95:00", "95:30", "x")]}], "broad_searches": []}
     stories = st.clean_stories(raw, runtime=100 * 60)
     assert [b["name"] for b in stories[0]["beats"]] == ["a", "b", "c"]           # 95 min of 100: the climax
+
+
+def test_a_clean_upload_beats_a_subtitled_one_and_a_subtitled_one_beats_nothing():
+    from shorts_pipeline.arcs import Unit
+    story = {"title": "T", "beats": [
+        {"name": n, "role": "r", "what_we_see": "w", "narration": "x", "movie_start": t, "movie_end": t + 30}
+        for n, t in (("a", 100), ("b", 400), ("c", 700))]}
+    subtitled = [Unit(f"s{t}", "sub", 0, 40, t - 5, t + 35, 0.9, 1080, subtitled=True) for t in (100, 400, 700)]
+    clean = Unit("clean", "clean", 0, 40, 395, 435, 0.5, 1080)
+    arc = st.stories_to_arcs([story], subtitled + [clean], 150)[0]
+    by_name = {sc["beat"]["name"]: sc for sc in arc["scenes"]}
+    assert by_name["b"]["clip_id"] == "clean" and not by_name["b"]["subtitled"]   # lower score, but clean
+    assert by_name["a"]["clip_id"] == "s100" and by_name["a"]["subtitled"]        # the only footage of that scene

@@ -50,9 +50,10 @@ def test_clean_clip_is_accepted(videos):
     assert report["accept"], report["reasons"]
 
 
-def test_burned_subtitles_in_picture_are_rejected(videos):
+def test_burned_subtitles_in_picture_mark_the_clip_as_a_last_resort(videos):
     report = s.screen(videos["subs"])
-    assert "burned-in subtitles inside the picture" in report["reasons"]
+    assert report["accept"] and report["subtitled"]                      # kept, only used when nothing else shows it
+    assert report["active"]["subtitle_crop"] <= report["active"]["box"][3] - 0.1  # the picture ends above them
 
 
 def test_subtitles_only_in_black_bars_are_allowed(videos):

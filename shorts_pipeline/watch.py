@@ -100,7 +100,7 @@ def watch_scene(gemini, scene: dict, video: str, work: Path, movie: dict, *, pro
             {"fileData": {"fileUri": record["uri"], "mimeType": record.get("mimeType", "video/mp4")}},
             {"text": PROMPT.format(movie=f"{movie.get('title')} ({movie.get('year')})",
                                    must_show=(scene.get("beat") or {}).get("what_we_see", ""))}],
-            schema=EVENTS_SCHEMA, temperature=0.2, low_media=True, max_tokens=8192)
+            schema=EVENTS_SCHEMA, temperature=0.2, low_media=True, max_tokens=8192, video_seconds=hi - lo)
     finally:
         gemini.delete(record)
         segment.unlink(missing_ok=True)

@@ -336,6 +336,9 @@ def best_arcs(arcs: list[dict], stories: list[dict], wanted: int, results: list[
         if length and footage < USABLE_SHARE * length:
             log(f"script {r['n'] + 1}: footage for only {footage:.0f} s of a {length:.0f} s Short")
             continue
+        subtitled = [sc["beat"]["name"] for sc in arc["scenes"] if sc.get("subtitled")]
+        if subtitled:
+            log(f"script {r['n'] + 1}: subtitled footage used as the last resort for: {subtitled}")
         scored.append((rank, r["n"], arc))
     for r in keep:
         if not any(n == r["n"] for _, n, _ in scored):

@@ -561,3 +561,21 @@ def test_every_configured_key_is_found(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY_2", "b")
     monkeypatch.setenv("GEMINI_API_KEYS", "c, a")
     assert g.api_keys() == ["a", "b", "c"]
+
+
+def test_video_length_counts_in_the_token_estimate():
+    body = {"contents": [{"parts": [{"fileData": {"fileUri": "https://www.youtube.com/watch?v=x"}}, {"text": "go"}]}]}
+    assert g.Client.estimate_tokens(body, video_seconds=600) >= 60000
+    assert g.Client.estimate_tokens(body) >= 18000                    # an unknown upload: a three-minute clip
+
+
+def test_keys_that_hit_the_minute_limit_together_are_treated_as_one_project():
+    s = KeyedSession({"k1": {"gemini-3.5-flash": [MINUTE_429] * 3 + [answer({"ok": 1})]},
+                      "k2": {"gemini-3.5-flash": [MINUTE_429] * 3}})
+    c = g.Client(keys=["k1", "k2"], session=s, sleep=lambda x: None)
+    for _ in range(3):
+        try:
+            c.generate("smart", [{"text": "x"}], schema={"type": "object"})
+        except g.GeminiUnavailable:
+            pass
+    assert c.shared_project and c.usage()["keys_share_one_project"]

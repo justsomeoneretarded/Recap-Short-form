@@ -109,6 +109,7 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     promo_frames, promo_times, card_times = 0, [], []
     ax0, ay0, ax1, ay1 = active
     copyright_rows = 0
+    sub_tops: list[float] = []
     for when, rows, frame in samples:
         has_sub = False
         # A frame full of text (an opening title crawl, a letter, a news screen) is a text card:
@@ -137,7 +138,10 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
             if cy > ay0 + 0.6 * (ay1 - ay0) and 0.15 < rel_x < 0.85 or cy > ay1:
                 has_sub = True
                 subtitle_texts.add(row["text"].lower())
-                inside_picture += _inside((cx, cy), active)
+                inside = _inside((cx, cy), active)
+                inside_picture += inside
+                if inside:
+                    sub_tops.append((y0 - ay0) / max(1e-6, ay1 - ay0))
         subtitle_frames += has_sub
     n = max(1, len(samples))
     watermarks = [{"x": k[0], "y": k[1], "text": k[2], "frames": v} for k, v in corner.items() if v / n >= 0.4]
@@ -145,6 +149,7 @@ def classify_text(samples: list[tuple[float, list[dict], np.ndarray]], active: t
     inner_marks = [{"x": k[0], "y": k[1], "text": k[2], "frames": v} for k, v in logos.items() if v >= 2]
     return {"frames": len(samples), "subtitle_frames": subtitle_frames, "subtitle_share": round(subtitle_frames / n, 3),
             "distinct_subtitle_lines": len(subtitle_texts), "subtitle_boxes_inside_picture": inside_picture,
+            "subtitle_top": round(float(np.percentile(sub_tops, 10)), 3) if sub_tops else None,
             "watermarks": watermarks, "inner_watermarks": inner_marks, "copyright_rows": copyright_rows,
             "promo_frames": promo_frames,
             "text_card_times": sorted(set(card_times)),
@@ -199,9 +204,13 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
     flip = mirrored(samples)
     cutting = shot_rate(video)
     reasons, notes = [], []
+    subtitled = False
     if text["subtitle_share"] >= 0.2 and text["distinct_subtitle_lines"] >= 3:
         if text["subtitle_boxes_inside_picture"] > 0.3 * text["subtitle_frames"]:
-            reasons.append("burned-in subtitles inside the picture")
+            # Used only as a last resort (no clean upload of the scene), zoomed past the subtitle line.
+            subtitled = True
+            notes.append("burned-in subtitles inside the picture: used only when no clean upload shows the scene, "
+                         "zoomed past the subtitles")
         else:
             notes.append("subtitles only in the black bars (removed by the crop)")
     for mark in text["watermarks"]:
@@ -240,7 +249,12 @@ def screen(video: Path, *, placement: dict | None = None, every: float = 1.0) ->
     brightness = round(float(np.median([f.mean() for _, f in frames])), 1) if frames else None
     if brightness is not None and brightness < 35:
         notes.append(f"very dark footage (brightness {brightness:.0f}/255)")
+    if subtitled:  # the picture is used down to just above the subtitles (at least 12 % is cut)
+        top = min(0.88, text.get("subtitle_top") or 0.88)
+        box = list(active["box"])
+        active = {**active, "subtitle_crop": round(box[1] + (box[3] - box[1]) * max(0.6, top - 0.02), 4)}
     return {"accept": not reasons, "reasons": reasons, "notes": notes, "usable": usable, "active": active, "text": text,
+            "subtitled": subtitled,
             "brightness": brightness,
             "avoid": [[max(0.0, t - every), t + every] for t in text.get("text_card_times", [])],
             "mirror_check": flip, "cutting": cutting, "width": info.get("width"), "height": info.get("height"),

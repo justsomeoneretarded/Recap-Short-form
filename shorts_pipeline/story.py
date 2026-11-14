@@ -361,18 +361,29 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, 
     for n, story in enumerate(stories):
         scenes = []
         for b, beat in enumerate(story["beats"]):
+            need = min(6.0, 0.5 * (beat["movie_end"] - beat["movie_start"]))
+
+            def best_unit(clean_only: bool):
+                best, best_cover = None, 0.0
+                for u in units:
+                    if clean_only and u.subtitled:
+                        continue
+                    cover = min(u.movie_end, beat["movie_end"]) - max(u.movie_start, beat["movie_start"])
+                    if cover > best_cover + 0.5 or (best is not None and abs(cover - best_cover) <= 0.5 and u.score > best.score):
+                        best, best_cover = u, cover
+                return (best, best_cover) if best is not None and best_cover >= need else (None, 0.0)
+
             check = ((confirmed or {}).get(n) or {}).get(b)
-            if check:
+            clean, clean_cover = best_unit(True)
+            confirmed_subtitled = bool(check and ((screening or {}).get(check["id"]) or {}).get("subtitled"))
+            if check and not (confirmed_subtitled and clean is not None):  # a clean upload beats a subtitled one
                 scene = confirmed_scene(beat, check, (clips or {}).get(check["id"]), (screening or {}).get(check["id"]))
                 if scene:
+                    scene["subtitled"] = confirmed_subtitled
                     scenes.append(scene)
                     continue
-            best, best_cover = None, 0.0
-            for u in units:
-                cover = min(u.movie_end, beat["movie_end"]) - max(u.movie_start, beat["movie_start"])
-                if cover > best_cover + 0.5 or (best is not None and abs(cover - best_cover) <= 0.5 and u.score > best.score):
-                    best, best_cover = u, cover
-            if best is None or best_cover < min(6.0, 0.5 * (beat["movie_end"] - beat["movie_start"])):
+            best, best_cover = (clean, clean_cover) if clean is not None else best_unit(False)  # last resort
+            if best is None:
                 continue
             ms, me = max(best.movie_start, beat["movie_start"]), min(best.movie_end, beat["movie_end"])
             ms, me = fit_to_narration(ms, me, best.movie_start, best.movie_end, beat)
@@ -384,7 +395,7 @@ def stories_to_arcs(stories: list[dict], units: list, target_seconds: float, *, 
                            "peaks": sorted({round(p, 1) for p in best.peaks if cs <= p <= ce}),
                            "avoid": [r for r in best.avoid if r[1] > cs and r[0] < ce],
                            "moments": [m for m in best.moments if m["end"] > cs and m["start"] < ce],
-                           "alternates": best.alternates, "timed_by": "subtitles",
+                           "alternates": best.alternates, "timed_by": "subtitles", "subtitled": best.subtitled,
                            "beat": {k: beat.get(k) for k in BEAT_KEYS}})
         if len(scenes) < MIN_BEATS:
             continue
@@ -431,6 +442,7 @@ CHECK_SCHEMA = {"type": "object", "properties": {
     "original_audio": {"type": "boolean"}, "altered": {"type": "boolean"}},
     "required": ["shows_scene", "confidence", "start", "end", "original_audio", "altered"]}
 SHORT_CLIP_SECONDS = 5 * 60   # short uploads are watched at 2 frames per second: brief actions are not missed
+CHECK_SECONDS = 600.0          # the most of one upload Gemini watches to confirm a scene (input-token limits)
 
 
 def check_clip(gemini, video_id: str, movie: dict, beat: dict, duration: float | None = None) -> dict:
@@ -445,7 +457,11 @@ def check_clip(gemini, video_id: str, movie: dict, beat: dict, duration: float |
     video = {"fileData": {"fileUri": f"https://www.youtube.com/watch?v={video_id}"}}
     if duration and duration <= SHORT_CLIP_SECONDS:
         video["videoMetadata"] = {"fps": 2}
-    reply = gemini.generate("light", [video, {"text": prompt}], schema=CHECK_SCHEMA, temperature=0.1, low_media=True)
+    elif duration and duration > CHECK_SECONDS:  # a long compilation: its first ten minutes (input-token limits)
+        video["videoMetadata"] = {"startOffset": "0s", "endOffset": f"{int(CHECK_SECONDS)}s"}
+    seconds = min(duration or 180.0, CHECK_SECONDS)
+    reply = gemini.generate("light", [video, {"text": prompt}], schema=CHECK_SCHEMA, temperature=0.1, low_media=True,
+                            video_seconds=seconds * (2 if duration and duration <= SHORT_CLIP_SECONDS else 1))
     start, end = float(reply.get("start") or 0), float(reply.get("end") or 0)
     if duration:
         start, end = max(0.0, min(start, duration)), max(0.0, min(end, duration))

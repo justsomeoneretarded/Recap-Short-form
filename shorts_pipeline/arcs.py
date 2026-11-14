@@ -42,6 +42,7 @@ class Unit:
     intensity: float = 0.5   # 0 calm talk … 1 fast action (from the clip's cutting rate)
     avoid: list = field(default_factory=list)  # clip-time ranges never to show (text cards)
     moments: list = field(default_factory=list)  # what Gemini saw, clip time (optional)
+    subtitled: bool = False  # burned-in subtitles: only used when no clean upload covers the scene
 
     @property
     def seconds(self) -> float:
@@ -97,7 +98,7 @@ def units_from(clips: list[dict], screening: dict[str, dict]) -> list[Unit]:
                                   [p for p in peaks + watched_peaks if s <= p <= e],
                                   clip_seconds=clip_seconds, intensity=seen_intensity(inside, intensity),
                                   avoid=[r for r in (report or {}).get("avoid") or [] if r[1] > s and r[0] < e],
-                                  moments=inside))
+                                  moments=inside, subtitled=bool((report or {}).get("subtitled"))))
     return units
 
 
