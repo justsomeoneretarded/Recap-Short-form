@@ -579,3 +579,39 @@ def test_keys_that_hit_the_minute_limit_together_are_treated_as_one_project():
         except g.GeminiUnavailable:
             pass
     assert c.shared_project and c.usage()["keys_share_one_project"]
+
+
+def test_busy_google_servers_are_waited_for_before_giving_up():
+    slept = []
+    session = Session({"gemini-3.5-flash": [Reply(503, text="overloaded")] * 4 + [answer({"ok": 1})]})
+    c = g.Client("k", session=session, sleep=slept.append)
+    assert c.generate("smart", [{"text": "x"}], schema={"type": "object"}) == {"ok": 1}
+    assert 60.0 in slept                       # one long wait for the servers, not a give-up after seconds
+
+
+def test_limits_are_not_mistaken_for_busy_servers():
+    assert g._server_busy("gemini-3.5-flash: HTTP 503 {overloaded}; gemini-2.5-flash: HTTP 500 x")
+    assert not g._server_busy("gemini-3.5-flash: HTTP 503 x; gemini-2.5-flash: daily free limit used up")
+    assert not g._server_busy("gemini-3.5-flash: HTTP 400 bad schema")
+    assert not g._server_busy("no Gemini model for smart")
+
+
+def test_without_a_backup_the_writer_stops_and_says_why(capsys):
+    class Primary:
+        stats, gemini, role = [{}], None, "smart"
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, *a, **k):
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("writer answer was not a JSON object")
+            raise g.GeminiUnavailable("gemini-3.5-flash: HTTP 503 overloaded")
+    primary = Primary()
+    writer = g.FallbackWriter(primary, None)
+    with pytest.raises(g.GeminiUnavailable):
+        writer.chat("s", "u", {})
+    assert primary.calls == 2                  # a malformed answer is asked again once
+    err = capsys.readouterr().err
+    assert "asking again" in err and "could not answer" in err and len(writer.notes) == 2

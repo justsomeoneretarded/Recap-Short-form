@@ -252,12 +252,16 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
     from . import gemini as gem
     local_model = model or WRITER_MODEL
     google = gem.client()
-    if google is not None:  # Gemini writes; the local model takes over if Gemini cannot
-        llm = gem.FallbackWriter(gem.GeminiWriter(google), lambda: Ollama(local_model),
-                                 wait_ready=lambda: gem.wait_for_ollama(model=local_model))
+    if google is not None:
+        # Gemini writes. The local model is not a backup: its scripts were weak and it cost ~40 min to load, so a
+        # Gemini failure stops the story with a note instead. The voice step writes the final lines from the
+        # watched footage; this script is only its starting material (seed), so it is never rejected here.
+        llm = gem.FallbackWriter(gem.GeminiWriter(google), None)
         drafts = 1  # a strong first draft, then the same checks and targeted fixes
     else:
         llm = Ollama(local_model)
+    seed_only = google is not None
+    log = lambda m: print(m, file=sys.stderr, flush=True)  # noqa: E731
     output.mkdir(parents=True, exist_ok=True)
     results, rejected, lines = [], [], [f"# {research['movie']['title']} ({research['movie']['year']}) — scripts", '']
     chosen = stories['arcs'][:max_arcs]
@@ -270,11 +274,27 @@ def run_write(source: Path, output: Path, *, max_arcs: int = 5, drafts: int = 2,
             break  # this machine's Short is written
         started = time.time()
         checker = (lambda data, script: gem.picture_check(google, data, script)) if google is not None else None
-        result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '', drafts=drafts,
-                             picture_check=checker)
+        log(f"Writing {arc['id']} ({'seed for the footage-first script' if seed_only else 'final script'})")
+        try:
+            result = write_short(arc, research, transcript, llm, plot=plot.read_text() if plot.exists() else '',
+                                 drafts=drafts, picture_check=checker, seed_only=seed_only)
+        except (RuntimeError, ValueError, KeyError) as exc:  # Gemini could not write it: stop this story with a note
+            log(f"{arc['id']}: not written — {str(exc)[:300]}")
+            lines += [f"## {arc['id']}: NOT WRITTEN ({str(exc)[:300]})", '']
+            (output/'scripts.md').write_text('\n'.join(lines))
+            continue
         result['seconds_to_write'] = round(time.time()-started, 1)
         if google is not None:
             result['gemini'] = google.usage()
+        calls = result.get('model_calls') or []
+        used = sorted({c.get('model') or local_model for c in calls})
+        log(f"{arc['id']}: {len(calls)} writer calls ({', '.join(used) or 'none'}), {result['check']['total_words']}/"
+            f"{result['check']['target_words']} words, score {result['check']['score']}, "
+            f"{result['seconds_to_write']:.0f} s; issues: {'; '.join(result['check']['issues'][:8]) or 'none'}")
+        for note in result.get('writer_notes') or []:
+            log(f"  note: {str(note)[:240]}")
+        if result.get('rejected'):
+            log(f"{arc['id']}: REJECTED — {'; '.join(result['rejected_because'])}")
         if result.get('rejected'):  # never voiced or rendered; kept for review
             rejected.append(result)
             write_json(output/'rejected.json', rejected)
@@ -351,6 +371,21 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
     return {'voiced': rows, 'failed': failed}
 
 
+def _footage_script_problem(script: dict, seconds: float) -> str | None:
+    """Why a footage-first script is too thin to voice, or None. Its lines were already checked one by one
+    (each tied to an event that shows it, no trivial events, no invented names); here the whole is checked."""
+    from .footage_script import WORDS_PER_SECOND
+    narration = [b for b in script.get('beats') or [] if b.get('kind') != 'dialogue']
+    words = sum(len(str(b.get('text') or '').split()) for b in narration) + len(str(script.get('hook') or '').split())
+    target = seconds * WORDS_PER_SECOND * 0.85
+    lines = sum(len(b.get('lines') or []) or 1 for b in narration)
+    if lines < 4:
+        return f'only {lines} narration lines'
+    if words < 0.55 * target:
+        return f'only {words} words for a {seconds:.0f}-second Short (about {target:.0f} wanted)'
+    return None
+
+
 def _voice_story(result: dict, arcs: dict, screened: dict, youtube, output: Path, workdir: Path, narrator: str,
                  model: str, movie: dict | None = None) -> dict:
     import shutil
@@ -371,8 +406,9 @@ def _voice_story(result: dict, arcs: dict, screened: dict, youtube, output: Path
     folder = output/result['arc']
     folder.mkdir(parents=True, exist_ok=True)
     # Before anything is voiced, Gemini watches every scene's footage and writes the script line by line from
-    # what it saw (each line tied to the event that shows it); the plan-based script fitted to the frames is
-    # the fallback when that cannot be done.
+    # what it saw (each line tied to the event that shows it). With Gemini there is no fallback: a story whose
+    # footage-first script cannot be made stops with the reason. Without Gemini the plan-based script is fitted
+    # to the frames instead.
     from . import gemini as gem
     google = gem.client()
     alignment: list[str] = []
@@ -389,10 +425,15 @@ def _voice_story(result: dict, arcs: dict, screened: dict, youtube, output: Path
         pool = {**(result.get('movie_lines') or {}), **(result.get('dialogue_lines') or {})}
         result = {**result, 'script': script, 'dialogue_lines': {k: pool[k] for k in chosen_lines if k in pool}}
         alignment = ['footage-first script: every line written from the watched events'] + alignment
+        problem = _footage_script_problem(script, float(arc.get('short_seconds') or 150))
+        if problem:  # the final quality gate: no Short rather than a thin one
+            raise RuntimeError(f'the footage-first script is not good enough: {problem}')
+    elif google is not None or result.get('seed_only'):
+        # With Gemini the plan-based script is only a seed nobody checked against the footage: no Short rather
+        # than a wrong Short.
+        raise RuntimeError('no footage-first script could be written: ' + ('; '.join(alignment[:3]) or 'Gemini is off'))
     else:
         from .align import align_story
-        if alignment:
-            print('Footage-first script not made: ' + '; '.join(alignment[:3]), file=sys.stderr)
         arc, result, alignment = align_story(google, arc, result, footage, workdir/'align')
     write_json(folder/'arc.json', arc)  # the edit plan uses these (possibly corrected) scene windows
     write_json(folder/'script.json', result['script'])

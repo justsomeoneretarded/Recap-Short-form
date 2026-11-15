@@ -572,7 +572,10 @@ def hook_scene(hook: str, arc: dict) -> int:
 
 
 def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, llm, *, plot: str = "",
-                drafts: int = 2, picture_check=None) -> dict:
+                drafts: int = 2, picture_check=None, seed_only: bool = False) -> dict:
+    """The script for one story. `seed_only`: the footage-first writer (voice step) writes the final lines from
+    the watched footage, so this script is only its starting material: its issues are reported, never a reason
+    to reject the story here (the footage-first script gets the real check)."""
     big = (getattr(llm, "context_tokens", None) or 0) >= 100_000
     # A big-context writer gets the whole stretch of dialogue instead of a trimmed brief.
     brief = build_brief(arc, research, transcript, plot, **({"token_budget": 40_000, "max_lines": 240,
@@ -639,8 +642,11 @@ def write_short(arc: dict, research: dict, transcript: MovieTranscript | None, l
     final["hook_scene"] = hook_scene(final.get("hook") or "", arc)
     serious = [i for i in final_check["issues"] if is_serious(i)]
     rejected = bool(serious) or final_check["score"] < 0.25
+    because = serious or (["low script score"] if rejected else [])
+    if seed_only:
+        rejected, because = False, []
     return {"arc": arc["id"], "script": final, "check": final_check, "brief": brief.data,
-            "rejected": rejected, "rejected_because": serious or (["low script score"] if rejected else []),
+            "rejected": rejected, "rejected_because": because, "seed_only": seed_only,
             "dialogue_lines": {k: v for k, v in brief.lines.items()
                                if any(b.get("line") == k for b in final.get("beats", []))},
             # every playable movie line: the footage-first script may choose others

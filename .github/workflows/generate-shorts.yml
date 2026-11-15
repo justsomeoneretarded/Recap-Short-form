@@ -188,8 +188,8 @@ jobs:
           "$RUNNER_TEMP/shorts-ollama/bin/ollama" pull qwen3:14b > /dev/null
           SH
           if [ -n "$GEMINI_API_KEY" ]; then
-            # Gemini writes; the local writer gets ready in the background in case Gemini cannot.
-            nohup bash "$RUNNER_TEMP/local-writer.sh" > "$RUNNER_TEMP/local-writer.log" 2>&1 &
+            # Gemini writes; there is no local backup writer (a Gemini failure stops the story with a note).
+            echo "Gemini writes the scripts: the local writer is not installed"
           else
             bash "$RUNNER_TEMP/local-writer.sh"
           fi

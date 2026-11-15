@@ -199,7 +199,7 @@ def to_script(merged: dict, events: dict[str, dict], old: dict) -> dict:
 
 def write(gemini, arc: dict, result: dict, movie: dict, *, seconds: float, log=None) -> tuple[dict | None, list[str]]:
     """(the new script, notes) or (None, notes) when the footage-first script could not be made; the caller
-    then keeps the plan-based script."""
+    then stops the story with the notes as the reason."""
     from . import gemini as gem
     log = log or (lambda m: print(m, file=sys.stderr, flush=True))
     movie_lines = dict(result.get("movie_lines") or result.get("dialogue_lines") or {})

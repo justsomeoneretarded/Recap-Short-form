@@ -202,3 +202,32 @@ def test_discover_stops_instead_of_a_footage_first_story(monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="nothing was made"):
         cli.run_discover("T (2018)", tmp_path / "w", tmp_path / "out")
     assert not called and not (tmp_path / "out" / "arcs.json").exists()
+
+
+def test_with_gemini_the_write_step_keeps_a_seed_and_logs_it(tmp_path, monkeypatch, capsys):
+    import json as _json
+    from shorts_pipeline import cli, writer, gemini
+    source = tmp_path / "discover"
+    source.mkdir()
+    (source / "research.json").write_text(_json.dumps({"movie": {"title": "M", "year": 2000}}))
+    (source / "arcs.json").write_text(_json.dumps({"arcs": [{"id": "arc1", "movie_start": 0, "movie_end": 60, "scenes": []}]}))
+
+    class Google:
+        def usage(self):
+            return {}
+    monkeypatch.setattr(gemini, "client", lambda: Google())
+    seen = {}
+
+    def fake_write(arc, research, transcript, llm, **k):
+        seen.update(k, backup=llm.make_backup)
+        return {"arc": arc["id"], "script": {"title": "T", "hook": "h", "beats": []}, "rejected": False,
+                "rejected_because": [], "writer_notes": ["Gemini answer unusable, asking again: x"],
+                "check": {"issues": ["names not in the brief: Zed"], "total_words": 40, "target_words": 300,
+                          "score": 0.2}, "dialogue_lines": {}, "model_calls": [{"model": "gemini-3.5-flash",
+                          "prompt_seconds": 1, "prompt_tokens": 1, "output_seconds": 1, "output_tokens": 1}]}
+    monkeypatch.setattr(writer, "write_short", fake_write)
+    out = cli.run_write(source, tmp_path / "write", arc_index=0, spare_every=1)
+    assert seen["seed_only"] is True and seen["backup"] is None      # no local writer behind Gemini
+    assert [s["arc"] for s in out["scripts"]] == ["arc1"]
+    err = capsys.readouterr().err
+    assert "names not in the brief" in err and "note: Gemini answer unusable" in err and "gemini-3.5-flash" in err

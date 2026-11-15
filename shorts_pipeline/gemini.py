@@ -36,6 +36,7 @@ SAFETY = [{"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in (
     "HARM_CATEGORY_DANGEROUS_CONTENT")]  # movie violence is described, not promoted
 MAX_WAIT = 65.0        # longest per-minute rate-limit wait before giving up on Gemini for a request
 MAX_MODELS_PER_REQUEST = 6
+BUSY_WAITS = (60.0, 120.0, 120.0)  # waits when Google answers "overloaded" (HTTP 5xx) on every model
 MINUTE_WAIT = float(os.environ.get("SHORTS_GEMINI_MINUTE_WAIT", "60"))  # wait after a per-minute limit
 MINUTE_RETRIES = int(os.environ.get("SHORTS_GEMINI_MINUTE_RETRIES", "2"))  # same model, after waiting
 MIN_GAP = float(os.environ.get("SHORTS_GEMINI_MIN_GAP", "6"))  # seconds between this job's requests
@@ -393,20 +394,30 @@ class Client:
         the length of a video part, so the input-token window counts it honestly."""
         self._request_wait = REQUEST_WAIT
         self._video_seconds = (video_seconds, low_media)
-        for round_ in range(2):
+        minute_round, busy = 0, list(BUSY_WAITS)
+        while True:
             try:
                 return self._generate(role, parts, system=system, schema=schema, temperature=temperature, seed=seed,
                                       tools=tools, low_media=low_media, max_tokens=max_tokens)
-            except GeminiUnavailable:
+            except GeminiUnavailable as exc:
+                # Google's servers were busy (HTTP 5xx) on every model tried: that passes, so wait and ask again
+                # (60 s, then 2 min, then 2 min) before giving up on this request.
+                if busy and _server_busy(str(exc)) and self.waited + busy[0] <= JOB_WAIT:
+                    pause = busy.pop(0)
+                    print(f"[gemini] Google is busy for {role} ({str(exc)[:120]}); asking again in {pause:.0f}s",
+                          file=sys.stderr, flush=True)
+                    self.waited += pause
+                    self.sleep(pause)
+                    continue
                 # Every model is only pausing for its per-minute limit: wait for the first one, once.
                 waiting = [t for m, t in self.cooldown.items() if t > time.time()]
                 pause = (min(waiting) - time.time() + 1) if waiting else 0
-                if round_ or not waiting or pause > min(MAX_WAIT, self._request_wait) or self.waited + pause > JOB_WAIT \
-                        or self.chain(role):
+                if minute_round or not waiting or pause > min(MAX_WAIT, self._request_wait) or \
+                        self.waited + pause > JOB_WAIT or self.chain(role):
                     raise
+                minute_round += 1
                 self.waited += pause
                 self.sleep(pause)
-        raise GeminiUnavailable("no Gemini model answered")
 
     def _generate(self, role, parts, *, system, schema, temperature, seed, tools, low_media, max_tokens=None):
         errors = []
@@ -550,6 +561,13 @@ def client() -> Client | None:
     return _CLIENT
 
 
+def _server_busy(text: str) -> bool:
+    """Every model that was tried failed only because Google's servers were busy (HTTP 500/502/503/504)."""
+    codes = re.findall(r"HTTP (\d{3})\b", str(text))
+    return bool(codes) and all(c in ("500", "502", "503", "504") for c in codes) and \
+        not re.search(r"daily|per-minute|free limit|not available|budget|no key", str(text))
+
+
 def _retry_delay(text: str) -> float | None:
     found = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', text)
     return float(found.group(1)) if found else 30.0
@@ -642,7 +660,9 @@ class GeminiWriter:
 
 class FallbackWriter:
     """Gemini first; the local model takes over for good once no Gemini model is left, and for
-    one call when Gemini refuses or fails that call."""
+    one call when Gemini refuses or fails that call. Without a backup (`make_backup=None`) a failed call is
+    raised instead: the caller stops with a note rather than writing with a weaker model. Every fallback and
+    failure is printed to the job log."""
 
     def __init__(self, primary, make_backup, *, wait_ready=None):
         self.primary, self.make_backup, self.wait_ready = primary, make_backup, wait_ready
@@ -660,23 +680,42 @@ class FallbackWriter:
             self.backup = self.make_backup()
         return self.backup
 
+    def _note(self, text: str) -> None:
+        self.notes.append(text)
+        print(f"[writer] {text}", file=sys.stderr, flush=True)
+
     def chat(self, system, user, schema, **kwargs):
         if self._primary_ok:
-            try:
-                reply = self.primary.chat(system, user, schema, **kwargs)
-                self.stats.append(self.primary.stats[-1])
-                return reply
-            except GeminiUnavailable as exc:
-                self.notes.append(f"Gemini unavailable, local writer used: {str(exc)[-400:]}")
-                # Give Gemini up for good only when no model is left (one used-up model says nothing about
-                # the others), the job's budget is spent or the network is down.
-                client = getattr(self.primary, "gemini", None)
-                left = client.chain(getattr(self.primary, "role", "smart")) if client is not None and \
-                    hasattr(client, "chain") else []
-                if not left or any(k in str(exc) for k in ("budget", "network")):
-                    self._primary_ok = False
-            except ValueError as exc:
-                self.notes.append(f"Gemini answer unusable, local writer used once: {str(exc)[:120]}")
+            for attempt in range(2):
+                try:
+                    reply = self.primary.chat(system, user, schema, **kwargs)
+                    self.stats.append(self.primary.stats[-1])
+                    return reply
+                except GeminiUnavailable as exc:
+                    if self.make_backup is None:
+                        self._note(f"Gemini could not answer: {str(exc)[-300:]}")
+                        raise
+                    self._note(f"Gemini unavailable, local writer used: {str(exc)[-300:]}")
+                    # Give Gemini up for good only when no model is left (one used-up model says nothing about
+                    # the others), the job's budget is spent or the network is down.
+                    client = getattr(self.primary, "gemini", None)
+                    left = client.chain(getattr(self.primary, "role", "smart")) if client is not None and \
+                        hasattr(client, "chain") else []
+                    if not left or any(k in str(exc) for k in ("budget", "network")):
+                        self._primary_ok = False
+                    break
+                except ValueError as exc:
+                    if attempt == 0:  # a malformed answer: ask once more with another seed
+                        self._note(f"Gemini answer unusable, asking again: {str(exc)[:120]}")
+                        kwargs = {**kwargs, "seed": int(kwargs.get("seed") or 0) + 101}
+                        continue
+                    if self.make_backup is None:
+                        self._note(f"Gemini answer unusable twice: {str(exc)[:120]}")
+                        raise
+                    self._note(f"Gemini answer unusable, local writer used once: {str(exc)[:120]}")
+                    break
+        if self.make_backup is None:
+            raise GeminiUnavailable("Gemini is not answering for this job")
         local = self._local()
         reply = local.chat(system, user, schema, **kwargs)
         if getattr(local, "stats", None):

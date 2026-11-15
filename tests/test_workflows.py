@@ -70,3 +70,9 @@ def test_package_installs_have_fallback_mirrors_and_a_retry():
     text = (Path(__file__).parent.parent / ".github/workflows/generate-shorts.yml").read_text()
     assert "azure.archive.ubuntu.com" in text and "mirrors.edge.kernel.org" in text
     assert "Acquire::http::Timeout=20" in text and ") || ( sleep 15 &&" in text
+
+
+def test_the_local_writer_is_only_installed_without_gemini():
+    text=(ROOT/'.github/workflows/generate-shorts.yml').read_text()
+    gemini_branch=text.split('if [ -n "$GEMINI_API_KEY" ]; then',1)[1].split('else',1)[0]
+    assert 'local-writer.sh' not in gemini_branch and 'nohup' not in gemini_branch

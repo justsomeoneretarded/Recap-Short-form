@@ -154,3 +154,28 @@ def test_watching_cuts_each_scene_and_keeps_the_events(monkeypatch, tmp_path):
     scene = seen["scenes"][0]
     assert scene["watch_window"] == [270.0, 370.0] and scene["events"][0]["peak"] == 303.0
     assert "the attack" in google.prompts[0] and "events" not in arc["scenes"][0]
+
+
+def test_a_thin_footage_first_script_is_not_voiced():
+    from shorts_pipeline import cli
+    thin = {"hook": "He is back.", "beats": [{"kind": "narration", "text": "He walks in.", "lines": [{}]}]}
+    assert "narration lines" in cli._footage_script_problem(thin, 150)
+    full = {"hook": "h", "beats": [{"kind": "narration", "text": " ".join(["word"] * 70), "lines": [{}, {}]}
+                                   for _ in range(4)]}
+    assert cli._footage_script_problem(full, 150) is None
+    short = {"hook": "h", "beats": [{"kind": "narration", "text": "a few words here", "lines": [{}]}] * 5}
+    assert "words" in cli._footage_script_problem(short, 150)
+
+
+def test_with_gemini_a_story_without_a_footage_first_script_stops(monkeypatch, tmp_path):
+    from shorts_pipeline import cli, footage_script, gemini, watch
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x")
+    arc = {"id": "arc1", "scenes": [{"clip_id": "A", "clip_start": 0, "clip_end": 10, "beat": {}}]}
+    monkeypatch.setattr(gemini, "client", lambda: object())
+    monkeypatch.setattr(watch, "watch_story", lambda g_, a, *x, **k: a)
+    monkeypatch.setattr(footage_script, "write", lambda *a, **k: (None, ["too few scenes were watched"]))
+    result = {"arc": "arc1", "script": {"beats": []}, "seed_only": True}
+    with pytest.raises(RuntimeError, match="too few scenes were watched"):
+        cli._voice_story(result, {"arc1": arc}, {"A": {"path": str(video)}}, None, tmp_path / "out", tmp_path / "w",
+                         "warguy", "original", movie={"title": "M", "year": 2000})
