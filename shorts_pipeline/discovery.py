@@ -30,7 +30,19 @@ REJECT_TITLE = re.compile(
 # Words that mark scene footage.
 SCENE_WORDS = {"scene", "scenes", "clip", "clips", "fight", "chase", "final", "opening", "moment", "moments"}
 COMPILATION = re.compile(r"\b(all|best|every|top)\b.*\bscenes?\b|\bcompilation\b|\bscenes? pack\b", re.I)
-BOT_CHECK = re.compile(r"sign in to confirm|not a bot|confirm you.?re not", re.I)
+# YouTube refusing this machine: the bot check, and (since 2025) "This content isn't available, try again
+# later" — a rate limit on the IP or the signed-in session, not a deleted video.
+BOT_CHECK = re.compile(r"sign in to confirm|not a bot|confirm you.?re not|content isn.t available|try again later", re.I)
+BLOCKED_STOP = 6   # this many different videos refused on every route, and none served: YouTube blocks this runner
+
+
+BLOCKED_MESSAGE = ("YouTube is blocking this runner: every video answers \"This content isn't available\" on every "
+                   "route (direct, proxy, with and without the cookies). Try again later, or refresh the YouTube "
+                   "cookies secret.")
+
+
+class YouTubeBlocked(RuntimeError):
+    """YouTube refuses every video on every route this job has: nothing can be found or downloaded."""
 
 SCENE_CONCEPTS = {
     "Action": ("fight scene", "chase scene"), "Adventure": ("chase scene",), "Thriller": ("tense scene",),
@@ -208,6 +220,9 @@ class YouTube:
         self.reserve = float(os.environ.get("SHORTS_SCREEN_RESERVE", "900"))
         self.spent = 0.0
         self.must: set[str] = set()
+        self.blocked: set[str] = set()   # videos refused on every route
+        self.served = 0                  # videos YouTube did serve
+        self.blocked_runner = False
         self.prefer_proxy = False  # once the direct route is bot-checked, go straight to the proxy
         self.log: list[dict] = []
 
@@ -215,13 +230,13 @@ class YouTube:
     def signed_in(self) -> bool:
         return bool(self.cookies and Path(self.cookies).exists())
 
-    def _options(self, use_proxy: bool, extra: dict) -> dict:
+    def _options(self, use_proxy: bool, extra: dict, use_cookies: bool = True) -> dict:
         options = {"quiet": True, "no_warnings": True, "skip_download": True, "socket_timeout": 20,
                    "retries": 2, "fragment_retries": 3, "extractor_retries": 1, **extra}
         if os.environ.get("SHORTS_YTDLP_NODE", "1") != "0":
             # YouTube hides media URLs behind JavaScript challenges; yt-dlp solves them with a JS runtime.
             options.setdefault("js_runtimes", {"node": {}})
-        if self.cookies:
+        if self.cookies and use_cookies:
             options["cookiefile"] = self.cookies
         if use_proxy and self.proxy:
             options["proxy"] = self.proxy
@@ -234,6 +249,8 @@ class YouTube:
         return not (needed and self.spent < self.budget + self.reserve)
 
     def extract(self, target: str, **extra) -> dict:
+        if self.blocked_runner:
+            raise YouTubeBlocked(BLOCKED_MESSAGE)
         if self._over_budget(target):
             raise RuntimeError("YouTube time budget reached; skipped")
         started = time.monotonic()
@@ -245,30 +262,51 @@ class YouTube:
     def _extract(self, target: str, **extra) -> dict:
         import yt_dlp
         routes = ([True] if self.prefer_proxy else [False]) + ([True] if self.proxy and not self.prefer_proxy else [])
-        last = "no route"
+        last, refused = "no route", True
+        video = "watch?v=" in target or bool(re.fullmatch(r"[\w-]{11}", target))
+
+        def attempt_route(use_proxy: bool, use_cookies: bool):
+            with yt_dlp.YoutubeDL(self._options(use_proxy, extra, use_cookies)) as ydl:
+                info = ydl.extract_info(target, download=not extra.get("skip_download", True))
+            self.log.append({"target": target[:90], "proxy": use_proxy, "cookies": use_cookies, "ok": True})
+            if video:
+                self.served += 1
+            return info
+
         for use_proxy in routes:
             for attempt in range(2):
                 if self._over_budget(target):
                     raise RuntimeError("YouTube time budget reached; skipped")
                 try:
-                    with yt_dlp.YoutubeDL(self._options(use_proxy, extra)) as ydl:
-                        info = ydl.extract_info(target, download=not extra.get("skip_download", True))
-                    self.log.append({"target": target[:90], "proxy": use_proxy, "ok": True})
-                    return info
+                    return attempt_route(use_proxy, True)
                 except Exception as exc:  # noqa: BLE001 - yt-dlp raises many types
                     last = str(exc)
                     bot = bool(BOT_CHECK.search(last))
-                    self.log.append({"target": target[:90], "proxy": use_proxy, "ok": False, "bot": bot,
-                                     "error": last[:200]})
+                    self.log.append({"target": target[:90], "proxy": use_proxy, "cookies": bool(self.cookies),
+                                     "ok": False, "bot": bot, "error": last[:200]})
                     if bot and not use_proxy and self.proxy:
                         self.prefer_proxy = True
                         break
-                    if bot:  # the proxy route was challenged too: one short back-off, then give up on this item
+                    if bot:  # the proxy route was refused too: one short back-off, then the next way in
                         time.sleep(self.bot_backoff)
-                        continue
+                        break
+                    refused = False
                     if "unavailable" in last.lower() or "private" in last.lower():
                         raise RuntimeError(last) from exc
                     time.sleep(self.pause * (attempt + 1))
+        if refused and self.cookies:  # a flagged signed-in session can be the reason: once without the cookies
+            try:
+                return attempt_route(bool(self.proxy), False)
+            except Exception as exc:  # noqa: BLE001
+                last = str(exc)
+                refused = bool(BOT_CHECK.search(last))
+                self.log.append({"target": target[:90], "proxy": bool(self.proxy), "cookies": False, "ok": False,
+                                 "bot": refused, "error": last[:200]})
+        if refused and video:
+            self.blocked.add(target[-11:])
+            if len(self.blocked) >= BLOCKED_STOP and not self.served:
+                self.blocked_runner = True
+                raise YouTubeBlocked(BLOCKED_MESSAGE)
         raise RuntimeError(last)
 
     def search(self, query: str, count: int = 10) -> list[dict]:

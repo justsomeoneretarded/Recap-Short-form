@@ -38,6 +38,7 @@ MAX_WAIT = 65.0        # longest per-minute rate-limit wait before giving up on 
 MAX_MODELS_PER_REQUEST = 6
 TEXT_TIMEOUT = float(os.environ.get("SHORTS_GEMINI_TEXT_TIMEOUT", "240"))    # read timeout, text-only requests
 MEDIA_TIMEOUT = float(os.environ.get("SHORTS_GEMINI_MEDIA_TIMEOUT", "420"))  # requests with images or video
+PING_TIMEOUT = 60.0   # the tiny "is this model up" request
 BUSY_WAITS = (60.0, 120.0, 120.0)  # waits when Google answers "overloaded" (HTTP 5xx) on every model
 MINUTE_WAIT = float(os.environ.get("SHORTS_GEMINI_MINUTE_WAIT", "60"))  # wait after a per-minute limit
 MINUTE_RETRIES = int(os.environ.get("SHORTS_GEMINI_MINUTE_RETRIES", "2"))  # same model, after waiting
@@ -289,7 +290,7 @@ class Client:
                     break
         return max(0.0, wait)
 
-    def _post(self, model: str, method: str, body: dict) -> dict:
+    def _post(self, model: str, method: str, body: dict, timeout: float | None = None) -> dict:
         """One request on the first key that may send it. Per-minute limit → next key (or a bounded wait);
         daily limit → that key is done with this model for today."""
         if len(self.calls) >= self.max_calls:
@@ -328,7 +329,7 @@ class Client:
             started = self.last_call = self.last[slot] = time.time()
             self.window.setdefault(slot, []).append((started, tokens))
             reply = self._http("POST", f"{API}/v1beta/models/{model}:{method}", key=k, json=body,
-                               timeout=MEDIA_TIMEOUT if media else TEXT_TIMEOUT)
+                               timeout=timeout or (MEDIA_TIMEOUT if media else TEXT_TIMEOUT))
             row = {"model": model, "key": k + 1, "method": method, "status": reply.status_code,
                    "seconds": round(time.time() - started, 1), "input_estimate": tokens}
             self.calls.append(row)
@@ -390,7 +391,7 @@ class Client:
             body = {"contents": [{"role": "user", "parts": [{"text": "Reply with the word ok."}]}],
                     "generationConfig": {"temperature": 0, "maxOutputTokens": 4}}
             try:
-                self._post(model, "generateContent", body)
+                self._post(model, "generateContent", body, timeout=PING_TIMEOUT)
                 self.good["smart"] = model
                 return model
             except (_Exhausted, _BadRequest):

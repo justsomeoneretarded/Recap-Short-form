@@ -218,3 +218,70 @@ def test_the_youtube_budget_counts_only_time_spent_on_youtube(monkeypatch):
     yt.spent = 6.0 + yt.reserve
     with pytest.raises(RuntimeError, match="budget"):
         yt.extract("https://www.youtube.com/watch?v=needed1")
+
+
+class _FakeYDL:
+    """yt-dlp stand-in: answers per (proxy?, cookies?) route with a result or an error."""
+    answers = {}
+    seen = []
+
+    def __init__(self, options):
+        self.route = (bool(options.get("proxy")), bool(options.get("cookiefile")))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def extract_info(self, target, download=False):
+        _FakeYDL.seen.append((target[-11:], self.route))
+        answer = _FakeYDL.answers.get(self.route, "ERROR: Video unavailable. This content isn’t available.")
+        if isinstance(answer, str):
+            raise Exception(answer)
+        return answer
+
+
+@pytest.fixture
+def fake_ytdlp(monkeypatch, tmp_path):
+    import sys
+    import types
+    module = types.SimpleNamespace(YoutubeDL=_FakeYDL)
+    monkeypatch.setitem(sys.modules, "yt_dlp", module)
+    _FakeYDL.answers, _FakeYDL.seen = {}, []
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("x")
+    yt = d.YouTube(proxy="socks5h://127.0.0.1:1", cookies=str(cookies), pause=0)
+    yt.bot_backoff = 0
+    return yt
+
+
+def test_content_isnt_available_is_a_block_tried_through_the_proxy_then_without_cookies(fake_ytdlp):
+    yt = fake_ytdlp
+    _FakeYDL.answers = {(True, False): {"id": "aaaaaaaaaaa"}}            # only the proxy without cookies works
+    assert yt.extract("https://www.youtube.com/watch?v=aaaaaaaaaaa") == {"id": "aaaaaaaaaaa"}
+    routes = [r for _, r in _FakeYDL.seen]
+    assert routes[0] == (False, True) and (True, True) in routes and routes[-1] == (True, False)
+    assert yt.prefer_proxy and yt.served == 1
+
+
+def test_a_runner_youtube_refuses_everywhere_stops_with_a_clear_message(fake_ytdlp):
+    yt = fake_ytdlp
+    for i in range(d.BLOCKED_STOP - 1):
+        with pytest.raises(RuntimeError):
+            yt.extract(f"https://www.youtube.com/watch?v=video{i:06d}")
+    with pytest.raises(d.YouTubeBlocked):
+        yt.extract("https://www.youtube.com/watch?v=videolast00")
+    assert yt.blocked_runner
+    _FakeYDL.seen.clear()
+    with pytest.raises(d.YouTubeBlocked):                                    # no more time spent on YouTube
+        yt.extract("https://www.youtube.com/watch?v=another0000")
+    assert _FakeYDL.seen == []
+
+
+def test_a_really_deleted_video_is_skipped_at_once(fake_ytdlp):
+    yt = fake_ytdlp
+    _FakeYDL.answers = {(False, True): "ERROR: Video unavailable. This video has been removed by the uploader"}
+    with pytest.raises(RuntimeError, match="removed"):
+        yt.extract("https://www.youtube.com/watch?v=gone0000000")
+    assert len(_FakeYDL.seen) == 1 and not yt.blocked

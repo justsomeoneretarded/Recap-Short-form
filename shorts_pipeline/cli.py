@@ -189,6 +189,12 @@ def run_discover(movie: str, workdir: Path, output: Path, *, top: int = 12, use_
                 log(f"no Gemini scene hints: {str(exc)[:160]}")
         found = discover(research, youtube, **({'scene_hints': hints} if hints else {}))
         lap('search_and_rank')
+    if stories is None and getattr(youtube, 'blocked_runner', False):  # nothing could be found: say why plainly
+        from .discovery import BLOCKED_MESSAGE
+        write_json(output/'summary.json', {'movie': research['movie']['title'], 'hunt': report, 'made': False,
+                                           'youtube_blocked': sorted(youtube.blocked)})
+        print(f"::error::{BLOCKED_MESSAGE}", flush=True)
+        raise SystemExit(BLOCKED_MESSAGE)
     if stories is None and report.get('path'):
         # The script-first runner ran and no story had footage for most of its scenes. The old footage-first
         # stories would make a Short from whatever clips exist, which is not the story; stop and say why.
