@@ -89,6 +89,31 @@ def attention(frames: list[np.ndarray]) -> np.ndarray:
     return columns / total if total > 0 else np.full(columns.shape, 1 / columns.size)
 
 
+SOFT_SHARPNESS = 60.0   # Laplacian variance (480-px samples) under which a shot reads as soft
+
+
+def sharpness(frames: list[np.ndarray], active: tuple, plan: dict) -> float:
+    """How sharp the part of the picture the shot shows is: variance of the Laplacian over the crop window,
+    averaged over the sampled frames (higher = sharper)."""
+    if not frames:
+        return 0.0
+    values = []
+    for frame in frames:
+        h, w = frame.shape[:2]
+        x0, y0 = int(active[0] * w), int(active[1] * h)
+        x1, y1 = max(x0 + 8, int(active[2] * w)), max(y0 + 8, int(active[3] * h))
+        g = frame[y0:y1, x0:x1].mean(axis=2)
+        win = float(plan.get("window") or 1.0)
+        if plan.get("mode") == "track" and win < 1.0:
+            centre = (float(plan.get("x_start", 0.5)) + float(plan.get("x_end", 0.5))) / 2
+            cw = max(8, int(win * g.shape[1]))
+            left = int(min(max(0, centre * g.shape[1] - cw / 2), g.shape[1] - cw))
+            g = g[:, left:left + cw]
+        lap = g[1:-1, 1:-1] * -4 + g[:-2, 1:-1] + g[2:, 1:-1] + g[1:-1, :-2] + g[1:-1, 2:]
+        values.append(float(lap.var()))
+    return round(float(np.mean(values)), 1)
+
+
 def window_fraction(source_aspect: float, output_aspect: float) -> float:
     """Width of the crop window as a fraction of the source width (1.0 = no horizontal crop)."""
     return min(1.0, output_aspect / source_aspect)
@@ -105,8 +130,42 @@ def lift_for(frames: list[np.ndarray]) -> float | None:
     return round(min(1.6, 1.0 + (DARK_LUMA - luma) / 80.0), 2) if luma < DARK_LUMA else None
 
 
-def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> dict:
-    """Decide mode and crop centre path (fractions of the active picture width)."""
+ACTION_SPREAD = 1.6   # the action's motion fits in this many crop widths: follow it (wider: shaky camera)
+
+
+def action_path(frames: list[np.ndarray], active: tuple, win: float) -> tuple[float, float] | None:
+    """Where the movement is (start and end centre, fractions of the active width), for fights and chases:
+    the crop follows the struggle instead of one face. None when the motion is spread over the whole frame
+    (a moving camera) or there is too little of it."""
+    if len(frames) < 3:
+        return None
+    x0a, _, x1a, _ = active
+    gray = [f.mean(axis=2) for f in frames]
+    diffs = [np.abs(a - b).sum(axis=0) for a, b in zip(gray, gray[1:])]
+    a, b = int(x0a * diffs[0].size), int(x1a * diffs[0].size)
+    positions = np.linspace(0, 1, max(1, b - a))
+
+    def centre_and_span(cols):
+        cols = np.convolve(cols[a:b], np.ones(9) / 9, mode="same")
+        total = cols.sum()
+        if total <= 0:
+            return None, 1.0
+        share = np.cumsum(cols) / total
+        span = float(positions[min(len(positions) - 1, int(np.searchsorted(share, 0.9)))] -
+                     positions[int(np.searchsorted(share, 0.1))])
+        return float((cols / total * positions).sum()), span
+    whole, spread = centre_and_span(np.sum(diffs, axis=0))
+    if whole is None or spread > ACTION_SPREAD * win:
+        return None
+    half = max(1, len(diffs) // 2)
+    first, _ = centre_and_span(np.sum(diffs[:half], axis=0))
+    second, _ = centre_and_span(np.sum(diffs[half:], axis=0))
+    return (first if first is not None else whole), (second if second is not None else whole)
+
+
+def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float, *, action: bool = False) -> dict:
+    """Decide mode and crop centre path (fractions of the active picture width). `action`: a fast-moving shot
+    (fight, chase); the crop follows where the movement is."""
     x0a, y0a, x1a, y1a = active
     if not frames:
         return {"mode": "track", "x_start": 0.5, "x_end": 0.5, "reason": "no frames"}
@@ -115,6 +174,14 @@ def plan_shot(frames: list[np.ndarray], active: tuple, output_aspect: float) -> 
     win = window_fraction(active_aspect, output_aspect)
     if win >= 0.98:
         return {"mode": "track", "x_start": 0.5, "x_end": 0.5, "window": win, "reason": "no crop needed"}
+    path = action_path(frames, active, win) if action else None
+    if path is not None:
+        lo, hi = win / 2, 1 - win / 2
+        start, end = (min(hi, max(lo, c)) for c in path)
+        if abs(end - start) > 0.25:  # never pan faster than a quarter of the frame per shot
+            end = start + 0.25 * (1 if end > start else -1)
+        return {"mode": "track", "x_start": round(start, 4), "x_end": round(end, 4), "window": round(win, 4),
+                "reason": "follows the action"}
     centres, spreads, found_faces, people = [], [], 0, []
     for frame in frames:
         boxes = [b for b in faces(frame) if x0a <= (b[0] + b[2]) / 2 <= x1a]
@@ -240,8 +307,10 @@ def filter_graph(plan: dict, src_w: int, src_h: int, active: tuple, out_w: int, 
     left0, left1 = (x_start - cw / aw / 2) * aw, (x_end - cw / aw / 2) * aw
     d = max(0.04, duration)
     x = f"max(0\\,min({aw - cw}\\,{left0:.2f}+({left1 - left0:.2f})*min(1\\,t/{d:.3f})))"
+    # An enlarged crop (9:16 from 16:9 is ~1.8x) gets a light unsharp mask so it does not look soft on a phone.
+    sharpen = ",unsharp=5:5:0.6:5:5:0.0" if out_h / max(1, ch) >= 1.3 or plan.get("soft") else ""
     return (f"{base},crop={cw}:{ch}:x='{x}':y={(ah - ch) // 2},"
-            f"scale={out_w}:{out_h}:flags=lanczos{punch_in(plan, out_w, out_h, duration)},setsar=1[{label_out}]")
+            f"scale={out_w}:{out_h}:flags=lanczos{sharpen}{punch_in(plan, out_w, out_h, duration)},setsar=1[{label_out}]")
 
 
 def punch_in(plan: dict, out_w: int, out_h: int, duration: float) -> str:

@@ -23,6 +23,7 @@ MIN_SHOT, MAX_SHOT = 1.3, 2.8  # pieces cut from the footage (reference Shorts: 
 SLOT_MIN, SLOT_MAX = 1.5, 4.5  # one clause of narration on screen: merged when shorter, split when longer
 CLAUSE_END = (".", "!", "?", ";", ":", ",", "—", "–")
 MIN_SPEED = 0.8
+END_HOLD = 0.8   # the picture stays this long after the last word, so the last moment (a reaction) lands
 
 
 def shot_changes(video: Path, start: float, end: float, threshold: float = 12.0) -> list[float]:
@@ -282,11 +283,16 @@ def line_spans(beat: dict, gap: float) -> list[dict] | None:
     return [s for s in spans if s["end"] - s["start"] > 0.05]
 
 
-def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict, used: dict) -> list[dict] | None:
+def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict, used: dict,
+               cuts: dict | None = None, repick: dict | None = None) -> list[dict] | None:
     """Shots for a footage-first narration take: every line plays the event it describes, placed so that the
     event's peak plays when the line's key word is spoken. A line longer than its event takes more of the same
     scene's footage around it (the watched window); only past that is it slowed gently (>=0.8x), and only past
-    that is the rest filled from the scene's other footage."""
+    that is the rest filled from the scene's other footage. A take is split where the film itself cuts
+    (`cuts`: camera changes per clip), so every shot of the edit is one camera shot of the film.
+    `repick`: {'beat#k': (start, end)} — clip seconds chosen again from the frames for a line whose first
+    picture did not show it; that line plays from there instead of from its event."""
+    cuts = cuts or {}
     spans = line_spans(beat, gap)
     if not spans:
         return None
@@ -297,7 +303,7 @@ def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict,
     if any(span["line"].get("event", {}).get("clip_id") not in footage for span in spans):
         return None
     shots, last_end = [], {}
-    for span in spans:
+    for k, span in enumerate(spans):
         event = span["line"]["event"]
         clip = event["clip_id"]
         lo, hi = windows.get(clip, (event["start"], event["end"]))
@@ -306,23 +312,36 @@ def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict,
         speed = 1.0 if hi - lo >= need else max(MIN_SPEED, (hi - lo) / need)
         take = need * speed
         start = event["peak"] - (span["key"] - span["start"]) * speed  # the peak lands on the key word
-        if last_end.get(clip) and start < last_end[clip] < start + take and last_end[clip] - start < 0.6 * take:
+        chosen = (repick or {}).get(f"{beat['id']}#{k}")
+        if chosen:  # chosen again from the frames: play from there
+            lo, hi = min(lo, chosen[0]), max(hi, chosen[1])
+            start = chosen[0]
+        if not chosen and last_end.get(clip) and start < last_end[clip] < start + take and \
+                last_end[clip] - start < 0.6 * take:
             start = last_end[clip]  # the next line of the same scene does not replay the same seconds
         start = max(lo, min(start, hi - take))
         end = min(hi, start + take)
         cursor = start_t + span["start"]
         length = (end - start) / speed
-        shots.append({"clip_id": clip, "source": footage[clip], "start": round(start, 3), "end": round(end, 3),
-                      "speed": round(speed, 3), "timeline_start": round(cursor, 3), "duration": round(length, 3),
-                      "audio": "duck", "beat": beat["id"], "event": event.get("id"),
-                      "key_at": round(start_t + span["key"], 3)})
+        edges = [start]
+        for c in cuts.get(clip, []):  # camera cuts inside the take; flickers under 0.6 s stay joined
+            if edges[-1] + 0.6 <= c <= end - 0.6:
+                edges.append(c)
+        edges.append(end)
+        at = cursor
+        for a, b in zip(edges, edges[1:]):  # one shot per camera shot of the film, same seconds of footage
+            shots.append({"clip_id": clip, "source": footage[clip], "start": round(a, 3), "end": round(b, 3),
+                          "speed": round(speed, 3), "timeline_start": round(at, 3), "duration": round((b - a) / speed, 3),
+                          "audio": "duck", "beat": beat["id"], "event": event.get("id"),
+                          "key_at": round(start_t + span["key"], 3)})
+            at += (b - a) / speed
         used.setdefault(clip, []).append((start, end))
         last_end[clip] = end
         short = need - length
         if short > 0.25:  # no more footage of this event: the scene's other footage, never another scene first
             index = next((i for i, sc in enumerate(arc["scenes"]) if sc["clip_id"] == clip), 0)
             cursor += length
-            for extra_clip, extra_source, s, e in _extra_footage(arc, index, footage, {}, used, short):
+            for extra_clip, extra_source, s, e in _extra_footage(arc, index, footage, cuts, used, short):
                 shots.append({"clip_id": extra_clip, "source": extra_source, "start": round(s, 3), "end": round(e, 3),
                               "speed": 1.0, "timeline_start": round(cursor, 3), "duration": round(e - s, 3),
                               "audio": "duck", "beat": beat["id"]})
@@ -340,7 +359,7 @@ def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict,
 
 
 def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | None = None, similar=None,
-              director: dict | None = None) -> dict:
+              director: dict | None = None, repick: dict | None = None) -> dict:
     """Shots on the output timeline: {clip_id, source, start, end, speed, timeline_start, duration, audio}."""
     cuts = cuts if cuts is not None else {}
     shots: list[dict] = []
@@ -361,7 +380,7 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
             clip_id = scene["clip_id"]
             borrowed = True  # a movie line then plays over borrowed pictures, like narration
         start_t = beat["timeline_start"]
-        gap = (beats[index + 1]["timeline_start"] - start_t) if index + 1 < len(beats) else beat["duration"]
+        gap = (beats[index + 1]["timeline_start"] - start_t) if index + 1 < len(beats) else beat["duration"] + END_HOLD
         if beat["kind"] == "dialogue" and not borrowed:
             shots.append({"clip_id": clip_id, "source": source, "start": beat["clip_start"],
                           "end": beat["clip_start"] + gap, "speed": 1.0, "timeline_start": start_t,
@@ -369,7 +388,7 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
             scene_cursor[beat["scene"]] = beat["clip_start"] + gap
             used.setdefault(clip_id, []).append((beat["clip_start"], beat["clip_start"] + gap))
             continue
-        placed = None if borrowed else line_shots(beat, start_t, gap, arc, footage, used)
+        placed = None if borrowed else line_shots(beat, start_t, gap, arc, footage, used, cuts, repick)
         if placed:  # footage-first lines: each line plays its own event, peak under its key word
             shots += placed
             continue

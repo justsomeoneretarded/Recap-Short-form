@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .media import probe
 from .edit import PUNCH_ZOOM
-from .reframe import filter_graph, lift_for, native_size, plan_shot, sample
+from .reframe import SOFT_SHARPNESS, filter_graph, lift_for, native_size, plan_shot, sample, sharpness
 
 FPS = 60
 SIZES = {"square": (1080, 1080), "vertical": (1080, 1920)}
@@ -129,6 +129,7 @@ def motion(source: Path, start: float, span: float) -> float:
 
 
 CALM_MOTION = float(os.environ.get("SHORTS_CALM_MOTION", "1.5"))  # below this a shot is near-still
+ACTION_MOTION = float(os.environ.get("SHORTS_ACTION_MOTION", "6.0"))  # above this: a fight or chase; framed on the motion
 
 
 def render_shot(shot: dict, plan: dict, active: tuple, size: tuple[int, int], target: Path, *,
@@ -221,11 +222,17 @@ def _escape(path: Path) -> str:
     return str(path.resolve()).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace(",", "\\,")
 
 
+END_FADE = 0.5   # seconds of sound fade at the very end
+
+
 def finish(mixed: Path, captions: Path | None, target: Path) -> dict:
     m = _loudness(mixed)
     af = (f"loudnorm=I=-14:TP=-1:LRA=9:measured_I={m['input_i']}:measured_TP={m['input_tp']}:"
           f"measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}:offset={m['target_offset']}:"
           "linear=true,aresample=48000")
+    length = float(probe(mixed).get("duration") or 0)
+    if length > 2 * END_FADE:  # the sound fades out over the last half second instead of cutting off
+        af += f",afade=t=out:st={length - END_FADE:.3f}:d={END_FADE}"
     vf = f"ass=filename='{_escape(captions)}'," if captions else ""
     _run(["ffmpeg", "-y", "-v", "error", "-i", str(mixed), "-vf", f"{vf}fps={FPS},format=yuv420p", "-af", af,
           "-c:v", "libx264", "-preset", os.environ.get("SHORTS_X264_PRESET", "medium"), "-crf", "17",
@@ -300,12 +307,17 @@ def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertic
             entry["flashes_per_second"] = round(flashes, 1)
         for aspect in aspects:
             size = SIZES[aspect]
-            entry[aspect] = plan_shot(frames, active, size[0] / size[1])
+            entry[aspect] = plan_shot(frames, active, size[0] / size[1], action=entry["motion"] >= ACTION_MOTION)
             if lift:
                 entry[aspect]["lift"] = lift
             if flashes > MAX_FLASHES:
                 entry[aspect]["deflicker"] = True
-            if shot.get("accent") == "punch" and entry[aspect]["mode"] != "stack":
+            sharp = sharpness(frames, active, entry[aspect])
+            entry[aspect]["sharpness"] = sharp
+            soft = sharp < SOFT_SHARPNESS
+            if soft:  # a soft picture is not zoomed further; it gets the unsharp mask instead
+                entry[aspect]["soft"] = True
+            if shot.get("accent") == "punch" and entry[aspect]["mode"] != "stack" and not soft:
                 entry[aspect]["punch"] = PUNCH_ZOOM if shot["duration"] >= 2.0 else PUNCH_ZOOM / 2
             if logo and entry[aspect]["mode"] == "fit":
                 entry[aspect]["trim"] = 0.08  # corner logo: fit shots lose 8 % at every edge
@@ -315,7 +327,7 @@ def plan_shots(edl: dict, screening: dict[str, dict], aspects=("square", "vertic
 
 def render_parts(edl: dict, plans: dict, aspect: str, indexes: list[int], folder: Path, *,
                  interpolation: str = "auto", budget: float | None = None) -> list[dict]:
-    """Render some shots of one aspect. RIFE only where it shows (moving shots) and while time allows."""
+    """Render some shots of one aspect. RIFE on every shot while time allows."""
     import time
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -325,14 +337,13 @@ def render_parts(edl: dict, plans: dict, aspect: str, indexes: list[int], folder
     rows = []
     for i in indexes:
         shot, plan = edl["shots"][i], plans[str(i)]
-        moving = plan.get("motion", 99.0) >= CALM_MOTION
+        # RIFE on every shot while time allows: blending calm shots left near-copied frames (run 43: 15 %).
         in_time = time.monotonic() - started < budget
-        use_rife = rife_ok and moving and in_time
+        use_rife = rife_ok and in_time
         part = folder / f"{aspect}-shot-{i:04d}.mkv"
         row = render_shot(shot, plan[aspect], tuple(plan["active"]), SIZES[aspect], part, use_rife=use_rife)
         row.update(index=i, motion=plan.get("motion"),
-                   why="rife" if use_rife else "calm shot" if rife_ok and not moving else
-                   "time budget" if rife_ok and not in_time else "rife unavailable")
+                   why="rife" if use_rife else "time budget" if rife_ok and not in_time else "rife unavailable")
         rows.append(row)
     return rows
 

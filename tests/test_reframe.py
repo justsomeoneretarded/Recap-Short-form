@@ -139,3 +139,21 @@ def test_punch_in_and_deflicker_keep_the_frame_size(tmp_path, mode):
     dims = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
                            "-of", "csv=p=0", str(out)], capture_output=True, text=True).stdout.strip()
     assert dims == "540,960"
+
+
+def test_an_action_shot_follows_the_movement_not_the_face():
+    frames = moving_box_frames(60, 120)
+    still = r.plan_shot(frames, (0, 0, 1, 1), 9 / 16)
+    action = r.plan_shot(frames, (0, 0, 1, 1), 9 / 16, action=True)
+    assert action["reason"] == "follows the action" and action["x_start"] < 0.35
+    assert still["mode"] == "track"
+
+
+def test_sharpness_tells_a_soft_picture_from_a_sharp_one():
+    rng = np.random.default_rng(1)
+    sharp = [rng.integers(0, 255, (270, 480, 3)).astype(np.uint8) for _ in range(3)]
+    soft = [np.full((270, 480, 3), 120, dtype=np.uint8) for _ in range(3)]
+    plan = {"mode": "track", "x_start": 0.5, "x_end": 0.5, "window": 0.3}
+    assert r.sharpness(sharp, (0, 0, 1, 1), plan) > r.SOFT_SHARPNESS > r.sharpness(soft, (0, 0, 1, 1), plan)
+    graph = r.filter_graph({"mode": "track", "x_start": 0.5, "x_end": 0.5}, 1920, 1080, (0, 0, 1, 1), 1080, 1920, 2.0)
+    assert "unsharp" in graph                          # a 9:16 crop of 16:9 is enlarged ~1.8x: sharpened

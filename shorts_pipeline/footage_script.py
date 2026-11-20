@@ -75,6 +75,31 @@ SCRIPT:
 {script}"""
 
 
+EXPAND_PROMPT = """This movie-recap Short script for {movie} is too short: {have} words of narration where about {words}
+are needed for {seconds} seconds. Return the WHOLE script again, in the same form, with new narration lines added
+where they belong in story order. Use these events that no line tells yet (each new line tied to one of them,
+within its max_words, describing what it shows): {unused}.
+Keep every existing line unless a new one replaces it with more. Same rules: present tense, no quotes, no names that
+are not in the events or the script, nothing trivial.
+EVENTS:
+{scenes}
+SCRIPT:
+{script}"""
+
+EXPAND_BELOW = 0.85   # narration under this share of the wanted words gets one request to add lines
+
+
+def narration_words(merged: dict) -> int:
+    return sum(len(x["text"].split()) for x in merged.get("lines") or [] if x.get("kind") == "narration")
+
+
+def unused_events(merged: dict, events: dict, *, at_least: int = 6) -> list[dict]:
+    """Important events no line is tied to yet (story order)."""
+    used = {x.get("event") for x in merged.get("lines") or []} | {(merged.get("hook") or {}).get("event")}
+    return [{"id": k, "what": e["what"], "importance": e.get("importance", 5), "max_words": max_words(e)}
+            for k, e in events.items() if k not in used and e.get("importance", 5) >= at_least]
+
+
 def event_table(arc: dict, movie_lines: dict | None = None) -> tuple[dict[str, dict], list[dict]]:
     """({event id: event with scene}, per-scene rows for the prompt)."""
     events, rows = {}, []
@@ -231,6 +256,23 @@ def write(gemini, arc: dict, result: dict, movie: dict, *, seconds: float, log=N
             merged = fixed
     except gem.GeminiUnavailable as exc:
         notes.append(f"no script check: {str(exc)[:120]}")
+    if narration_words(merged) < EXPAND_BELOW * words:  # too short for the Short's length: add lines once
+        unused = unused_events(merged, events)
+        if unused:
+            try:
+                longer = gemini.generate("smart", [{"text": EXPAND_PROMPT.format(
+                    movie=title, have=narration_words(merged), words=words, seconds=int(seconds),
+                    unused=json.dumps(unused, ensure_ascii=False), scenes=json.dumps(rows, ensure_ascii=False),
+                    script=json.dumps(merged, ensure_ascii=False))}], schema=SCRIPT_SCHEMA, temperature=0.4,
+                    max_tokens=8192)
+                grown, grow_notes = validate(longer, events, movie_lines, allowed)
+                if grown is not None and narration_words(grown) > narration_words(merged) and \
+                        len(grown["lines"]) >= len(merged["lines"]):
+                    notes.append(f"lengthened {narration_words(merged)} → {narration_words(grown)} words")
+                    notes += grow_notes
+                    merged = grown
+            except gem.GeminiUnavailable as exc:
+                notes.append(f"could not lengthen: {str(exc)[:120]}")
     script = to_script(merged, events, result.get("script") or {})
     log(f"Footage-first script: {sum(1 for x in merged['lines'] if x['kind'] == 'narration')} lines tied to events, "
         f"{sum(len(x['text'].split()) for x in merged['lines'] if x['kind'] == 'narration')} words")

@@ -62,9 +62,9 @@ def test_rife_only_on_moving_shots_within_budget_and_at_native_size(tmp_path, mo
     edl = {"shots": shots}
     plans = rs.plan_shots(edl, {}, ("vertical",))
     rows = rs.render_parts(edl, plans, "vertical", [0, 1], tmp_path / "parts")
-    assert [r["why"] for r in rows] == ["calm shot", "rife"]
+    assert [r["why"] for r in rows] == ["rife", "rife"]  # every shot, calm ones too (blending left copied frames)
     if plans["1"]["vertical"]["mode"] == "track":
-        assert calls == [202]  # 640x360 source → 202x360 crop interpolated, then enlarged to 360x640
+        assert calls[-1] == 202  # 640x360 source → 202x360 crop interpolated, then enlarged to 360x640
     late = rs.render_parts(edl, plans, "vertical", [2], tmp_path / "parts", budget=-1)
     assert late[0]["why"] == "time budget" and late[0]["interpolation"] == "blend"
     assert rs.probe(tmp_path / "parts" / "vertical-shot-0001.mkv")["width"] == 360

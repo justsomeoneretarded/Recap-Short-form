@@ -102,7 +102,7 @@ def test_the_event_peak_plays_exactly_when_the_key_word_is_spoken():
     assert stab["start"] + (key_time - stab["timeline_start"]) * stab["speed"] == pytest.approx(303.0, abs=0.05)
     dies = next(s for s in shots if s.get("event") == "s0e1")
     assert dies["start"] + (8 * 0.4 - dies["timeline_start"]) * dies["speed"] == pytest.approx(310.0, abs=0.05)
-    assert shots[-1]["timeline_start"] + shots[-1]["duration"] == pytest.approx(6.0, abs=0.01)
+    assert shots[-1]["timeline_start"] + shots[-1]["duration"] == pytest.approx(6.0 + e.END_HOLD, abs=0.01)
 
 
 def test_a_long_line_takes_more_of_the_same_scene_before_anything_else():
@@ -160,7 +160,7 @@ def test_a_thin_footage_first_script_is_not_voiced():
     from shorts_pipeline import cli
     thin = {"hook": "He is back.", "beats": [{"kind": "narration", "text": "He walks in.", "lines": [{}]}]}
     assert "narration lines" in cli._footage_script_problem(thin, 150)
-    full = {"hook": "h", "beats": [{"kind": "narration", "text": " ".join(["word"] * 70), "lines": [{}, {}]}
+    full = {"hook": "h", "beats": [{"kind": "narration", "text": " ".join(["word"] * 80), "lines": [{}, {}]}
                                    for _ in range(4)]}
     assert cli._footage_script_problem(full, 150) is None
     short = {"hook": "h", "beats": [{"kind": "narration", "text": "a few words here", "lines": [{}]}] * 5}
@@ -179,3 +179,62 @@ def test_with_gemini_a_story_without_a_footage_first_script_stops(monkeypatch, t
     with pytest.raises(RuntimeError, match="too few scenes were watched"):
         cli._voice_story(result, {"arc1": arc}, {"A": {"path": str(video)}}, None, tmp_path / "out", tmp_path / "w",
                          "warguy", "original", movie={"title": "M", "year": 2000})
+
+
+def test_a_short_script_gets_lines_for_the_important_events_it_skipped():
+    arc = arc_with_events()
+    arc["scenes"][1]["events"].append({"start": 20.0, "end": 30.0, "peak": 25.0, "what": "Robert stares Dave down",
+                                       "who": "Robert, Dave", "on_screen": "kitchen", "importance": 8})
+    first = raw_script()
+    longer = raw_script(lines=raw_script()["lines"] + [
+        {"scene": 1, "kind": "narration", "event": "s1e1", "text": "Robert stares him down without a word.",
+         "key_word": "stares"}])
+    google = FakeGemini([first, first, longer])
+    result = {"script": {"title": "old"}, "brief": {"movie": "The Equalizer 2 (2018)"}}
+    script, notes = fs.write(google, arc, result, {"title": "The Equalizer 2", "year": 2018}, seconds=60,
+                             log=lambda m: None)
+    assert len(google.prompts) == 3 and "s1e1" in google.prompts[2] and "too short" in google.prompts[2]
+    assert any(n.startswith("lengthened") for n in notes)
+    assert any(line["event"]["id"] == "s1e1" for b in script["beats"] for line in b.get("lines") or [])
+
+
+def test_a_line_is_cut_where_the_film_cuts_and_a_weak_line_plays_its_new_seconds():
+    arc = arc_with_events()
+    events, _ = fs.event_table(arc)
+    lines = [{"text": "Two killers trap Susan and stab her.", "key_word": "stab", "event": events["s0e0"]},
+             {"text": "She collapses on the floor and dies.", "key_word": "collapses", "event": events["s0e1"]}]
+    text = " ".join(x["text"] for x in lines)
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 6.0,
+                        "text": text, "words": words_for(text), "lines": lines}]}
+    plain = e.build_edl(arc, voice, {"A": "a.mp4", "B": "b.mp4"})["shots"]
+    cut = e.build_edl(arc, voice, {"A": "a.mp4", "B": "b.mp4"}, cuts={"A": [302.0, 302.2]})["shots"]
+    assert len(cut) == len(plain) + 1                     # one camera cut inside the stab; the flicker is ignored
+    for prev, nxt in zip(cut, cut[1:]):
+        assert nxt["timeline_start"] == pytest.approx(prev["timeline_start"] + prev["duration"], abs=0.02)
+    moved = e.build_edl(arc, voice, {"A": "a.mp4", "B": "b.mp4"}, repick={"b0#1": (330.0, 333.0)})["shots"]
+    assert any(s.get("event") == "s0e1" and s["start"] == pytest.approx(330.0) for s in moved)
+
+
+def test_weak_lines_are_chosen_again_from_the_whole_watched_window(monkeypatch, tmp_path):
+    from shorts_pipeline import cli, gemini
+    arc = arc_with_events()
+    events, _ = fs.event_table(arc)
+    lines = [{"text": "Two killers trap Susan and stab her.", "key_word": "stab", "event": events["s0e0"]},
+             {"text": "She collapses on the floor and dies.", "key_word": "collapses", "event": events["s0e1"]}]
+    text = " ".join(x["text"] for x in lines)
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 6.0,
+                        "text": text, "words": words_for(text), "lines": lines}]}
+    seen = {}
+    monkeypatch.setattr(gemini, "client", lambda: object())
+
+    def sheets(arc_, footage, work, only=None):
+        seen["window"] = (arc_["scenes"][only]["clip_start"], arc_["scenes"][only]["clip_end"])
+        return [{"scene": only, "times": [], "image": None}]
+    monkeypatch.setattr(gemini, "frame_sheets", sheets)
+    monkeypatch.setattr(gemini, "pick_frames", lambda g, a, v, slots, sh, only=None: {
+        "b0#1": {"start": 330.0, "end": 333.0, "match": 8, "shown": True},
+        "b0#0": {"start": 280.0, "end": 283.0, "match": 4, "shown": True}})
+    rows = [{"clause": "b0#0", "match": 3}, {"clause": "b0#1", "match": 5}, {"clause": "x#0", "match": 9}]
+    chosen = cli._repick_weak_lines(arc, voice, rows, {"A": "a.mp4"}, tmp_path / "out")
+    assert chosen == {"b0#1": (330.0, 333.0)}            # only a new choice rated 6+ replaces the old picture
+    assert seen["window"] == (270.0, 370.0)               # frames from the whole watched window

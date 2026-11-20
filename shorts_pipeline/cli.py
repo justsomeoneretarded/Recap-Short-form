@@ -381,7 +381,7 @@ def _footage_script_problem(script: dict, seconds: float) -> str | None:
     lines = sum(len(b.get('lines') or []) or 1 for b in narration)
     if lines < 4:
         return f'only {lines} narration lines'
-    if words < 0.55 * target:
+    if words < 0.8 * target:
         return f'only {words} words for a {seconds:.0f}-second Short (about {target:.0f} wanted)'
     return None
 
@@ -457,6 +457,20 @@ def _voice_story(result: dict, arcs: dict, screened: dict, youtube, output: Path
             'repairs': voiceover.get('warnings', [])}
 
 
+def _camera_cuts(arc: dict, footage: dict, shot_changes) -> dict[str, list[float]]:
+    """The film's own camera cuts per clip, over every stretch the edit may use: each scene's planned seconds
+    and the wider window Gemini watched. Scenes that share an upload add up instead of overwriting."""
+    cuts: dict[str, set[float]] = {}
+    for scene in arc['scenes']:
+        clip = footage.get(scene['clip_id'])
+        if not clip:
+            continue
+        lo, hi = scene.get('watch_window') or (scene['clip_start'], scene['clip_end'])
+        lo, hi = min(lo, scene['clip_start']), max(hi, scene['clip_end'])
+        cuts.setdefault(scene['clip_id'], set()).update(round(t, 3) for t in shot_changes(Path(clip), lo, hi))
+    return {k: sorted(v) for k, v in cuts.items()}
+
+
 def run_render(discover: Path, voice: Path, output: Path, workdir: Path, *,
                aspects: tuple[str, ...] = ('square', 'vertical'), interpolation: str = 'auto') -> dict:
     """Voiced stories → edit decision list → final-square.mp4 / final-vertical.mp4 per story."""
@@ -483,7 +497,7 @@ def run_render(discover: Path, voice: Path, output: Path, workdir: Path, *,
             if not clip:
                 raise RuntimeError(f"Footage {scene['clip_id']} could not be downloaded")
             footage[scene['clip_id']] = clip
-            cuts[scene['clip_id']] = shot_changes(Path(clip), scene['clip_start'], scene['clip_end'])
+        cuts = _camera_cuts(arc, footage, shot_changes)
         edl = build_edl(arc, voiceover, footage, cuts)
         captions = {a: folder/f'captions-{a}'/'captions.ass' for a in aspects
                     if (folder/f'captions-{a}'/'captions.ass').exists()}
@@ -624,7 +638,7 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
         aligned = path.parent/'arc.json'  # scene windows corrected before voicing
         arc = json.loads(aligned.read_text()) if aligned.exists() else arcs[voiceover['arc']]
         footage = _footage([s['clip_id'] for s in arc['scenes']], screened, workdir)
-        cuts = {s['clip_id']: shot_changes(Path(footage[s['clip_id']]), s['clip_start'], s['clip_end']) for s in arc['scenes']}
+        cuts = _camera_cuts(arc, footage, shot_changes)
         similar = _similarity(arc, voiceover)
         # Gemini looks at the real frames: it picks the seconds under every clause, then checks the cut.
         director, picture, fixes = _picture_edit(arc, voiceover, footage, cuts, similar, output/voiceover['arc'])
@@ -637,7 +651,13 @@ def run_edit_plan(discover: Path, voice: Path, output: Path, workdir: Path) -> d
                 director = {**director, **fixes}
                 edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director)
         if any(b.get('lines') for b in voiceover.get('beats') or []):
-            picture = picture + _line_check(arc, voiceover, edl, footage, output/voiceover['arc'])
+            lines = _line_check(arc, voiceover, edl, footage, output/voiceover['arc'])
+            repick = _repick_weak_lines(arc, voiceover, lines, footage, output/voiceover['arc'])
+            if repick:  # weak lines play the seconds chosen again; the cut is built and checked once more
+                edl = build_edl(arc, voiceover, footage, cuts, similar=similar, director=director, repick=repick)
+                lines = _line_check(arc, voiceover, edl, footage, output/voiceover['arc'])
+                edl['repicked_lines'] = sorted(repick)
+            picture = picture + lines
         edl['director'] = {k: [list(r) for r in v] for k, v in director.items()}
         edl['critic_fixed_beats'] = sorted(fixes)
         edl['picture_check'] = picture
@@ -729,14 +749,9 @@ def _picture_edit(arc: dict, voiceover: dict, footage: dict, cuts: dict, similar
         shutil.rmtree(temp, ignore_errors=True)
 
 
-def _line_check(arc: dict, voiceover: dict, edl: dict, footage: dict, work: Path) -> list[dict]:
-    """Footage-first lines: Gemini looks at the frame under every line (its event, at the key word) and scores
-    how well it shows the line; the rows go into the review."""
-    import shutil
-    import tempfile
-    from . import gemini as gem
+def _line_slots(voiceover: dict) -> dict:
+    """Per beat with footage-first lines: each line's seconds in the take and its words."""
     from .edit import line_spans
-    google = gem.client()
     beats = voiceover.get('beats') or []
     slots = {}
     for i, beat in enumerate(beats):
@@ -746,6 +761,52 @@ def _line_check(arc: dict, voiceover: dict, edl: dict, footage: dict, work: Path
         spans = line_spans(beat, gap) or []
         slots[beat['id']] = [{'start': x['start'], 'end': x['end'], 'text': x['line']['text'],
                               'event': (x['line'].get('event') or {}).get('what', '')} for x in spans]
+    return slots
+
+
+WEAK_LINE = 6   # a line whose picture scores under this is chosen again from its scene's frames
+
+
+def _repick_weak_lines(arc: dict, voiceover: dict, rows: list[dict], footage: dict, work: Path) -> dict:
+    """{'beat#k': (start, end)} for lines whose picture did not show them, chosen again by Gemini from contact
+    sheets of the scene's whole watched window; only choices it rates 6 or better are kept."""
+    import copy
+    import shutil
+    import tempfile
+    from . import gemini as gem
+    weak = {r['clause'] for r in rows if isinstance(r.get('match'), (int, float)) and r['match'] < WEAK_LINE}
+    google = gem.client()
+    if not weak or google is None:
+        return {}
+    wide = copy.deepcopy(arc)  # the frames come from everything Gemini watched around each scene
+    for scene in wide['scenes']:
+        lo, hi = scene.get('watch_window') or (scene['clip_start'], scene['clip_end'])
+        scene['clip_start'], scene['clip_end'] = min(lo, scene['clip_start']), max(hi, scene['clip_end'])
+    scene_of = {b['id']: b.get('scene') for b in voiceover.get('beats') or []}
+    scenes = {scene_of.get(c.split('#')[0]) for c in weak}
+    temp = Path(tempfile.mkdtemp(prefix='repick-', dir=work.parent if work.parent.exists() else None))
+    try:
+        sheets = [x for i in sorted(s for s in scenes if s is not None)
+                  for x in gem.frame_sheets(wide, footage, temp, only=i)]
+        picks = gem.pick_frames(google, wide, voiceover, _line_slots(voiceover), sheets, only=weak)
+    except gem.GeminiUnavailable as exc:
+        print(f'Weak lines not re-picked: {str(exc)[:120]}', file=sys.stderr)
+        return {}
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+    chosen = {k: (v['start'], v['end']) for k, v in picks.items() if v.get('shown') and v.get('match', 0) >= WEAK_LINE}
+    print(f'Weak lines: {len(weak)} under {WEAK_LINE}/10, {len(chosen)} re-picked from the frames', file=sys.stderr)
+    return chosen
+
+
+def _line_check(arc: dict, voiceover: dict, edl: dict, footage: dict, work: Path) -> list[dict]:
+    """Footage-first lines: Gemini looks at the frame under every line (its event, at the key word) and scores
+    how well it shows the line; the rows go into the review."""
+    import shutil
+    import tempfile
+    from . import gemini as gem
+    google = gem.client()
+    slots = _line_slots(voiceover)
     if google is None or not slots:
         return []
     temp = Path(tempfile.mkdtemp(prefix='lines-', dir=work.parent if work.parent.exists() else None))

@@ -29,14 +29,14 @@ def test_edl_is_continuous_dialogue_in_sync_and_forward_moving():
     assert line["audio"] == "full" and line["start"] == 30.0 and line["speed"] == 1.0
     scene_a = [s for s in shots if s["clip_id"] == "A" and s["audio"] == "duck"]
     assert all(s["end"] <= 30.0 + 1e-6 for s in scene_a)  # narration before the line uses footage before it
-    assert edl["duration"] == pytest.approx(30.1, abs=0.05)
+    assert edl["duration"] == pytest.approx(30.1 + e.END_HOLD, abs=0.05)  # the picture holds past the last word
 
 
 def test_short_footage_is_slowed_gently_not_frozen():
     edl = e.build_edl(ARC, VOICE, FOOTAGE)
     scene_b = [s for s in edl["shots"] if s["clip_id"] == "B"]
     assert all(s["speed"] >= e.MIN_SPEED for s in scene_b)
-    assert sum(s["duration"] for s in scene_b) == pytest.approx(12.0, abs=0.05)
+    assert sum(s["duration"] for s in scene_b) >= 12.0 - 0.05  # its whole beat (plus the hold at the end)
 
 
 def test_long_narration_before_an_early_movie_line_uses_more_footage_not_a_freeze():
@@ -48,7 +48,7 @@ def test_long_narration_before_an_early_movie_line_uses_more_footage_not_a_freez
         {"id": "b2", "kind": "narration", "scene": 0, "timeline_start": 35.2, "duration": 20.0}]}
     edl = e.build_edl(arc, voice, {"A": "a.mp4"}, cuts={"A": [5, 9, 14, 20, 26, 33, 41, 50, 58, 66, 75, 90]})
     shots = edl["shots"]
-    assert edl["duration"] == pytest.approx(55.2, abs=0.05)
+    assert edl["duration"] == pytest.approx(55.2 + e.END_HOLD, abs=0.05)
     for shot in shots:  # every shot is real motion: never a frame held for seconds
         assert shot["speed"] >= e.MIN_SPEED - 1e-6
         assert shot["duration"] <= (shot["end"] - shot["start"]) / e.MIN_SPEED + 0.06
@@ -61,21 +61,21 @@ def test_text_cards_in_the_footage_are_never_used():
     voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 40.0}]}
     edl = e.build_edl(arc, voice, {"A": "a.mp4"}, cuts={"A": [5, 10, 15, 25, 35, 45, 50]})
     assert all(s["end"] <= 20.0 + 1e-6 or s["start"] >= 32.0 - 1e-6 for s in edl["shots"])
-    assert edl["duration"] == pytest.approx(40.0, abs=0.05)
+    assert edl["duration"] == pytest.approx(40.0 + e.END_HOLD, abs=0.05)
 
 
 def test_narration_gets_footage_even_when_the_whole_clip_is_marked_to_avoid():
-    from shorts_pipeline.edit import build_edl
+    from shorts_pipeline.edit import END_HOLD, build_edl
     arc = {"id": "a", "scenes": [{"clip_id": "c", "clip_start": 0.0, "clip_end": 60.0, "peaks": [],
                                   "avoid": [[0.0, 61.0]]}]}
     voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 20.0,
                         "text": "x"}]}
     edl = build_edl(arc, voice, {"c": "/c.mp4"}, {})
-    assert abs(sum(s["duration"] for s in edl["shots"]) - 20.0) < 0.1
+    assert abs(sum(s["duration"] for s in edl["shots"]) - 20.0 - END_HOLD) < 0.1
 
 
 def test_director_moments_play_in_its_order_under_their_sentence():
-    from shorts_pipeline.edit import build_edl
+    from shorts_pipeline.edit import END_HOLD, build_edl
     arc = {"id": "a", "scenes": [{"clip_id": "c", "clip_start": 0.0, "clip_end": 60.0, "peaks": [], "avoid": []}]}
     voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 4.0,
                         "text": "He smashes the floor."}]}
