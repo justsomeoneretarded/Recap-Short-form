@@ -36,6 +36,8 @@ SAFETY = [{"category": c, "threshold": "BLOCK_ONLY_HIGH"} for c in (
     "HARM_CATEGORY_DANGEROUS_CONTENT")]  # movie violence is described, not promoted
 MAX_WAIT = 65.0        # longest per-minute rate-limit wait before giving up on Gemini for a request
 MAX_MODELS_PER_REQUEST = 6
+TEXT_TIMEOUT = float(os.environ.get("SHORTS_GEMINI_TEXT_TIMEOUT", "240"))    # read timeout, text-only requests
+MEDIA_TIMEOUT = float(os.environ.get("SHORTS_GEMINI_MEDIA_TIMEOUT", "420"))  # requests with images or video
 BUSY_WAITS = (60.0, 120.0, 120.0)  # waits when Google answers "overloaded" (HTTP 5xx) on every model
 MINUTE_WAIT = float(os.environ.get("SHORTS_GEMINI_MINUTE_WAIT", "60"))  # wait after a per-minute limit
 MINUTE_RETRIES = int(os.environ.get("SHORTS_GEMINI_MINUTE_RETRIES", "2"))  # same model, after waiting
@@ -205,9 +207,12 @@ class Client:
     # ------------------------------------------------------------------ plumbing
     def _http(self, method: str, url: str, *, key: int = 0, **kwargs):
         headers = {"x-goog-api-key": self.keys[key], **kwargs.pop("headers", {})}
+        timeout = kwargs.pop("timeout", 600)
         try:
-            return self.session.request(method, url, headers=headers, timeout=kwargs.pop("timeout", 600), **kwargs)
+            return self.session.request(method, url, headers=headers, timeout=timeout, **kwargs)
         except Exception as exc:  # noqa: BLE001 - network trouble means "use the fallback"
+            if _is_read_timeout(exc):  # Google took the request but did not answer in time: a busy server
+                return _TimedOut(timeout)
             raise GeminiUnavailable(f"network: {str(exc)[:160]}") from exc
 
     def models(self) -> dict[str, list[str]]:
@@ -294,6 +299,8 @@ class Client:
         pinned = next((self.file_key[u] for u in re.findall(r'"fileUri":\s*"([^"]+)"', json.dumps(body))
                        if u in self.file_key), None)  # an uploaded file only exists for the key that uploaded it
         minute_waits, server_errors, errors = 0, 0, []
+        media = any(("fileData" in part or "inlineData" in part) for content in body.get("contents") or []
+                    for part in content.get("parts") or [] if isinstance(part, dict))
         while True:
             keys = [k for k in self._usable_keys(model) if pinned is None or k == pinned]
             if not keys:
@@ -320,7 +327,8 @@ class Client:
                 self.sleep(pause)
             started = self.last_call = self.last[slot] = time.time()
             self.window.setdefault(slot, []).append((started, tokens))
-            reply = self._http("POST", f"{API}/v1beta/models/{model}:{method}", key=k, json=body)
+            reply = self._http("POST", f"{API}/v1beta/models/{model}:{method}", key=k, json=body,
+                               timeout=MEDIA_TIMEOUT if media else TEXT_TIMEOUT)
             row = {"model": model, "key": k + 1, "method": method, "status": reply.status_code,
                    "seconds": round(time.time() - started, 1), "input_estimate": tokens}
             self.calls.append(row)
@@ -357,6 +365,10 @@ class Client:
                 for kk in (range(len(self.keys)) if self.shared_project else [k]):
                     self.cool[(kk, model)] = max(self.cool.get((kk, model), 0), until)
                 continue  # another key now, or a bounded wait when all are cooling
+            if isinstance(reply, _TimedOut):  # no second wait on the same model: the next model is tried
+                row["error"] = reply.text
+                print(f"[gemini] {model}: {reply.text}", file=sys.stderr, flush=True)
+                raise _BadRequest(f"{model}: HTTP 504 {reply.text}")
             if reply.status_code in (500, 502, 503, 504) and server_errors < 3:
                 server_errors += 1
                 self.sleep(4 * 2 ** (server_errors - 1))
@@ -535,6 +547,32 @@ class Client:
                 "exhausted": sorted(self.exhausted), "errors": errors,
                 "seconds": round(sum(c["seconds"] for c in self.calls), 1), "waited_for_limits": round(self.waited),
                 "models": chosen}
+
+
+class _TimedOut:
+    """Stands in for a reply when Google did not answer within the read timeout."""
+    status_code = 504
+
+    def __init__(self, seconds: float):
+        self.text = f"no answer within {seconds:.0f}s (timed out)"
+        self.headers: dict = {}
+
+    def json(self):
+        return {}
+
+
+def _is_read_timeout(exc: Exception) -> bool:
+    """A read timeout (the request reached Google, the answer did not come back in time), as opposed to a
+    connection that could not be made at all."""
+    try:
+        import requests
+        if isinstance(exc, requests.exceptions.ReadTimeout):
+            return True
+        if isinstance(exc, requests.exceptions.ConnectionError):
+            return "Read timed out" in str(exc)
+    except ImportError:
+        pass
+    return isinstance(exc, TimeoutError) or "Read timed out" in str(exc)
 
 
 class _Exhausted(RuntimeError):

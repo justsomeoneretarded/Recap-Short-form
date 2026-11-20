@@ -615,3 +615,19 @@ def test_without_a_backup_the_writer_stops_and_says_why(capsys):
     assert primary.calls == 2                  # a malformed answer is asked again once
     err = capsys.readouterr().err
     assert "asking again" in err and "could not answer" in err and len(writer.notes) == 2
+
+
+def test_a_request_google_never_answers_moves_to_the_next_model_and_is_not_a_network_failure():
+    import requests
+
+    class Slow(Session):
+        def request(self, method, url, headers=None, timeout=None, **kwargs):
+            if "gemini-3.5-flash:" in url:
+                self.posts.append(("timeout", timeout))
+                raise requests.exceptions.ReadTimeout("Read timed out. (read timeout=240)")
+            return super().request(method, url, headers=headers, timeout=timeout, **kwargs)
+    session = Slow({"gemini-2.5-flash": [answer({"ok": 2})]})
+    c = g.Client("k", session=session, sleep=lambda s: None)
+    assert c.generate("smart", [{"text": "x"}], schema={"type": "object"}) == {"ok": 2}
+    assert ("timeout", g.TEXT_TIMEOUT) in session.posts          # text requests wait 240 s, not 10 min
+    assert g._server_busy("gemini-3.5-flash: HTTP 504 no answer within 240s (timed out)")

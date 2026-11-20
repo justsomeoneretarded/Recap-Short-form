@@ -196,3 +196,25 @@ def test_coverage_counts_clean_scene_uploads():
          {"title": "Havoc club fight scene", "duration": 180, "signals": {"height": 360}},
          {"title": "Havoc review", "duration": 600, "signals": {"height": 1080}}]
     assert d.coverage(c) == 1
+
+
+def test_the_youtube_budget_counts_only_time_spent_on_youtube(monkeypatch):
+    import time as _time
+    yt = d.YouTube(proxy="", cookies="", budget=5)
+    calls = []
+
+    def fake_extract(target, **extra):
+        calls.append(target)
+        yt_spent_before = yt.spent
+        return {"id": target, "spent_before": yt_spent_before}
+    monkeypatch.setattr(yt, "_extract", fake_extract)
+    _time.sleep(0.05)                                  # time outside YouTube (a slow Gemini answer) is free
+    assert yt.extract("https://www.youtube.com/watch?v=abc")["id"].endswith("abc") and yt.spent < 1
+    yt.spent = 6.0                                     # the budget is used up ...
+    with pytest.raises(RuntimeError, match="budget"):
+        yt.extract("https://www.youtube.com/watch?v=other")
+    yt.must = {"needed1"}                              # ... but a found story's clip still gets downloaded
+    assert yt.extract("https://www.youtube.com/watch?v=needed1")
+    yt.spent = 6.0 + yt.reserve
+    with pytest.raises(RuntimeError, match="budget"):
+        yt.extract("https://www.youtube.com/watch?v=needed1")

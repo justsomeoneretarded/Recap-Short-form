@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
@@ -290,11 +291,19 @@ def screen_candidates(placed: dict, youtube, workdir: Path, *, top: int = 8, mov
     # Placed clips first: only they can become story scenes.
     ordered = sorted(placed["clips"], key=lambda c: (c["id"] not in (first or set()),
                                                      not (c.get("placement") or {}).get("matched")))
+    reserve = float(os.environ.get("SHORTS_SCREEN_RESERVE", "900"))
+    if first and hasattr(youtube, "must"):
+        youtube.must = set(youtube.must) | set(first)  # a found story's clips are downloaded past the budget
     for clip in ordered[:top]:
         row = {"id": clip["id"], "title": clip["title"]}
-        if time.monotonic() > deadline:
-            reports.append({**row, "accept": False, "reasons": ["not screened: time budget reached"], "notes": []})
-            continue
+        now = time.monotonic()
+        if now > deadline:
+            if clip["id"] in (first or set()) and now < deadline + reserve:
+                print(f"[screen] {clip['id']}: screened past the time budget (a story needs it)",
+                      file=sys.stderr, flush=True)
+            else:
+                reports.append({**row, "accept": False, "reasons": ["not screened: time budget reached"], "notes": []})
+                continue
         cache = folder / f"{clip['id']}.screen.json"
         if cache.exists():
             cached = json.loads(cache.read_text())

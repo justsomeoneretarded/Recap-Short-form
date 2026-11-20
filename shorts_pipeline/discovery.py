@@ -202,8 +202,12 @@ class YouTube:
         self.pause = pause
         # Fail fast like Top10-Movies: short back-off, few retries, then move on to the next clip.
         self.bot_backoff = float(os.environ.get("SHORTS_BOT_BACKOFF", "8"))
-        seconds = budget if budget is not None else float(os.environ.get("SHORTS_YOUTUBE_BUDGET", "2700"))
-        self.deadline = time.monotonic() + seconds  # no YouTube work after this, so jobs end in time
+        # Seconds of YouTube work allowed in this job (time spent inside YouTube calls only, so a slow Gemini
+        # answer never uses it up); clips a found story needs (`must`) may go on for `reserve` seconds more.
+        self.budget = budget if budget is not None else float(os.environ.get("SHORTS_YOUTUBE_BUDGET", "2700"))
+        self.reserve = float(os.environ.get("SHORTS_SCREEN_RESERVE", "900"))
+        self.spent = 0.0
+        self.must: set[str] = set()
         self.prefer_proxy = False  # once the direct route is bot-checked, go straight to the proxy
         self.log: list[dict] = []
 
@@ -223,15 +227,28 @@ class YouTube:
             options["proxy"] = self.proxy
         return options
 
+    def _over_budget(self, target: str) -> bool:
+        if self.spent < self.budget:
+            return False
+        needed = any(v and v in target for v in self.must)
+        return not (needed and self.spent < self.budget + self.reserve)
+
     def extract(self, target: str, **extra) -> dict:
-        if time.monotonic() > self.deadline:
+        if self._over_budget(target):
             raise RuntimeError("YouTube time budget reached; skipped")
+        started = time.monotonic()
+        try:
+            return self._extract(target, **extra)
+        finally:
+            self.spent += time.monotonic() - started
+
+    def _extract(self, target: str, **extra) -> dict:
         import yt_dlp
         routes = ([True] if self.prefer_proxy else [False]) + ([True] if self.proxy and not self.prefer_proxy else [])
         last = "no route"
         for use_proxy in routes:
             for attempt in range(2):
-                if time.monotonic() > self.deadline:
+                if self._over_budget(target):
                     raise RuntimeError("YouTube time budget reached; skipped")
                 try:
                     with yt_dlp.YoutubeDL(self._options(use_proxy, extra)) as ydl:

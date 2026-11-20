@@ -120,3 +120,22 @@ def test_real_subtitles_still_count():
     lines = ["I will find you.", "Who are you?", "Get out of my car.", "Nobody.", "Run."]
     text = classify_text([(t, [_rows(line, 0.80, 0.86)], frame) for t, line in enumerate(lines)], (0, 0, 1, 1))
     assert text["subtitle_frames"] == 5 and text["distinct_subtitle_lines"] == 5
+
+
+def test_a_found_storys_clips_are_screened_past_the_time_budget(monkeypatch, tmp_path):
+    from shorts_pipeline import screening as sc
+    monkeypatch.setenv("SHORTS_SCREEN_BUDGET", "-1")              # the budget is already spent
+    downloaded = []
+
+    class YT:
+        must = set()
+
+        def download(self, video_id, folder):
+            downloaded.append(video_id)
+            raise RuntimeError("no network in tests")
+    yt = YT()
+    placed = {"clips": [{"id": "story1", "title": "a", "placement": {"matched": True}},
+                        {"id": "other", "title": "b", "placement": {"matched": True}}]}
+    reports = {r["id"]: r for r in sc.screen_candidates(placed, yt, tmp_path, first={"story1"})}
+    assert downloaded == ["story1"] and "story1" in yt.must
+    assert reports["other"]["reasons"] == ["not screened: time budget reached"]
