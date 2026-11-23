@@ -21,8 +21,8 @@ EVENTS_SCHEMA = {"type": "object", "properties": {
     "events": {"type": "array", "items": {"type": "object", "properties": {
         "start": {"type": "number"}, "end": {"type": "number"}, "peak": {"type": "number"},
         "what": {"type": "string"}, "who": {"type": "string"}, "on_screen": {"type": "string"},
-        "importance": {"type": "integer"}},
-        "required": ["start", "end", "peak", "what", "who", "on_screen", "importance"]}},
+        "importance": {"type": "integer"}, "sensitive": {"type": "boolean"}},
+        "required": ["start", "end", "peak", "what", "who", "on_screen", "importance", "sensitive"]}},
     "burned_in_captions": {"type": "boolean"},
     "narrator_over_film": {"type": "boolean"}},
     "required": ["events", "burned_in_captions", "narrator_over_film"]}
@@ -37,6 +37,8 @@ List every distinct EVENT you see, in order, with times in seconds from the star
 - on_screen: the place and the important objects visible.
 - importance: 1-10 for how much the event matters to this movie's story (a killing, a reveal, a threat = high;
   someone walking, painting, waiting = low).
+- sensitive: true when the picture could get the Short age-restricted: a weapon held to a child or teenager, a gun
+  in someone's mouth, gore or open wounds, sexual content, self-harm, drug use shown close up.
 Cover the whole clip; split long actions into separate events when the action changes (an attack, then the victim
 falling, then dying are three events). Also say whether the clip has burned-in captions and whether someone talks
 over the film (a narrator or commentator)."""
@@ -83,7 +85,8 @@ def clean_events(raw: dict, lo: float, hi: float) -> list[dict]:
                        "what": " ".join(str(row.get("what", "")).split())[:160],
                        "who": " ".join(str(row.get("who", "")).split())[:100],
                        "on_screen": " ".join(str(row.get("on_screen", "")).split())[:120],
-                       "importance": max(1, min(10, int(row.get("importance") or 5)))})
+                       "importance": max(1, min(10, int(row.get("importance") or 5))),
+                       "sensitive": bool(row.get("sensitive"))})
     return sorted(events, key=lambda e: e["start"])
 
 
@@ -125,6 +128,11 @@ def watch_story(gemini, arc: dict, footage: dict, work: Path, movie: dict, *, pr
             log(f"Scene {i}: not watched ({str(exc)[:120]})")
             continue
         scene["watch_window"], scene["events"] = seen["window"], seen["events"]
+        risky = [[e["start"], e["end"]] for e in seen["events"] if e.get("sensitive")]
+        if risky:  # the edit never shows these seconds (age restriction)
+            scene["avoid"] = list(scene.get("avoid") or []) + risky
+            log(f"Scene {i}: {len(risky)} sensitive moment(s) kept out of the edit: " +
+                "; ".join(f"{e['start']:.0f}-{e['end']:.0f}s {e['what'][:40]}" for e in seen["events"] if e.get("sensitive")))
         scene["watch_flags"] = {k: seen[k] for k in ("burned_in_captions", "narrator_over_film")}
         log(f"Scene {i} watched: {len(seen['events'])} events — " +
             "; ".join(f"{e['start']:.0f}-{e['end']:.0f}s {e['what'][:40]} ({e['importance']})" for e in seen["events"][:8]))

@@ -207,6 +207,30 @@ def usable(story: dict, have: set) -> bool:
     return len(have) >= max(3, math.ceil(USABLE_SHARE * n))
 
 
+_STOP = set("the a an and or but of to in on at for with by from his her their its he she they it is are was were "
+            "be as that this who what when while into after before about against one two".split())
+
+
+def _content(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z']{4,}", (text or "").lower()) if w not in _STOP}
+
+
+def main_plot_share(story: dict, movie: dict) -> float:
+    """0..1: how much a story is the movie's main plot: its words against the official synopsis (TMDB
+    overview and tagline) and the top-billed characters. A side plot (the hero helping a neighbour) scores low."""
+    main = _content(f"{movie.get('overview', '')} {movie.get('tagline', '')}")
+    for person in (movie.get("cast") or [])[:3]:
+        main |= _content(str(person.get("character") or ""))
+    text = " ".join([str(story.get("title", "")), str(story.get("spine", ""))] +
+                    [f"{b.get('what_we_see', '')} {b.get('narration', '')}" for b in story.get("beats") or []])
+    if not main:
+        return 0.0
+    return round(min(1.0, len(_content(text) & main) / max(4.0, 0.35 * len(main))), 2)
+
+
+MAIN_PLOT_BONUS = 3.0   # rank points for a story that carries the main plot (equal footage: the main plot wins)
+
+
 def script_rank(story: dict, have: set) -> float:
     """How good a script will look on screen with the footage found: share of its scenes with footage,
     minus a heavy cost for each turning-point ACTION scene without footage (a story that has to talk
@@ -218,7 +242,7 @@ def script_rank(story: dict, have: set) -> float:
     lost_action = sum(1 for i, b in enumerate(beats) if i not in have
                       and ACTION.search(f"{b.get('role', '')} {b.get('what_we_see', '')}"))
     editor = float((story.get("editor") or {}).get("score") or 6)
-    return round(10 * share - 3 * lost_action + 0.3 * editor, 2)
+    return round(10 * share - 3 * lost_action + 0.3 * editor + MAIN_PLOT_BONUS * float(story.get("main_plot") or 0), 2)
 
 
 def rank_results(results: list[dict], wanted: int) -> list[dict]:
@@ -247,6 +271,10 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
         broad = general_searches(google, research["movie"], plot)
     except gem.GeminiUnavailable:
         broad = []
+    for story in planned:  # the main plot wins over a side plot with the same footage
+        story["main_plot"] = main_plot_share(story, research.get("movie") or {})
+    if planned:
+        log("main plot: " + "; ".join(f"'{s.get('title', '')}' {s['main_plot']:.2f}" for s in planned))
     log(f"searches: general {broad}; per beat {beat_searches(planned)}")
     hunt.search(broad + beat_searches(planned))
     if hunt.thin():

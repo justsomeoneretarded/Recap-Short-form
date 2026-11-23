@@ -283,6 +283,21 @@ def line_spans(beat: dict, gap: float) -> list[dict] | None:
     return [s for s in spans if s["end"] - s["start"] > 0.05]
 
 
+def _dodge(start: float, take: float, lo: float, hi: float, avoid: list) -> tuple[float, float]:
+    """Move a take [start, start + take) off the `avoid` ranges (sensitive moments, text cards) within
+    [lo, hi]: just after the range, else just before it; when neither fits, keep only the part before it."""
+    for a, b in sorted(avoid or []):
+        if start < b and start + take > a:  # overlaps
+            after, before = b, a - take
+            options = [x for x in (after, before) if lo <= x and x + take <= hi and
+                       not any(x < bb and x + take > aa for aa, bb in avoid)]
+            if options:
+                start = min(options, key=lambda x: abs(x - start))
+            elif a - start >= 0.8:
+                take = a - start
+    return start, take
+
+
 def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict, used: dict,
                cuts: dict | None = None, repick: dict | None = None) -> list[dict] | None:
     """Shots for a footage-first narration take: every line plays the event it describes, placed so that the
@@ -296,10 +311,11 @@ def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict,
     spans = line_spans(beat, gap)
     if not spans:
         return None
-    windows = {}
+    windows, avoid = {}, {}
     for scene in arc.get("scenes") or []:
         lo, hi = scene.get("watch_window") or (scene["clip_start"], scene["clip_end"])
         windows[scene["clip_id"]] = (min(lo, scene["clip_start"]), max(hi, scene["clip_end"]))
+        avoid.setdefault(scene["clip_id"], []).extend(tuple(r) for r in scene.get("avoid") or [])
     if any(span["line"].get("event", {}).get("clip_id") not in footage for span in spans):
         return None
     shots, last_end = [], {}
@@ -320,6 +336,7 @@ def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict,
                 last_end[clip] - start < 0.6 * take:
             start = last_end[clip]  # the next line of the same scene does not replay the same seconds
         start = max(lo, min(start, hi - take))
+        start, take = _dodge(start, take, lo, hi, avoid.get(clip, []))  # never a sensitive moment or a text card
         end = min(hi, start + take)
         cursor = start_t + span["start"]
         length = (end - start) / speed

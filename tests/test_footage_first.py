@@ -160,7 +160,7 @@ def test_a_thin_footage_first_script_is_not_voiced():
     from shorts_pipeline import cli
     thin = {"hook": "He is back.", "beats": [{"kind": "narration", "text": "He walks in.", "lines": [{}]}]}
     assert "narration lines" in cli._footage_script_problem(thin, 150)
-    full = {"hook": "h", "beats": [{"kind": "narration", "text": " ".join(["word"] * 80), "lines": [{}, {}]}
+    full = {"hook": "h", "beats": [{"kind": "narration", "text": " ".join(["word"] * 110), "lines": [{}, {}]}
                                    for _ in range(4)]}
     assert cli._footage_script_problem(full, 150) is None
     short = {"hook": "h", "beats": [{"kind": "narration", "text": "a few words here", "lines": [{}]}] * 5}
@@ -238,3 +238,35 @@ def test_weak_lines_are_chosen_again_from_the_whole_watched_window(monkeypatch, 
     chosen = cli._repick_weak_lines(arc, voice, rows, {"A": "a.mp4"}, tmp_path / "out")
     assert chosen == {"b0#1": (330.0, 333.0)}            # only a new choice rated 6+ replaces the old picture
     assert seen["window"] == (270.0, 370.0)               # frames from the whole watched window
+
+
+def test_the_word_target_follows_the_narrators_real_pace():
+    from shorts_pipeline.narration import TARGET_WPM
+    assert fs.target_words(150) == int((150 - fs.MOVIE_LINE_SECONDS) * TARGET_WPM / 60)
+    assert 450 <= fs.target_words(150) <= 500                  # run 46: 303 words made a 99-s Short
+
+
+def test_sensitive_pictures_and_strong_language_never_reach_the_script():
+    arc = arc_with_events()
+    arc["scenes"][0]["events"][0]["sensitive"] = True            # e.g. a gun held to a teenager
+    arc["scenes"][1]["events"].append({"start": 20.0, "end": 30.0, "peak": 25.0, "what": "Robert stares Dave down",
+                                       "who": "Robert, Dave", "on_screen": "kitchen", "importance": 8})
+    lines = {"L1": {"text": "Get the fuck out of here", "scene": 0}, "L2": {"text": "You will not do this", "scene": 0}}
+    events, rows = fs.event_table(arc, lines)
+    assert all(e["id"] != "s0e0" for r in rows for e in r["events"])            # never offered to the writer
+    assert [m["line_id"] for m in rows[0]["movie_lines"]] == ["L2"]
+    raw = raw_script(lines=raw_script()["lines"][:4] + [
+        {"scene": 1, "kind": "narration", "event": "s1e1", "text": "Robert stares him down without a word.",
+         "key_word": "stares"},
+        {"scene": 0, "kind": "movie_line", "line_id": "L1", "text": "", "event": ""},
+        {"scene": 0, "kind": "movie_line", "line_id": "L2", "text": "", "event": ""}])
+    merged, notes = fs.validate(raw, events, lines, {"susan", "dave", "miles", "robert"})
+    assert all(x.get("event") != "s0e0" for x in merged["lines"])
+    assert [x["line_id"] for x in merged["lines"] if x["kind"] == "movie_line"] == ["L2"]
+    assert any("sensitive" in n for n in notes) and any("strong language" in n for n in notes)
+    assert fs.mask_profanity("what the fuck") == "what the f***"
+
+
+def test_a_line_take_steps_off_a_sensitive_moment():
+    start, take = e._dodge(100.0, 4.0, 90.0, 130.0, [(101.0, 106.0)])
+    assert start + take <= 101.0 or start >= 106.0

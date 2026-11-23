@@ -148,3 +148,19 @@ def test_half_a_story_or_too_little_footage_is_never_made(monkeypatch):
     fake = FakeHunt(placeable=[720, 1020, 1320])                   # 3 of 4 scenes, about 90 s of footage
     out, _ = run(monkeypatch, fake, length=150)                    # a 150 s Short needs at least 105 s
     assert out["arcs"] == []
+
+
+def test_the_main_plot_outranks_a_side_plot_with_the_same_footage():
+    from shorts_pipeline import hunt as h
+    movie = {"overview": "Robert McCall serves justice for the oppressed, but when his friend Susan is murdered "
+                         "he hunts the killers, his former partners.", "tagline": "",
+             "cast": [{"character": "Robert McCall"}, {"character": "Dave York"}, {"character": "Susan Plummer"}]}
+    beats = [{"role": "x", "what_we_see": "y"}] * 5
+    main = {"title": "Susan's killers", "spine": "McCall hunts the former partners who murdered his friend Susan",
+            "beats": beats}
+    side = {"title": "Saving Miles", "spine": "A neighbour paints a wall and keeps a boy off the streets", "beats": beats}
+    for s in (main, side):
+        s["main_plot"] = h.main_plot_share(s, movie)
+    assert main["main_plot"] > side["main_plot"]
+    have = set(range(5))
+    assert h.script_rank(main, have) > h.script_rank(side, have)

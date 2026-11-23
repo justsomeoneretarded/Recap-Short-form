@@ -380,10 +380,10 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
 def _footage_script_problem(script: dict, seconds: float) -> str | None:
     """Why a footage-first script is too thin to voice, or None. Its lines were already checked one by one
     (each tied to an event that shows it, no trivial events, no invented names); here the whole is checked."""
-    from .footage_script import WORDS_PER_SECOND
+    from .footage_script import target_words
     narration = [b for b in script.get('beats') or [] if b.get('kind') != 'dialogue']
     words = sum(len(str(b.get('text') or '').split()) for b in narration) + len(str(script.get('hook') or '').split())
-    target = seconds * WORDS_PER_SECOND * 0.85
+    target = target_words(seconds)
     lines = sum(len(b.get('lines') or []) or 1 for b in narration)
     if lines < 4:
         return f'only {lines} narration lines'

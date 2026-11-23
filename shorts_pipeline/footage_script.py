@@ -17,7 +17,29 @@ import json
 import re
 import sys
 
-WORDS_PER_SECOND = 2.9
+from .narration import TARGET_WPM
+
+WORDS_PER_SECOND = TARGET_WPM / 60   # the narrator's real pace after pacing (~3.4 words/s; run 46: 202 wpm)
+MOVIE_LINE_SECONDS = 10.0            # room kept for the original movie lines (up to three short ones)
+
+
+from .writer import PROFANITY  # noqa: E402 - one list for the writer, these lines and the captions
+
+
+def profane(text: str) -> bool:
+    """A word YouTube's advertiser rules treat as strong language."""
+    return bool(PROFANITY.search(text or ""))
+
+
+def mask_profanity(text: str) -> str:
+    """'fucking' → 'f******': captions never print strong language."""
+    return PROFANITY.sub(lambda m: m.group(0)[0] + "*" * (len(m.group(0)) - 1), text or "")
+
+
+def target_words(seconds: float) -> int:
+    """Narration words that fill a Short of `seconds` at the narrator's pace, leaving room for movie lines."""
+    return int(max(20.0, seconds - MOVIE_LINE_SECONDS) * WORDS_PER_SECOND)
+
 EXTEND = 6.0          # seconds of footage around an event a line may also use (same scene)
 TRIVIAL = 3           # events this unimportant are never narrated
 
@@ -86,14 +108,14 @@ EVENTS:
 SCRIPT:
 {script}"""
 
-EXPAND_BELOW = 0.85   # narration under this share of the wanted words gets one request to add lines
+EXPAND_BELOW = 0.9    # narration under this share of the wanted words gets one request to add lines
 
 
 def narration_words(merged: dict) -> int:
     return sum(len(x["text"].split()) for x in merged.get("lines") or [] if x.get("kind") == "narration")
 
 
-def unused_events(merged: dict, events: dict, *, at_least: int = 6) -> list[dict]:
+def unused_events(merged: dict, events: dict, *, at_least: int = 5) -> list[dict]:
     """Important events no line is tied to yet (story order)."""
     used = {x.get("event") for x in merged.get("lines") or []} | {(merged.get("hook") or {}).get("event")}
     return [{"id": k, "what": e["what"], "importance": e.get("importance", 5), "max_words": max_words(e)}
@@ -109,6 +131,8 @@ def event_table(arc: dict, movie_lines: dict | None = None) -> tuple[dict[str, d
             eid = f"s{i}e{j}"
             seconds = e["end"] - e["start"]
             events[eid] = {**e, "scene": i, "clip_id": scene["clip_id"], "id": eid}
+            if e.get("sensitive"):  # never offered to the writer (a weapon on a child, gore, sexual content)
+                continue
             mine.append({"id": eid, "seconds": round(seconds, 1), "what": e["what"], "who": e.get("who", ""),
                          "on_screen": e.get("on_screen", ""), "importance": e.get("importance", 5),
                          "max_words": max_words(e)})
@@ -116,7 +140,7 @@ def event_table(arc: dict, movie_lines: dict | None = None) -> tuple[dict[str, d
         rows.append({"scene": i, "role": beat.get("role", ""), "must_show": beat.get("what_we_see", ""),
                      "story_first_narration": beat.get("narration", ""), "events": mine,
                      "movie_lines": [{"line_id": k, "text": v["text"]} for k, v in (movie_lines or {}).items()
-                                     if v.get("scene") == i][:6]})
+                                     if v.get("scene") == i and not profane(v.get("text", ""))][:6]})
     return events, rows
 
 
@@ -153,6 +177,9 @@ def validate(raw: dict, events: dict[str, dict], movie_lines: dict, allowed: set
         kind, text = row.get("kind", "narration"), " ".join(str(row.get("text", "")).split())
         if kind == "movie_line":
             lid = str(row.get("line_id") or "")
+            if lid in movie_lines and profane(movie_lines[lid].get("text", "")):
+                notes.append(f"dropped (strong language, age restriction): movie line {lid}")
+                continue
             if lid in movie_lines and played < 3:
                 lines.append({"kind": "movie_line", "scene": movie_lines[lid]["scene"], "line_id": lid})
                 played += 1
@@ -160,6 +187,9 @@ def validate(raw: dict, events: dict[str, dict], movie_lines: dict, allowed: set
         event = events.get(str(row.get("event")))
         if not text or event is None or event["scene"] != row.get("scene", event["scene"]):
             notes.append(f"dropped (no matching event): {text[:60]}")
+            continue
+        if event.get("sensitive"):
+            notes.append(f"dropped (sensitive picture, age restriction: '{event['what'][:40]}'): {text[:60]}")
             continue
         if event.get("importance", 5) <= TRIVIAL:
             notes.append(f"dropped (trivial event '{event['what'][:40]}'): {text[:60]}")
@@ -235,7 +265,7 @@ def write(gemini, arc: dict, result: dict, movie: dict, *, seconds: float, log=N
              ("title", "spine", "story_map", "hook_idea", "ending_idea", "ending_mode", "hook")}
     allowed = _names(json.dumps(story, ensure_ascii=False)) | _names(json.dumps(rows, ensure_ascii=False)) | \
         _names(json.dumps(result.get("brief") or {}, ensure_ascii=False)) | _names(movie.get("title", ""))
-    words = int(seconds * WORDS_PER_SECOND * 0.85)
+    words = target_words(seconds)
     title = f"{movie.get('title')} ({movie.get('year')})"
     try:
         raw = gemini.generate("smart", [{"text": WRITE_PROMPT.format(
@@ -258,6 +288,8 @@ def write(gemini, arc: dict, result: dict, movie: dict, *, seconds: float, log=N
         notes.append(f"no script check: {str(exc)[:120]}")
     if narration_words(merged) < EXPAND_BELOW * words:  # too short for the Short's length: add lines once
         unused = unused_events(merged, events)
+        if not unused:
+            notes.append(f"short ({narration_words(merged)} of ~{words} words) and no unused event to add")
         if unused:
             try:
                 longer = gemini.generate("smart", [{"text": EXPAND_PROMPT.format(
@@ -271,9 +303,11 @@ def write(gemini, arc: dict, result: dict, movie: dict, *, seconds: float, log=N
                     notes.append(f"lengthened {narration_words(merged)} → {narration_words(grown)} words")
                     notes += grow_notes
                     merged = grown
+                else:
+                    notes.append("lengthening added nothing usable: " + "; ".join(grow_notes[:3]))
             except gem.GeminiUnavailable as exc:
                 notes.append(f"could not lengthen: {str(exc)[:120]}")
     script = to_script(merged, events, result.get("script") or {})
     log(f"Footage-first script: {sum(1 for x in merged['lines'] if x['kind'] == 'narration')} lines tied to events, "
-        f"{sum(len(x['text'].split()) for x in merged['lines'] if x['kind'] == 'narration')} words")
+        f"{narration_words(merged)} of ~{words} words" + "".join(f"\n  {n[:200]}" for n in notes))
     return script, notes
