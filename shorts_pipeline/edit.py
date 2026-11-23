@@ -298,6 +298,30 @@ def _dodge(start: float, take: float, lo: float, hi: float, avoid: list) -> tupl
     return start, take
 
 
+LONG_PIECE = 3.2          # one camera shot longer than this is cut in two (references: median 1.5–2.9 s)
+JUMP = (1.0, 2.5)         # how far the cut jumps inside the same event (a visible jump cut, never a glitch)
+
+
+def split_long(a: float, b: float, peak: float, lo: float, hi: float, avoid: list | None = None) -> list[tuple]:
+    """[a, b] as one piece, or two pieces of about equal length when it is longer than LONG_PIECE. The half
+    that holds the event's peak keeps its exact seconds (the peak stays under the key word); the other half
+    is taken from the same event's footage just before (or after) it, so the cut jumps 1–2.5 s inside the
+    same action, as recap editors do."""
+    if b - a <= LONG_PIECE:
+        return [(a, b)]
+    m = (a + b) / 2
+    clear = lambda x, y: not any(x < bb and y > aa for aa, bb in avoid or [])  # noqa: E731
+    if peak >= m:  # the peak is in the second half: the first half comes from earlier footage
+        shift = min(JUMP[1], a - lo)
+        if shift >= JUMP[0] and clear(a - shift, m - shift):
+            return [(a - shift, m - shift), (m, b)]
+    else:          # the peak is in the first half: the second half comes from later footage
+        shift = min(JUMP[1], hi - b)
+        if shift >= JUMP[0] and clear(m + shift, b + shift):
+            return [(a, m), (m + shift, b + shift)]
+    return [(a, b)]
+
+
 def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict, used: dict,
                cuts: dict | None = None, repick: dict | None = None) -> list[dict] | None:
     """Shots for a footage-first narration take: every line plays the event it describes, placed so that the
@@ -346,12 +370,14 @@ def line_shots(beat: dict, start_t: float, gap: float, arc: dict, footage: dict,
                 edges.append(c)
         edges.append(end)
         at = cursor
+        peak_at = event["peak"]
         for a, b in zip(edges, edges[1:]):  # one shot per camera shot of the film, same seconds of footage
-            shots.append({"clip_id": clip, "source": footage[clip], "start": round(a, 3), "end": round(b, 3),
-                          "speed": round(speed, 3), "timeline_start": round(at, 3), "duration": round((b - a) / speed, 3),
-                          "audio": "duck", "beat": beat["id"], "event": event.get("id"),
-                          "key_at": round(start_t + span["key"], 3)})
-            at += (b - a) / speed
+            for pa, pb in split_long(a, b, peak_at, lo, hi, avoid.get(clip, [])):
+                shots.append({"clip_id": clip, "source": footage[clip], "start": round(pa, 3), "end": round(pb, 3),
+                              "speed": round(speed, 3), "timeline_start": round(at, 3),
+                              "duration": round((pb - pa) / speed, 3), "audio": "duck", "beat": beat["id"],
+                              "event": event.get("id"), "key_at": round(start_t + span["key"], 3)})
+                at += (pb - pa) / speed
         used.setdefault(clip, []).append((start, end))
         last_end[clip] = end
         short = need - length

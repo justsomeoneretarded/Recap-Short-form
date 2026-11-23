@@ -164,3 +164,14 @@ def test_the_main_plot_outranks_a_side_plot_with_the_same_footage():
     assert main["main_plot"] > side["main_plot"]
     have = set(range(5))
     assert h.script_rank(main, have) > h.script_rank(side, have)
+
+
+def test_a_main_plot_story_with_four_of_six_scenes_is_usable_and_a_gun_on_a_teen_ranks_lower():
+    from shorts_pipeline import hunt as h
+    beats = [{"role": "x", "what_we_see": "y", "name": f"b{i}"} for i in range(6)]
+    main = {"title": "Betrayal", "beats": beats, "main_plot": 0.9}
+    side = {"title": "Miles", "beats": beats, "main_plot": 0.2}
+    assert h.usable(main, {0, 1, 2, 3}) and not h.usable(side, {0, 1, 2, 3})
+    risky = {"title": "Miles", "main_plot": 0.2, "beats": beats[:5] + [
+        {"role": "turn", "what_we_see": "McCall forces the gun into the teenager's hand", "name": "gun"}]}
+    assert h.script_rank(risky, set(range(6))) < h.script_rank(side, set(range(6)))

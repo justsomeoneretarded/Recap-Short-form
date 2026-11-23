@@ -270,3 +270,11 @@ def test_sensitive_pictures_and_strong_language_never_reach_the_script():
 def test_a_line_take_steps_off_a_sensitive_moment():
     start, take = e._dodge(100.0, 4.0, 90.0, 130.0, [(101.0, 106.0)])
     assert start + take <= 101.0 or start >= 106.0
+
+
+def test_a_long_camera_shot_is_cut_in_two_and_the_peak_keeps_its_seconds():
+    pieces = e.split_long(300.0, 305.0, 304.0, 270.0, 370.0)
+    assert len(pieces) == 2 and pieces[1] == (302.5, 305.0)              # the half with the peak is untouched
+    assert pieces[0][1] - pieces[0][0] == pytest.approx(2.5) and pieces[0][0] < 300.0
+    assert e.split_long(300.0, 302.5, 301.0, 270.0, 370.0) == [(300.0, 302.5)]   # short pieces stay whole
+    assert e.split_long(300.0, 305.0, 304.0, 299.8, 370.0) == [(300.0, 305.0)]   # no footage to jump to

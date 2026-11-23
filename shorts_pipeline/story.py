@@ -77,6 +77,9 @@ Rules for each story:
 - ONE STORYLINE: one conflict carried by the same main characters from the first beat to the last, each beat
   causing the next. Never join separate subplots or side missions into one story (e.g. a side job the hero does
   for a stranger and the main revenge plot are two different stories, not one).
+- The FIRST story is the movie's main plot (the conflict of its synopsis, carried by the top-billed characters).
+- YouTube-safe: no story whose key moments are a weapon held on a child or teenager, drug making or drug use,
+  gore, sexual content or self-harm (those moments cannot be shown, so such a story falls apart).
 - A spine of {min_beats}-{max_beats} beats in movie order, each one CAUSING the next: e.g. a want or offer,
   a refusal, the consequence, the escalation, the realisation of who they messed with, the turn or return.
 - The beats may be far apart in the movie. Pick each beat for what it does in the story, never just for action.
