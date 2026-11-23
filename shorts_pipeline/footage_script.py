@@ -131,8 +131,6 @@ def event_table(arc: dict, movie_lines: dict | None = None) -> tuple[dict[str, d
             eid = f"s{i}e{j}"
             seconds = e["end"] - e["start"]
             events[eid] = {**e, "scene": i, "clip_id": scene["clip_id"], "id": eid}
-            if e.get("sensitive"):  # never offered to the writer (a weapon on a child, gore, sexual content)
-                continue
             mine.append({"id": eid, "seconds": round(seconds, 1), "what": e["what"], "who": e.get("who", ""),
                          "on_screen": e.get("on_screen", ""), "importance": e.get("importance", 5),
                          "max_words": max_words(e)})
@@ -140,7 +138,7 @@ def event_table(arc: dict, movie_lines: dict | None = None) -> tuple[dict[str, d
         rows.append({"scene": i, "role": beat.get("role", ""), "must_show": beat.get("what_we_see", ""),
                      "story_first_narration": beat.get("narration", ""), "events": mine,
                      "movie_lines": [{"line_id": k, "text": v["text"]} for k, v in (movie_lines or {}).items()
-                                     if v.get("scene") == i and not profane(v.get("text", ""))][:6]})
+                                     if v.get("scene") == i][:6]})
     return events, rows
 
 
@@ -177,9 +175,6 @@ def validate(raw: dict, events: dict[str, dict], movie_lines: dict, allowed: set
         kind, text = row.get("kind", "narration"), " ".join(str(row.get("text", "")).split())
         if kind == "movie_line":
             lid = str(row.get("line_id") or "")
-            if lid in movie_lines and profane(movie_lines[lid].get("text", "")):
-                notes.append(f"dropped (strong language, age restriction): movie line {lid}")
-                continue
             if lid in movie_lines and played < 3:
                 lines.append({"kind": "movie_line", "scene": movie_lines[lid]["scene"], "line_id": lid})
                 played += 1
@@ -187,9 +182,6 @@ def validate(raw: dict, events: dict[str, dict], movie_lines: dict, allowed: set
         event = events.get(str(row.get("event")))
         if not text or event is None or event["scene"] != row.get("scene", event["scene"]):
             notes.append(f"dropped (no matching event): {text[:60]}")
-            continue
-        if event.get("sensitive"):
-            notes.append(f"dropped (sensitive picture, age restriction: '{event['what'][:40]}'): {text[:60]}")
             continue
         if event.get("importance", 5) <= TRIVIAL:
             notes.append(f"dropped (trivial event '{event['what'][:40]}'): {text[:60]}")

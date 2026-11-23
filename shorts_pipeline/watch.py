@@ -128,11 +128,10 @@ def watch_story(gemini, arc: dict, footage: dict, work: Path, movie: dict, *, pr
             log(f"Scene {i}: not watched ({str(exc)[:120]})")
             continue
         scene["watch_window"], scene["events"] = seen["window"], seen["events"]
-        risky = [[e["start"], e["end"]] for e in seen["events"] if e.get("sensitive")]
-        if risky:  # the edit never shows these seconds (age restriction)
-            scene["avoid"] = list(scene.get("avoid") or []) + risky
-            log(f"Scene {i}: {len(risky)} sensitive moment(s) kept out of the edit: " +
-                "; ".join(f"{e['start']:.0f}-{e['end']:.0f}s {e['what'][:40]}" for e in seen["events"] if e.get("sensitive")))
+        risky = [e for e in seen["events"] if e.get("sensitive")]
+        if risky:  # information only: the scenes are kept as they are
+            log(f"Scene {i}: {len(risky)} moment(s) that may draw an age restriction (kept): " +
+                "; ".join(f"{e['start']:.0f}-{e['end']:.0f}s {e['what'][:40]}" for e in risky))
         scene["watch_flags"] = {k: seen[k] for k in ("burned_in_captions", "narrator_over_film")}
         log(f"Scene {i} watched: {len(seen['events'])} events — " +
             "; ".join(f"{e['start']:.0f}-{e['end']:.0f}s {e['what'][:40]} ({e['importance']})" for e in seen["events"][:8]))

@@ -237,9 +237,7 @@ def plot_window(plot: str, start: float, end: float, runtime: float) -> tuple[st
     return so_far, _trim(" ".join(during), THIS_PART_CHARS)
 
 
-# Strong language (YouTube's advertiser rules / age restriction): never in a chosen movie line, masked in captions.
-PROFANITY = re.compile(r"\b(f+u+c+k\w*|motherf\w*|sh[i1]t\w*|bitch\w*|bastard\w*|cunt\w*|dick(?:head)?s?|"
-                       r"pussy\w*|asshole\w*|goddamn\w*|n[i1]gg\w*|fag\w*|whore\w*|slut\w*)\b", re.I)
+PROFANITY = re.compile(r"\b(fuck\w*|shit\w*|motherfuck\w*|bitch\w*|cunt\w*|asshole\w*)\b", re.I)
 CLICHES = re.compile(r"\b(every (second|step|moment) counts|the tension (builds|rises|mounts)|the (room|air) falls silent|"
                      r"laid bare|carr(y|ies) a weight|a mix of \w+ and \w+|danger is everywhere|"
                      r"(face|eyes) (goes |go |turns? )?(pale|glisten\w*|narrow\w*)|jaw (tight\w*|clench\w*)|"

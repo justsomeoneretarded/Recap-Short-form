@@ -210,11 +210,7 @@ def usable(story: dict, have: set) -> bool:
 
 MAIN_PLOT = 0.6            # a story this much about the movie's main plot ...
 MAIN_USABLE_SHARE = 0.6    # ... is usable with 60 % of its scenes (4 of 6): the writer bridges the rest
-SENSITIVE_BEAT = re.compile(
-    r"(gun|pistol|weapon|knife|blade)\W+(?:\w+\W+){0,6}(boy|girl|kid|child|teen\w*|minor|miles)|"
-    r"(boy|girl|kid|child|teen\w*|minor)\W+(?:\w+\W+){0,6}(gun|pistol|weapon|knife)|"
-    r"\b(crack|cocaine|heroin|meth|drug den|overdose|gore|rape|sexual|self-harm|suicide)\b", re.I)
-SENSITIVE_COST = 2.0       # rank points off per scene built on a moment that cannot be shown (age restriction)
+
 
 
 _STOP = set("the a an and or but of to in on at for with by from his her their its he she they it is are was were "
@@ -252,10 +248,7 @@ def script_rank(story: dict, have: set) -> float:
     lost_action = sum(1 for i, b in enumerate(beats) if i not in have
                       and ACTION.search(f"{b.get('role', '')} {b.get('what_we_see', '')}"))
     editor = float((story.get("editor") or {}).get("score") or 6)
-    sensitive = sum(1 for b in beats if SENSITIVE_BEAT.search(
-        f"{b.get('name', '')} {b.get('what_we_see', '')} {b.get('narration', '')}"))
-    return round(10 * share - 3 * lost_action + 0.3 * editor + MAIN_PLOT_BONUS * float(story.get("main_plot") or 0)
-                 - SENSITIVE_COST * sensitive, 2)
+    return round(10 * share - 3 * lost_action + 0.3 * editor + MAIN_PLOT_BONUS * float(story.get("main_plot") or 0), 2)
 
 
 def rank_results(results: list[dict], wanted: int) -> list[dict]:

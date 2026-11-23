@@ -246,25 +246,19 @@ def test_the_word_target_follows_the_narrators_real_pace():
     assert 450 <= fs.target_words(150) <= 500                  # run 46: 303 words made a 99-s Short
 
 
-def test_sensitive_pictures_and_strong_language_never_reach_the_script():
+def test_sensitive_pictures_and_strong_language_are_kept():
     arc = arc_with_events()
-    arc["scenes"][0]["events"][0]["sensitive"] = True            # e.g. a gun held to a teenager
-    arc["scenes"][1]["events"].append({"start": 20.0, "end": 30.0, "peak": 25.0, "what": "Robert stares Dave down",
-                                       "who": "Robert, Dave", "on_screen": "kitchen", "importance": 8})
+    arc["scenes"][0]["events"][0]["sensitive"] = True            # e.g. a gun held to a teenager: still used
     lines = {"L1": {"text": "Get the fuck out of here", "scene": 0}, "L2": {"text": "You will not do this", "scene": 0}}
     events, rows = fs.event_table(arc, lines)
-    assert all(e["id"] != "s0e0" for r in rows for e in r["events"])            # never offered to the writer
-    assert [m["line_id"] for m in rows[0]["movie_lines"]] == ["L2"]
+    assert any(e["id"] == "s0e0" for r in rows for e in r["events"])
+    assert [m["line_id"] for m in rows[0]["movie_lines"]] == ["L1", "L2"]
     raw = raw_script(lines=raw_script()["lines"][:4] + [
-        {"scene": 1, "kind": "narration", "event": "s1e1", "text": "Robert stares him down without a word.",
-         "key_word": "stares"},
-        {"scene": 0, "kind": "movie_line", "line_id": "L1", "text": "", "event": ""},
-        {"scene": 0, "kind": "movie_line", "line_id": "L2", "text": "", "event": ""}])
+        {"scene": 0, "kind": "movie_line", "line_id": "L1", "text": "", "event": ""}])
     merged, notes = fs.validate(raw, events, lines, {"susan", "dave", "miles", "robert"})
-    assert all(x.get("event") != "s0e0" for x in merged["lines"])
-    assert [x["line_id"] for x in merged["lines"] if x["kind"] == "movie_line"] == ["L2"]
-    assert any("sensitive" in n for n in notes) and any("strong language" in n for n in notes)
-    assert fs.mask_profanity("what the fuck") == "what the f***"
+    assert any(x.get("event") == "s0e0" for x in merged["lines"])
+    assert [x["line_id"] for x in merged["lines"] if x["kind"] == "movie_line"] == ["L1"]
+    assert fs.mask_profanity("what the fuck") == "what the f***"   # captions only
 
 
 def test_a_line_take_steps_off_a_sensitive_moment():
