@@ -119,7 +119,7 @@ def window_fraction(source_aspect: float, output_aspect: float) -> float:
     return min(1.0, output_aspect / source_aspect)
 
 
-DARK_LUMA = 70.0   # mean brightness (0-255) under which a shot is lifted
+DARK_LUMA = 85.0   # mean brightness (0-255) under which a shot is lifted
 
 
 def lift_for(frames: list[np.ndarray]) -> float | None:
@@ -130,7 +130,7 @@ def lift_for(frames: list[np.ndarray]) -> float | None:
     return round(min(1.6, 1.0 + (DARK_LUMA - luma) / 80.0), 2) if luma < DARK_LUMA else None
 
 
-ACTION_SPREAD = 1.6   # the action's motion fits in this many crop widths: follow it (wider: shaky camera)
+ACTION_SPREAD = 2.5   # the action's motion fits in this many crop widths: follow it (wider: shaky camera)
 
 
 def action_path(frames: list[np.ndarray], active: tuple, win: float) -> tuple[float, float] | None:

@@ -144,6 +144,9 @@ def review(render: dict, voiceover: dict, result: dict, edl: dict, target_second
     lines = sum(1 for b in voiceover["beats"] if b["kind"] == "dialogue")
     add("real movie lines", "pass" if lines else "warn", f"{lines} original dialogue beats")
     issues = result["check"]["issues"]
+    if (result.get("script") or {}).get("footage_first") or result.get("seed_only"):
+        # The checked script is the seed; the footage-first script has its own length gate before voicing.
+        issues = [i for i in issues if not i.startswith("script too short")]
     add("script checks", "pass" if not issues else "warn", "; ".join(issues) or "no invented names, filler or quoting")
     hook = len((result["script"].get("hook") or "").split())
     add("hook", "pass" if 3 <= hook <= 14 else "warn", f"{hook} words")

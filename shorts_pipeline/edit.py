@@ -451,11 +451,15 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
                 chosen_by_director += _pieces(lo, hi, clip_cuts, scene.get("avoid"))
         if sum(e - s for s, e in chosen_by_director) >= 0.6 * gap:
             available = sum(e - s for s, e in chosen_by_director)
+            if index == len(beats) - 1 and available < gap:  # the end hold shrinks rather than slowing the beat
+                gap = max(beat["duration"], available)
             speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
             need = gap * speed
             picked = in_order(chosen_by_director, need)
         else:
             available = sum(e - s for s, e in pieces)
+            if index == len(beats) - 1 and available < gap:  # the end hold shrinks rather than slowing the beat
+                gap = max(beat["duration"], available)
             speed = 1.0 if available >= gap else max(MIN_SPEED, available / gap)
             need = gap * speed
             slots = clause_slots(beat, gap)
@@ -495,6 +499,16 @@ def build_edl(arc: dict, voiceover: dict, footage: dict[str, str], cuts: dict | 
                 last["end"] = round(min(last["start"] + last["duration"] * MIN_SPEED,
                                         last["end"] + (last["duration"] - longest) * MIN_SPEED), 3)
                 last["speed"] = round(max(MIN_SPEED, (last["end"] - last["start"]) / last["duration"]), 3)
+    if shots and END_HOLD and shots[-1]["speed"] < 0.999:
+        # The hold after the last word is never made with slow motion (a stretched last shot looks smeared):
+        # play the last shot at its beat's own speed and let the hold shrink to the footage there is.
+        last = shots[-1]
+        same = [s["speed"] for s in shots[:-1] if s.get("beat") == last.get("beat")]
+        speed = max(same[-1] if same else 1.0, last["speed"])
+        if speed > last["speed"]:
+            natural = (last["end"] - last["start"]) / speed
+            if last["duration"] - natural <= END_HOLD + 0.05:
+                last["speed"], last["duration"] = round(speed, 3), round(natural, 3)
     total = shots[-1]["timeline_start"] + shots[-1]["duration"] if shots else 0.0
     lengths = [s["duration"] for s in shots]
     missing = total - sum(lengths)

@@ -244,7 +244,7 @@ def finish(mixed: Path, captions: Path | None, target: Path) -> dict:
 def duplicate_frame_ratio(video: Path) -> float:
     """Share of near-identical adjacent frames (fake 60 fps shows ~0.6)."""
     # One decode (the frame count comes from the file header); small frames are enough to see copies.
-    log = subprocess.run(["ffmpeg", "-i", str(video), "-an", "-vf", "scale=320:-2,mpdecimate", "-f", "null", "-"],
+    log = subprocess.run(["ffmpeg", "-i", str(video), "-an", "-vf", "scale=320:-2,mpdecimate=hi=192:lo=64:frac=0.1", "-f", "null", "-"],
                          capture_output=True, text=True).stderr
     total = int(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                 "stream=nb_frames", "-of", "csv=p=0", str(video)],

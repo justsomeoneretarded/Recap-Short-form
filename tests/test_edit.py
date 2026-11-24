@@ -29,7 +29,7 @@ def test_edl_is_continuous_dialogue_in_sync_and_forward_moving():
     assert line["audio"] == "full" and line["start"] == 30.0 and line["speed"] == 1.0
     scene_a = [s for s in shots if s["clip_id"] == "A" and s["audio"] == "duck"]
     assert all(s["end"] <= 30.0 + 1e-6 for s in scene_a)  # narration before the line uses footage before it
-    assert edl["duration"] == pytest.approx(30.1 + e.END_HOLD, abs=0.05)  # the picture holds past the last word
+    assert 30.1 - 0.05 <= edl["duration"] <= 30.1 + e.END_HOLD + 0.05  # a hold past the last word, as long as the footage allows
 
 
 def test_short_footage_is_slowed_gently_not_frozen():
@@ -136,3 +136,11 @@ def test_narration_is_cut_on_its_clause_boundaries():
     cut_times = {round(s["timeline_start"], 2) for s in edl["shots"]}
     for slot in e.clause_slots(voice["beats"][0], 9.0):
         assert round(slot["start"], 2) in cut_times                                  # a cut on every clause start
+
+
+def test_the_end_hold_is_never_slow_motion():
+    arc = {"scenes": [{"clip_id": "A", "clip_start": 0.0, "clip_end": 10.0, "peaks": []}]}
+    voice = {"beats": [{"id": "b0", "kind": "narration", "scene": 0, "timeline_start": 0.0, "duration": 10.0}]}
+    edl = e.build_edl(arc, voice, {"A": "a.mp4"}, cuts={"A": [5.0]})
+    assert edl["shots"][-1]["speed"] == pytest.approx(1.0)        # 10 s of footage, 10 s of voice: no stretch
+    assert edl["duration"] <= 10.0 + e.END_HOLD + 0.01
