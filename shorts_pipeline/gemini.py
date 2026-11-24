@@ -433,8 +433,18 @@ class Client:
                 self.sleep(pause)
 
     def _generate(self, role, parts, *, system, schema, temperature, seed, tools, low_media, max_tokens=None):
-        errors = []
-        for model in self.chain(role)[:MAX_MODELS_PER_REQUEST]:
+        errors, tried = [], 0
+        light = set(self.models().get("light", [])) if role == "smart" else set()
+        noted = False
+        for model in self.chain(role):
+            # Models used up for today cost nothing to skip; only real attempts count toward the cap, so the
+            # light models are still reached when every smart model's daily limit is gone.
+            if tried >= MAX_MODELS_PER_REQUEST:
+                break
+            if model in light and not noted:
+                noted = True
+                print(f"[gemini] smart models unavailable for this request: using the light model {model}",
+                      file=sys.stderr, flush=True)
             limit = max_tokens or DEFAULT_OUTPUT_TOKENS
             for attempt in range(2):  # a reply cut off by the output limit is asked again with more room
                 config: dict = {"temperature": temperature, "maxOutputTokens": limit}
@@ -476,6 +486,9 @@ class Client:
                     return result
                 except (_Exhausted, _BadRequest) as exc:
                     errors.append(str(exc)[:200])
+                    quota = isinstance(exc, _Exhausted) and str(exc).split(": ", 1)[-1].startswith(
+                        ("daily", "free limit", "no key can use it today"))
+                    tried += 0 if quota else 1
                     if not str(exc).split(": ", 1)[-1].startswith(("daily", "free limit", "per-minute")):
                         # quota answers are printed where they happen; everything else is printed here
                         print(f"[gemini] {str(exc)[:300]}", file=sys.stderr, flush=True)
@@ -485,9 +498,11 @@ class Client:
     def upload(self, path: Path, mime: str = "video/mp4", wait: float = 300) -> dict:
         """Files API (free, kept 48 h): returns the file record once it is ready to use."""
         path = Path(path)
-        wanted = self.models().get("smart", []) + self.models().get("light", [])
-        key = next((i for i in range(len(self.keys))  # a key that can still use a model to read the file with
-                    if any(m not in self.ex[i] | self.nf[i] for m in wanted)), 0)
+        smart, light = self.models().get("smart", []), self.models().get("light", [])
+        # The file can only be read with the key that uploaded it: prefer a key with a smart model left today,
+        # else one with a light model left.
+        key = next((i for group in (smart, light) for i in range(len(self.keys))
+                    if any(m not in self.ex[i] | self.nf[i] for m in group)), 0)
         start = self._http("POST", f"{API}/upload/v1beta/files", key=key, headers={
             "X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start",
             "X-Goog-Upload-Header-Content-Length": str(path.stat().st_size),

@@ -364,6 +364,11 @@ def run_voice(discover: Path, scripts: Path, output: Path, workdir: Path, *, nar
     chosen = json.loads((scripts/'scripts.json').read_text())
     chosen = [r for r in chosen if r['arc'] == only] if only else chosen[:max_arcs]
     failed = []
+    from . import gemini as gem
+    google = gem.client()
+    if google is not None and not any(google._usable_keys(m) for m in google.models().get('smart', [])):
+        print("Gemini's free daily limit for the smart models is used up: this Short is watched and written with "
+              "the light models (lower quality). The limit resets at midnight Pacific time.", file=sys.stderr)
     for result in chosen:
         try:
             rows.append(_voice_story(result, arcs, screened, youtube, output, workdir, narrator, model,

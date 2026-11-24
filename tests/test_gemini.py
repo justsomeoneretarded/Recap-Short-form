@@ -631,3 +631,18 @@ def test_a_request_google_never_answers_moves_to_the_next_model_and_is_not_a_net
     assert c.generate("smart", [{"text": "x"}], schema={"type": "object"}) == {"ok": 2}
     assert ("timeout", g.TEXT_TIMEOUT) in session.posts          # text requests wait 240 s, not 10 min
     assert g._server_busy("gemini-3.5-flash: HTTP 504 no answer within 240s (timed out)")
+
+
+def test_when_every_smart_model_is_used_up_for_the_day_the_light_model_still_answers(capsys):
+    daily = Reply(429, text=json.dumps({"error": {"message": "quota", "details": [
+        {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+         "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}))
+    many = {"models": [{"name": f"models/gemini-3.{i}-flash", "supportedGenerationMethods": ["generateContent"]}
+                       for i in range(1, 9)] +
+            [{"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]}]}
+    replies = {f"gemini-3.{i}-flash": [daily] for i in range(1, 9)}
+    replies["gemini-3.5-flash-lite"] = [answer({"ok": "lite"})]
+    c = g.Client("k", session=Session(replies, models=many), sleep=lambda s: None)
+    assert len(c.models()["smart"]) > g.MAX_MODELS_PER_REQUEST     # more used-up smart models than the cap
+    assert c.generate("smart", [{"text": "x"}], schema={"type": "object"}) == {"ok": "lite"}
+    assert "using the light model" in capsys.readouterr().err
