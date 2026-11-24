@@ -172,3 +172,9 @@ def test_a_main_plot_story_with_four_of_six_scenes_is_usable():
     main = {"title": "Betrayal", "beats": beats, "main_plot": 0.9}
     side = {"title": "Miles", "beats": beats, "main_plot": 0.2}
     assert h.usable(main, {0, 1, 2, 3}) and not h.usable(side, {0, 1, 2, 3})
+
+
+def test_a_usable_main_plot_is_chosen_over_a_side_plot_that_ranks_slightly_higher():
+    from shorts_pipeline import hunt as h
+    results = [{"n": 0, "ok": True, "main": True, "rank": 13.04}, {"n": 1, "ok": True, "main": False, "rank": 13.18}]
+    assert [r["n"] for r in h.rank_results(results, 1) if r["ok"]] == [0]

@@ -272,3 +272,22 @@ def test_a_long_camera_shot_is_cut_in_two_and_the_peak_keeps_its_seconds():
     assert pieces[0][1] - pieces[0][0] == pytest.approx(2.5) and pieces[0][0] < 300.0
     assert e.split_long(300.0, 302.5, 301.0, 270.0, 370.0) == [(300.0, 302.5)]   # short pieces stay whole
     assert e.split_long(300.0, 305.0, 304.0, 299.8, 370.0) == [(300.0, 305.0)]   # no footage to jump to
+
+
+def test_a_very_short_draft_is_lengthened_over_several_passes():
+    arc = arc_with_events()
+    for k, what in enumerate(["Robert stares Dave down", "Dave reaches for a knife"]):
+        arc["scenes"][1]["events"].append({"start": 20.0 + 10 * k, "end": 30.0 + 10 * k, "peak": 25.0 + 10 * k,
+                                           "what": what, "who": "Robert, Dave", "on_screen": "kitchen", "importance": 7})
+    first = raw_script()
+    once = raw_script(lines=raw_script()["lines"] + [
+        {"scene": 1, "kind": "narration", "event": "s1e1", "text": "Robert stares him down without a word.",
+         "key_word": "stares"}])
+    twice = raw_script(lines=once["lines"] + [
+        {"scene": 1, "kind": "narration", "event": "s1e2", "text": "Dave's hand drifts toward the knife.",
+         "key_word": "knife"}])
+    google = FakeGemini([first, first, once, twice])
+    result = {"script": {"title": "old"}, "brief": {"movie": "The Equalizer 2 (2018)"}}
+    script, notes = fs.write(google, arc, result, {"title": "The Equalizer 2", "year": 2018}, seconds=60,
+                             log=lambda m: None)
+    assert sum(1 for n in notes if n.startswith("lengthened")) == 2 and len(google.prompts) == 4

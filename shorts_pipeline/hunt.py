@@ -234,7 +234,7 @@ def main_plot_share(story: dict, movie: dict) -> float:
     return round(min(1.0, len(_content(text) & main) / max(4.0, 0.35 * len(main))), 2)
 
 
-MAIN_PLOT_BONUS = 3.0   # rank points for a story that carries the main plot (equal footage: the main plot wins)
+MAIN_PLOT_BONUS = 6.0   # rank points for a story that carries the main plot (equal footage: the main plot wins)
 
 
 def script_rank(story: dict, have: set) -> float:
@@ -253,7 +253,7 @@ def script_rank(story: dict, have: set) -> float:
 
 def rank_results(results: list[dict], wanted: int) -> list[dict]:
     """Usable scripts best first (only the best `wanted` stay usable); unusable ones after them."""
-    usable = sorted((r for r in results if r["ok"]), key=lambda r: (-r["rank"], r["n"]))
+    usable = sorted((r for r in results if r["ok"]), key=lambda r: (not r.get("main"), -r["rank"], r["n"]))
     for r in usable[wanted:]:
         r["ok"] = False
     return usable + [r for r in results if r not in usable]
@@ -298,7 +298,8 @@ def run(google, research: dict, transcript, plot: str, youtube, workdir: Path, *
             extra = 1 if float(story.get("main_plot") or 0) >= MAIN_PLOT else 0  # the main plot gets one more round
             confirmed, covered = hunt.footage_for(story, rounds=rounds + extra)
             have = covered | set(confirmed)
-            results.append({"n": n, "confirmed": confirmed, "ok": usable(story, have), "scenes_before": len(have),
+            results.append({"n": n, "main": float(story.get("main_plot") or 0) >= MAIN_PLOT,
+                            "confirmed": confirmed, "ok": usable(story, have), "scenes_before": len(have),
                             "complete": len(have) >= len(story["beats"]), "rank": script_rank(story, have)})
 
     hunt_scripts(True)
@@ -374,17 +375,18 @@ def best_arcs(arcs: list[dict], stories: list[dict], wanted: int, results: list[
         subtitled = [sc["beat"]["name"] for sc in arc["scenes"] if sc.get("subtitled")]
         if subtitled:
             log(f"script {r['n'] + 1}: subtitled footage used as the last resort for: {subtitled}")
-        scored.append((rank, r["n"], arc))
+        main = float(story.get("main_plot") or 0) >= MAIN_PLOT  # usable main plot: always before a side plot
+        scored.append((rank, r["n"], arc, main))
     for r in keep:
-        if not any(n == r["n"] for _, n, _ in scored):
+        if not any(row[1] == r["n"] for row in scored):
             log(f"script {r['n'] + 1} '{stories[r['n']]['title']}': {r.get('scenes_before', '?')} scenes found, "
                 f"too few left after screening")
     if rejected:
         log("screening rejected: " + "; ".join(f"{cid}: {why}" for cid, why in list(rejected.items())[:8]))
         if hunt_report is not None:
             hunt_report["lost"] = [f"{cid}: {why[:120]}" for cid, why in list(rejected.items())[:8]]
-    scored.sort(key=lambda row: (-row[0], row[1]))
-    out = [arc for _, _, arc in scored[:wanted]]
+    scored.sort(key=lambda row: (not row[3], -row[0], row[1]))
+    out = [row[2] for row in scored[:wanted]]
     for i, arc in enumerate(out):
         arc["id"] = f"arc{i + 1}"
     return out

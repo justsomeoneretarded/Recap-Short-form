@@ -98,7 +98,7 @@ SCRIPT:
 
 
 EXPAND_PROMPT = """This movie-recap Short script for {movie} is too short: {have} words of narration where about {words}
-are needed for {seconds} seconds. Return the WHOLE script again, in the same form, with new narration lines added
+are needed for {seconds} seconds (add about {missing} words). Return the WHOLE script again, in the same form, with new narration lines added
 where they belong in story order. Use these events that no line tells yet (each new line tied to one of them,
 within its max_words, describing what it shows): {unused}.
 Keep every existing line unless a new one replaces it with more. Same rules: present tense, no quotes, no names that
@@ -108,7 +108,8 @@ EVENTS:
 SCRIPT:
 {script}"""
 
-EXPAND_BELOW = 0.9    # narration under this share of the wanted words gets one request to add lines
+EXPAND_BELOW = 0.9    # narration under this share of the wanted words gets requests to add lines ...
+EXPAND_PASSES = 3     # ... at most this many
 
 
 def narration_words(merged: dict) -> int:
@@ -278,27 +279,31 @@ def write(gemini, arc: dict, result: dict, movie: dict, *, seconds: float, log=N
             merged = fixed
     except gem.GeminiUnavailable as exc:
         notes.append(f"no script check: {str(exc)[:120]}")
-    if narration_words(merged) < EXPAND_BELOW * words:  # too short for the Short's length: add lines once
-        unused = unused_events(merged, events)
+    for _ in range(EXPAND_PASSES):  # too short for the Short's length: add lines, a few passes at most
+        if narration_words(merged) >= EXPAND_BELOW * words:
+            break
+        unused = unused_events(merged, events, at_least=4)
         if not unused:
             notes.append(f"short ({narration_words(merged)} of ~{words} words) and no unused event to add")
-        if unused:
-            try:
-                longer = gemini.generate("smart", [{"text": EXPAND_PROMPT.format(
-                    movie=title, have=narration_words(merged), words=words, seconds=int(seconds),
-                    unused=json.dumps(unused, ensure_ascii=False), scenes=json.dumps(rows, ensure_ascii=False),
-                    script=json.dumps(merged, ensure_ascii=False))}], schema=SCRIPT_SCHEMA, temperature=0.4,
-                    max_tokens=8192)
-                grown, grow_notes = validate(longer, events, movie_lines, allowed)
-                if grown is not None and narration_words(grown) > narration_words(merged) and \
-                        len(grown["lines"]) >= len(merged["lines"]):
-                    notes.append(f"lengthened {narration_words(merged)} → {narration_words(grown)} words")
-                    notes += grow_notes
-                    merged = grown
-                else:
-                    notes.append("lengthening added nothing usable: " + "; ".join(grow_notes[:3]))
-            except gem.GeminiUnavailable as exc:
-                notes.append(f"could not lengthen: {str(exc)[:120]}")
+            break
+        try:
+            longer = gemini.generate("smart", [{"text": EXPAND_PROMPT.format(
+                movie=title, have=narration_words(merged), words=words, seconds=int(seconds),
+                missing=words - narration_words(merged),
+                unused=json.dumps(unused, ensure_ascii=False), scenes=json.dumps(rows, ensure_ascii=False),
+                script=json.dumps(merged, ensure_ascii=False))}], schema=SCRIPT_SCHEMA, temperature=0.4,
+                max_tokens=8192)
+        except gem.GeminiUnavailable as exc:
+            notes.append(f"could not lengthen: {str(exc)[:120]}")
+            break
+        grown, grow_notes = validate(longer, events, movie_lines, allowed)
+        if grown is None or narration_words(grown) <= narration_words(merged) or \
+                len(grown["lines"]) < len(merged["lines"]):
+            notes.append("lengthening added nothing usable: " + "; ".join(grow_notes[:3]))
+            break
+        notes.append(f"lengthened {narration_words(merged)} → {narration_words(grown)} words")
+        notes += grow_notes
+        merged = grown
     script = to_script(merged, events, result.get("script") or {})
     log(f"Footage-first script: {sum(1 for x in merged['lines'] if x['kind'] == 'narration')} lines tied to events, "
         f"{narration_words(merged)} of ~{words} words" + "".join(f"\n  {n[:200]}" for n in notes))
